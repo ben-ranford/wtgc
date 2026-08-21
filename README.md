@@ -58,6 +58,10 @@ wtgc clean --scan-root "$HOME/Projects" --json
 Local branches are retained by default. Delete them only with the separate,
 explicit `--delete-branch` flag.
 
+Git commands inherit cancellation from `SIGINT`/`SIGTERM` and have no arbitrary
+deadline by default. For unattended environments, set an explicit backstop such
+as `WTGC_GIT_TIMEOUT=2m`.
+
 ## Safety Model
 
 Version 1 cleanup eligibility is intentionally narrow:
@@ -135,7 +139,6 @@ make release VERSION=v0.1.0 PLATFORMS="darwin/arm64 linux/amd64 windows/amd64"
 
 ## Docs
 
-- Product decomposition: `docs/jtbd.md`
 - Architecture: `docs/architecture.md`
 - Safety contract: `docs/safety.md`
 - CI and hooks: `docs/ci-usage.md`

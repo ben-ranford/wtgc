@@ -6,7 +6,9 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/signal"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/ben-ranford/wtgc/internal/app"
@@ -23,12 +25,19 @@ var (
 )
 
 func main() {
-	timeout, err := gitCommandTimeoutFromEnv(os.Getenv("WTGC_GIT_TIMEOUT"))
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "WTGC_GIT_TIMEOUT: %v\n", err)
-		os.Exit(2)
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	backend := gitx.New("git")
+	if !staticInfoRequest(os.Args[1:]) {
+		timeout, err := gitCommandTimeoutFromEnv(os.Getenv("WTGC_GIT_TIMEOUT"))
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "WTGC_GIT_TIMEOUT: %v\n", err)
+			os.Exit(2)
+		}
+		backend = gitx.NewWithTimeout("git", timeout)
 	}
-	os.Exit(run(context.Background(), os.Args[1:], os.Stdin, os.Stdout, os.Stderr, gitx.NewWithTimeout("git", timeout), os.Getwd))
+	os.Exit(run(ctx, os.Args[1:], os.Stdin, os.Stdout, os.Stderr, backend, os.Getwd))
 }
 
 func run(
@@ -101,7 +110,7 @@ func confirmer(input io.Reader, output io.Writer, deleteBranch bool) func(model.
 		if deleteBranch && worktree.Branch != "" && !worktree.Prunable {
 			suffix = " and delete its local branch"
 		}
-		fmt.Fprintf(output, "%s %s%s? [y/N] ", action, worktree.Path, suffix)
+		fmt.Fprintf(output, "%s %s%s? [y/N] ", action, report.SafeHumanText(worktree.Path), suffix)
 		answer, err := reader.ReadString('\n')
 		if err != nil && len(answer) == 0 {
 			fmt.Fprintln(output)
@@ -118,7 +127,7 @@ func confirmer(input io.Reader, output io.Writer, deleteBranch bool) func(model.
 
 func gitCommandTimeoutFromEnv(value string) (time.Duration, error) {
 	if strings.TrimSpace(value) == "" {
-		return 30 * time.Second, nil
+		return 0, nil
 	}
 	duration, err := time.ParseDuration(value)
 	if err != nil {
@@ -128,4 +137,9 @@ func gitCommandTimeoutFromEnv(value string) (time.Duration, error) {
 		return 0, fmt.Errorf("must be greater than zero")
 	}
 	return duration, nil
+}
+
+func staticInfoRequest(args []string) bool {
+	opts, err := cli.Parse(args)
+	return err == nil && (opts.Help || opts.Version)
 }

@@ -7,6 +7,7 @@ BIN_DIR ?= bin
 DIST_DIR ?= dist
 VERSION ?= dev
 COVERAGE_FILE ?= .artifacts/coverage.out
+COVERAGE_TOTAL_FILE ?= $(dir $(COVERAGE_FILE))coverage-total.txt
 COVERAGE_MIN ?= 85
 GO ?= go
 GO_TOOLCHAIN ?= go1.26.1
@@ -51,16 +52,16 @@ race:
 	$(GO_CMD) test -race $(PACKAGE_PATTERN)
 
 cov:
-	@mkdir -p $$(dirname "$(COVERAGE_FILE)")
+	@./scripts/managed-output.sh ensure "$$(dirname "$(COVERAGE_FILE)")"
 	@packages=$$($(GO_CMD) list $(PACKAGE_PATTERN) | grep -v '/integration$$' | grep -v '/internal/testgit$$'); \
 	$(GO_CMD) test $$packages -covermode=atomic -coverprofile="$(COVERAGE_FILE)"
 	@total=$$($(GO_CMD) tool cover -func="$(COVERAGE_FILE)" | awk '/^total:/ {gsub("%","",$$3); print $$3}'); \
 	echo "Total coverage: $$total% (required: >= $(COVERAGE_MIN)%)"; \
-	printf "%s\n" "$$total" > .artifacts/coverage-total.txt; \
+	printf "%s\n" "$$total" > "$(COVERAGE_TOTAL_FILE)"; \
 	awk "BEGIN { exit !($$total >= $(COVERAGE_MIN)) }" || (echo "Coverage gate failed: $$total% < $(COVERAGE_MIN)%"; exit 1)
 
 build:
-	mkdir -p "$(BIN_DIR)"
+	./scripts/managed-output.sh ensure "$(BIN_DIR)"
 	$(GO_CMD) build -trimpath -ldflags="-X main.version=$(VERSION)" -o "$(BIN_DIR)/$(BINARY_NAME)" "$(CMD_PATH)"
 
 ci: automation-check format-check lint security vuln suppressions test race cov build
@@ -71,28 +72,28 @@ automation-check:
 	./scripts/check-github-actions-pinning.sh
 	ruby scripts/check-github-actions-runners.rb
 	./scripts/check-automation-examples.sh
+	./scripts/check-managed-output.sh
 	ruby -e 'require "yaml"; ARGV.each { |path| YAML.load_file(path) }' .github/workflows/*.yml examples/lefthook.yml
 
 release:
 	@test -d "$(CMD_PATH)" || (echo "$(CMD_PATH) does not exist; release packaging requires the CLI entrypoint."; exit 1)
-	rm -rf "$(DIST_DIR)"
-	mkdir -p "$(DIST_DIR)"
+	./scripts/managed-output.sh reset "$(DIST_DIR)"
 	@set -e; for platform in $(PLATFORMS); do \
 		GOOS=$${platform%/*}; \
 		GOARCH=$${platform#*/}; \
 		name="$(BINARY_NAME)_$(VERSION)_$${GOOS}_$${GOARCH}"; \
 		output_dir="$(DIST_DIR)/$$name"; \
-		mkdir -p "$$output_dir"; \
+		./scripts/managed-output.sh reset "$$output_dir"; \
 		ext=""; \
 		if [ "$$GOOS" = "windows" ]; then ext=".exe"; fi; \
 		echo "Building $$name"; \
 		CGO_ENABLED=0 GOOS=$$GOOS GOARCH=$$GOARCH $(GO_CMD) build -trimpath -ldflags="-s -w -X main.version=$(VERSION)" -o "$$output_dir/$(BINARY_NAME)$$ext" "$(CMD_PATH)"; \
 		if [ "$$GOOS" = "windows" ]; then \
-			(cd "$(DIST_DIR)" && zip -qr "$$name.zip" "$$name"); \
+			(cd "$(DIST_DIR)" && zip -qr "$$name.zip" "$$name" -x "$$name/.wtgc-managed-output"); \
 		else \
-			tar -czf "$(DIST_DIR)/$$name.tar.gz" -C "$(DIST_DIR)" "$$name"; \
+			tar --exclude "$$name/.wtgc-managed-output" -czf "$(DIST_DIR)/$$name.tar.gz" -C "$(DIST_DIR)" "$$name"; \
 		fi; \
-		rm -rf "$$output_dir"; \
+		./scripts/managed-output.sh remove "$$output_dir"; \
 	done
 	./scripts/checksums.sh "$(DIST_DIR)"
 	./scripts/validate-release-artifacts.sh "$(DIST_DIR)"
@@ -101,7 +102,9 @@ release-check: automation-check
 	$(MAKE) release VERSION="$(VERSION)" PLATFORMS="$(PLATFORMS)"
 
 clean:
-	rm -rf "$(BIN_DIR)" "$(DIST_DIR)" .artifacts
+	./scripts/managed-output.sh remove "$(BIN_DIR)"
+	./scripts/managed-output.sh remove "$(DIST_DIR)"
+	./scripts/managed-output.sh remove ".artifacts"
 
 toolchain-check:
 	@command -v go >/dev/null 2>&1 || (echo "go not found in PATH"; exit 1)

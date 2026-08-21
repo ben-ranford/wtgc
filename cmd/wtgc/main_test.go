@@ -115,7 +115,7 @@ func TestGitCommandTimeoutFromEnv(t *testing.T) {
 		want      time.Duration
 		wantError string
 	}{
-		{name: "default", want: 30 * time.Second},
+		{name: "default disabled", want: 0},
 		{name: "explicit", value: "150ms", want: 150 * time.Millisecond},
 		{name: "invalid", value: "soon", wantError: "invalid duration"},
 		{name: "zero", value: "0s", wantError: "greater than zero"},
@@ -139,11 +139,32 @@ func TestGitCommandTimeoutFromEnv(t *testing.T) {
 	}
 }
 
+func TestStaticInfoRequest(t *testing.T) {
+	t.Parallel()
+	for _, test := range []struct {
+		name string
+		args []string
+		want bool
+	}{
+		{name: "help", args: []string{"--help"}, want: true},
+		{name: "clean help", args: []string{"clean", "--help"}, want: true},
+		{name: "version", args: []string{"--version"}, want: true},
+		{name: "normal command", args: []string{"clean"}},
+		{name: "invalid command", args: []string{"unknown"}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			if got := staticInfoRequest(test.args); got != test.want {
+				t.Fatalf("staticInfoRequest(%q) = %t, want %t", test.args, got, test.want)
+			}
+		})
+	}
+}
+
 func TestConfirmerDefaultsToNo(t *testing.T) {
 	t.Parallel()
 	var output bytes.Buffer
 	confirm := confirmer(strings.NewReader("\nyes\n"), &output, true)
-	worktree := model.Worktree{Path: "/tmp/wt", Branch: "feature"}
+	worktree := model.Worktree{Path: "/tmp/wt\n\x1b[2J", Branch: "feature"}
 	if confirm(worktree) {
 		t.Fatal("empty answer should not confirm")
 	}
@@ -152,6 +173,12 @@ func TestConfirmerDefaultsToNo(t *testing.T) {
 	}
 	if !strings.Contains(output.String(), "delete its local branch") {
 		t.Fatalf("prompt = %q", output.String())
+	}
+	if strings.Contains(output.String(), "\x1b") || strings.Contains(output.String(), "/tmp/wt\n") {
+		t.Fatalf("prompt contains raw terminal control characters: %q", output.String())
+	}
+	if !strings.Contains(output.String(), `/tmp/wt\n\x1b[2J`) {
+		t.Fatalf("prompt = %q, want escaped worktree path", output.String())
 	}
 }
 

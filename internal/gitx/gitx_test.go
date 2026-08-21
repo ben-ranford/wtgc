@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -44,8 +45,8 @@ func TestNewDefaultsToGitBinary(t *testing.T) {
 	if client.gitBinary != "git" {
 		t.Fatalf("gitBinary = %q, want git", client.gitBinary)
 	}
-	if client.commandTimeout <= 0 {
-		t.Fatalf("commandTimeout = %s, want positive default", client.commandTimeout)
+	if client.commandTimeout != 0 {
+		t.Fatalf("commandTimeout = %s, want disabled default", client.commandTimeout)
 	}
 }
 
@@ -359,6 +360,26 @@ func TestDiscoverFindsNestedRepositoriesInBuildAndDependencyDirs(t *testing.T) {
 	}
 	if findRepoByPath(repos, repo).PrimaryPath == "" {
 		t.Fatalf("did not discover nested repo under node_modules/vendor: %#v", repos)
+	}
+}
+
+func TestDiscoverFollowsSymlinkedScanRoot(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink creation requires privileges on some Windows environments")
+	}
+	realRoot := t.TempDir()
+	repo := initRepoWithCommit(t, realRoot)
+	link := filepath.Join(t.TempDir(), "projects-link")
+	if err := os.Symlink(realRoot, link); err != nil {
+		t.Fatalf("create scan-root symlink: %v", err)
+	}
+
+	repos, errs := New("git").Discover(context.Background(), []string{link})
+	if len(errs) > 0 {
+		t.Fatalf("Discover errors: %v", errs)
+	}
+	if len(repos) != 1 || findRepoByPath(repos, repo).PrimaryPath == "" {
+		t.Fatalf("Discover through symlink = %#v, want repository %q", repos, repo)
 	}
 }
 

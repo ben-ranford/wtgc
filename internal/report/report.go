@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"strconv"
 	"strings"
 	"text/tabwriter"
 
@@ -41,14 +42,14 @@ func writeHuman(w io.Writer, inv model.Inventory) error {
 			reason = strings.TrimSpace(reason + "; " + wt.Error)
 		}
 		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
-			wt.Path,
-			emptyDash(wt.Branch),
+			SafeHumanText(wt.Path),
+			SafeHumanText(emptyDash(wt.Branch)),
 			wt.Classification,
 			dirtyString(wt.Dirty),
 			action(wt),
 			ByteString(wt.DiskBytes),
 			ByteString(wt.ReclaimedBytes),
-			reason,
+			SafeHumanText(reason),
 		)
 	}
 	if err := tw.Flush(); err != nil {
@@ -58,7 +59,11 @@ func writeHuman(w io.Writer, inv model.Inventory) error {
 	s := inv.Summary
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, "Summary:")
-	fmt.Fprintf(w, "  roots: %s\n", strings.Join(inv.Roots, ", "))
+	safeRoots := make([]string, len(inv.Roots))
+	for i, root := range inv.Roots {
+		safeRoots[i] = SafeHumanText(root)
+	}
+	fmt.Fprintf(w, "  roots: %s\n", strings.Join(safeRoots, ", "))
 	fmt.Fprintf(w, "  dry run: %t\n", inv.DryRun)
 	fmt.Fprintf(w, "  repositories: %d\n", s.Repositories)
 	fmt.Fprintf(w, "  scanned: %d\n", s.Scanned)
@@ -73,11 +78,18 @@ func writeHuman(w io.Writer, inv model.Inventory) error {
 	if len(inv.Errors) > 0 {
 		fmt.Fprintln(w, "  errors:")
 		for _, errText := range inv.Errors {
-			fmt.Fprintf(w, "    - %s\n", errText)
+			fmt.Fprintf(w, "    - %s\n", SafeHumanText(errText))
 		}
 	}
 
 	return nil
+}
+
+// SafeHumanText escapes control characters before untrusted text is displayed
+// in a terminal or human-readable log.
+func SafeHumanText(value string) string {
+	quoted := strconv.QuoteToGraphic(value)
+	return quoted[1 : len(quoted)-1]
 }
 
 func action(worktree model.Worktree) string {

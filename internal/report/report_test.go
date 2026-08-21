@@ -101,6 +101,32 @@ func TestWriteHumanEmitsReadableTableAndSummary(t *testing.T) {
 	}
 }
 
+func TestWriteHumanEscapesTerminalControlCharacters(t *testing.T) {
+	t.Parallel()
+	inv := testInventory()
+	inv.Roots = []string{"/tmp/root\nspoof"}
+	inv.Worktrees[0].Path = "/tmp/wt\tcolumn\x1b[2J"
+	inv.Worktrees[0].Branch = "feature\rspoof"
+	inv.Worktrees[0].Reason = "safe\nFAKE ROW"
+	inv.Errors = []string{"git error\x1b]0;spoof\a"}
+
+	var b bytes.Buffer
+	if err := Write(&b, inv, FormatHuman); err != nil {
+		t.Fatalf("Write(Human) error = %v", err)
+	}
+	out := b.String()
+	for _, forbidden := range []string{"\x1b", "\r", "\a", "safe\nFAKE ROW", "root\nspoof"} {
+		if strings.Contains(out, forbidden) {
+			t.Fatalf("human output contains raw control sequence %q:\n%s", forbidden, out)
+		}
+	}
+	for _, want := range []string{`\t`, `\x1b`, `\r`, `safe\nFAKE ROW`, `root\nspoof`, `\a`} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("human output missing escaped text %q:\n%s", want, out)
+		}
+	}
+}
+
 func TestWriteRejectsUnknownFormat(t *testing.T) {
 	if err := Write(&bytes.Buffer{}, testInventory(), Format("yaml")); err == nil {
 		t.Fatal("Write(unknown) error = nil, want error")

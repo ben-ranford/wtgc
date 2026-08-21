@@ -27,7 +27,7 @@ type Client struct {
 
 // New returns a Git client. Empty gitBinary defaults to "git".
 func New(gitBinary string) *Client {
-	return NewWithTimeout(gitBinary, 30*time.Second)
+	return NewWithTimeout(gitBinary, 0)
 }
 
 // NewWithTimeout returns a Git client with a per-command deadline. A non-positive
@@ -68,7 +68,12 @@ func (c *Client) Discover(ctx context.Context, roots []string) ([]model.Reposito
 			errs = append(errs, fmt.Errorf("root %q is not a directory", absRoot))
 			continue
 		}
-		err = filepath.WalkDir(absRoot, func(path string, d fs.DirEntry, walkErr error) error {
+		resolvedRoot, err := filepath.EvalSymlinks(absRoot)
+		if err != nil {
+			errs = append(errs, fmt.Errorf("resolve root symlinks %q: %w", absRoot, err))
+			continue
+		}
+		err = filepath.WalkDir(resolvedRoot, func(path string, d fs.DirEntry, walkErr error) error {
 			if walkErr != nil {
 				errs = append(errs, fmt.Errorf("walk %q: %w", path, walkErr))
 				if d != nil && d.IsDir() {
@@ -92,7 +97,7 @@ func (c *Client) Discover(ctx context.Context, roots []string) ([]model.Reposito
 			return nil
 		})
 		if err != nil {
-			errs = append(errs, fmt.Errorf("walk root %q: %w", absRoot, err))
+			errs = append(errs, fmt.Errorf("walk root %q: %w", resolvedRoot, err))
 		}
 	}
 
@@ -429,10 +434,14 @@ func (c *Client) run(ctx context.Context, dir string, args ...string) ([]byte, e
 
 	cmd := exec.CommandContext(commandCtx, c.gitBinary, args...)
 	cmd.Dir = dir
+	configureCommand(cmd)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		if commandCtx.Err() != nil {
-			return nil, fmt.Errorf("%s %s in %q timed out after %s: %w: %s", c.gitBinary, strings.Join(args, " "), dir, c.commandTimeout, commandCtx.Err(), strings.TrimSpace(string(out)))
+			if errors.Is(commandCtx.Err(), context.DeadlineExceeded) && c.commandTimeout > 0 {
+				return nil, fmt.Errorf("%s %s in %q timed out after %s: %w: %s", c.gitBinary, strings.Join(args, " "), dir, c.commandTimeout, commandCtx.Err(), strings.TrimSpace(string(out)))
+			}
+			return nil, fmt.Errorf("%s %s in %q canceled: %w: %s", c.gitBinary, strings.Join(args, " "), dir, commandCtx.Err(), strings.TrimSpace(string(out)))
 		}
 		return nil, fmt.Errorf("%s %s in %q failed: %w: %s", c.gitBinary, strings.Join(args, " "), dir, err, strings.TrimSpace(string(out)))
 	}
