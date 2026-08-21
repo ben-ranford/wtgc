@@ -310,6 +310,8 @@ func (a *App) cleanRepository(ctx context.Context, repo model.Repository, opts O
 			continue
 		}
 		if err := a.git.Remove(ctx, repo, fresh.Path); err != nil {
+			item.Classification = model.Error
+			item.Reason = "remove failed; worktree kept"
 			item.Error = err.Error()
 			item.Action = model.ActionKept
 			inv.Errors = append(inv.Errors, fmt.Sprintf("%s: remove %s: %v", repo.PrimaryPath, fresh.Path, err))

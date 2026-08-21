@@ -1,4 +1,4 @@
-.PHONY: format fmt format-check lint security vuln suppressions test race cov build ci release release-check automation-check clean toolchain-check tools-install setup hooks-install hooks-uninstall
+.PHONY: format fmt format-check lint security vuln suppressions test perf-check race cov build ci release release-check automation-check clean toolchain-check tools-install setup hooks-install hooks-uninstall
 
 PACKAGE_PATTERN ?= ./...
 BINARY_NAME ?= wtgc
@@ -6,11 +6,14 @@ CMD_PATH ?= ./cmd/wtgc
 BIN_DIR ?= bin
 DIST_DIR ?= dist
 VERSION ?= dev
+COMMIT ?= $(shell git rev-parse HEAD 2>/dev/null || echo unknown)
+BUILD_DATE ?= $(shell git show -s --format=%cI HEAD 2>/dev/null || date -u '+%Y-%m-%dT%H:%M:%SZ')
+SOURCE_DATE_EPOCH ?= $(shell git show -s --format=%ct HEAD 2>/dev/null || date -u '+%s')
 COVERAGE_FILE ?= .artifacts/coverage.out
 COVERAGE_TOTAL_FILE ?= $(dir $(COVERAGE_FILE))coverage-total.txt
 COVERAGE_MIN ?= 85
 GO ?= go
-GO_TOOLCHAIN ?= go1.26.1
+GO_TOOLCHAIN ?= go1.26.5
 GO_CMD := GOTOOLCHAIN=$(GO_TOOLCHAIN) $(GO)
 GOLANGCI_LINT_VERSION ?= v2.9.0
 GOSEC_VERSION ?= v2.22.11
@@ -19,6 +22,8 @@ GOVULNCHECK_VERSION ?= v1.7.0
 HOST_GOOS := $(shell $(GO_CMD) env GOOS)
 HOST_GOARCH := $(shell $(GO_CMD) env GOARCH)
 PLATFORMS ?= $(HOST_GOOS)/$(HOST_GOARCH)
+LD_FLAGS := -X main.version=$(VERSION) -X main.commit=$(COMMIT) -X main.date=$(BUILD_DATE)
+RELEASE_LD_FLAGS := -s -w -buildid= $(LD_FLAGS)
 
 format:
 	gofmt -w .
@@ -48,6 +53,9 @@ suppressions:
 test:
 	$(GO_CMD) test $(PACKAGE_PATTERN)
 
+perf-check:
+	$(GO_CMD) test ./internal/app -run '^$$' -bench '^BenchmarkRunClassifies350Worktrees$$' -benchtime=1x -timeout=30s
+
 race:
 	$(GO_CMD) test -race $(PACKAGE_PATTERN)
 
@@ -62,9 +70,9 @@ cov:
 
 build:
 	./scripts/managed-output.sh ensure "$(BIN_DIR)"
-	$(GO_CMD) build -trimpath -ldflags="-X main.version=$(VERSION)" -o "$(BIN_DIR)/$(BINARY_NAME)" "$(CMD_PATH)"
+	$(GO_CMD) build -trimpath -buildvcs=false -ldflags="$(LD_FLAGS)" -o "$(BIN_DIR)/$(BINARY_NAME)" "$(CMD_PATH)"
 
-ci: automation-check format-check lint security vuln suppressions test race cov build
+ci: automation-check format-check lint security vuln suppressions test perf-check race cov build
 
 automation-check:
 	@set -e; for script in scripts/*.sh .githooks/pre-commit examples/hooks/*; do sh -n "$$script"; done
@@ -72,8 +80,10 @@ automation-check:
 	./scripts/check-github-actions-pinning.sh
 	ruby scripts/check-github-actions-runners.rb
 	./scripts/check-automation-examples.sh
+	sh ./scripts/check-release-automation.sh
 	./scripts/check-managed-output.sh
 	ruby -e 'require "yaml"; ARGV.each { |path| YAML.load_file(path) }' .github/workflows/*.yml examples/lefthook.yml
+	ruby -rjson -e 'ARGV.each { |path| JSON.parse(File.read(path)) }' release-please-config.json .release-please-manifest.json
 
 release:
 	@test -d "$(CMD_PATH)" || (echo "$(CMD_PATH) does not exist; release packaging requires the CLI entrypoint."; exit 1)
@@ -87,12 +97,12 @@ release:
 		ext=""; \
 		if [ "$$GOOS" = "windows" ]; then ext=".exe"; fi; \
 		echo "Building $$name"; \
-		CGO_ENABLED=0 GOOS=$$GOOS GOARCH=$$GOARCH $(GO_CMD) build -trimpath -ldflags="-s -w -X main.version=$(VERSION)" -o "$$output_dir/$(BINARY_NAME)$$ext" "$(CMD_PATH)"; \
-		if [ "$$GOOS" = "windows" ]; then \
-			(cd "$(DIST_DIR)" && zip -qr "$$name.zip" "$$name" -x "$$name/.wtgc-managed-output"); \
-		else \
-			tar --exclude "$$name/.wtgc-managed-output" -czf "$(DIST_DIR)/$$name.tar.gz" -C "$(DIST_DIR)" "$$name"; \
-		fi; \
+		CGO_ENABLED=0 GOOS=$$GOOS GOARCH=$$GOARCH $(GO_CMD) build -trimpath -buildvcs=false -ldflags="$(RELEASE_LD_FLAGS)" -o "$$output_dir/$(BINARY_NAME)$$ext" "$(CMD_PATH)"; \
+		cp LICENSE "$$output_dir/LICENSE"; \
+		cp README.md "$$output_dir/README.md"; \
+		archive_ext=".tar.gz"; \
+		if [ "$$GOOS" = "windows" ]; then archive_ext=".zip"; fi; \
+		$(GO_CMD) run ./tools/releasepack --epoch "$(SOURCE_DATE_EPOCH)" "$$output_dir" "$(DIST_DIR)/$$name$$archive_ext"; \
 		./scripts/managed-output.sh remove "$$output_dir"; \
 	done
 	./scripts/checksums.sh "$(DIST_DIR)"
@@ -113,14 +123,17 @@ toolchain-check:
 	major="$${version%%.*}"; \
 	rest="$${version#*.}"; \
 	minor="$${rest%%.*}"; \
+	patch="$${rest#*.}"; \
 	major="$${major%%[^0-9]*}"; \
 	minor="$${minor%%[^0-9]*}"; \
-	if [ -z "$$major" ] || [ -z "$$minor" ]; then \
+	patch="$${patch%%[^0-9]*}"; \
+	if [ "$$patch" = "$$rest" ]; then patch=0; fi; \
+	if [ -z "$$major" ] || [ -z "$$minor" ] || [ -z "$$patch" ]; then \
 		echo "Unable to parse Go version: $$version"; \
 		exit 1; \
 	fi; \
-	if [ "$$major" -lt 1 ] || { [ "$$major" -eq 1 ] && [ "$$minor" -lt 26 ]; }; then \
-		echo "Go 1.26.x or newer is required (found $$version)."; \
+	if [ "$$major" -lt 1 ] || { [ "$$major" -eq 1 ] && { [ "$$minor" -lt 26 ] || { [ "$$minor" -eq 26 ] && [ "$$patch" -lt 5 ]; }; }; }; then \
+		echo "Go 1.26.5 or newer is required (found $$version)."; \
 		exit 1; \
 	fi
 

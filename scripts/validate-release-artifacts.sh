@@ -14,16 +14,16 @@ if [ ! -f "$checksum_file" ]; then
   exit 1
 fi
 
-archive_list="$(mktemp)"
+asset_list="$(mktemp)"
 checksum_paths="$(mktemp)"
-trap 'rm -f "$archive_list" "$checksum_paths"' EXIT INT TERM
+trap 'rm -f "$asset_list" "$checksum_paths"' EXIT INT TERM
 
-find "$dist_dir" -type f \( -name '*.tar.gz' -o -name '*.zip' \) | sort | while IFS= read -r file; do
+find "$dist_dir" -type f \( -name '*.tar.gz' -o -name '*.zip' -o -name '*.spdx.json' \) | sort | while IFS= read -r file; do
   printf '%s\n' "${file#"$dist_dir"/}"
-done > "$archive_list"
+done > "$asset_list"
 
-if [ ! -s "$archive_list" ]; then
-  echo "no release archives found in $dist_dir" >&2
+if [ ! -s "$asset_list" ]; then
+  echo "no release assets found in $dist_dir" >&2
   exit 1
 fi
 
@@ -32,14 +32,14 @@ awk 'NF >= 2 { print $2 }' "$checksum_file" | sort > "$checksum_paths"
 while IFS= read -r rel; do
   count="$(awk -v path="$rel" '$0 == path { count++ } END { print count + 0 }' "$checksum_paths")"
   if [ "$count" -ne 1 ]; then
-    echo "archive $rel has $count checksum entries; expected exactly 1" >&2
+    echo "release asset $rel has $count checksum entries; expected exactly 1" >&2
     exit 1
   fi
-done < "$archive_list"
+done < "$asset_list"
 
 while IFS= read -r rel; do
-  if ! grep -Fx "$rel" "$archive_list" >/dev/null 2>&1; then
-    echo "checksum entry does not match a release archive: $rel" >&2
+  if ! grep -Fx "$rel" "$asset_list" >/dev/null 2>&1; then
+    echo "checksum entry does not match a release asset: $rel" >&2
     exit 1
   fi
 done < "$checksum_paths"
@@ -47,7 +47,7 @@ done < "$checksum_paths"
 while read -r expected rel; do
   file="$dist_dir/$rel"
   if [ ! -f "$file" ]; then
-    echo "checksummed archive not found: $rel" >&2
+    echo "checksummed release asset not found: $rel" >&2
     exit 1
   fi
   if command -v sha256sum >/dev/null 2>&1; then
@@ -61,4 +61,4 @@ while read -r expected rel; do
   fi
 done < "$checksum_file"
 
-echo "Validated release archives in $dist_dir"
+echo "Validated release assets in $dist_dir"

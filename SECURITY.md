@@ -7,8 +7,12 @@ tagged releases begin, supported versions will be listed here.
 
 ## Reporting a Vulnerability
 
-Open a private security advisory on GitHub or contact the repository owner
-directly.
+Use [GitHub private vulnerability reporting](https://github.com/ben-ranford/wtgc/security/advisories/new)
+from the repository Security tab.
+
+If the Security tab is unavailable, contact the repository owner through their
+GitHub profile and avoid filing public issues for suspected data-loss,
+credential, or command-execution vulnerabilities.
 
 Please include:
 

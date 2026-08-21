@@ -427,6 +427,15 @@ func TestRemoveErrorSkipsBranchDeletion(t *testing.T) {
 	if inventory.Worktrees[0].Removed {
 		t.Fatal("worktree marked removed after remove failed")
 	}
+	if got := inventory.Worktrees[0].Classification; got != model.Error {
+		t.Fatalf("classification = %q, want %q", got, model.Error)
+	}
+	if got := inventory.Worktrees[0].Action; got != model.ActionKept {
+		t.Fatalf("action = %q, want %q", got, model.ActionKept)
+	}
+	if inventory.Summary.Safe != 0 || inventory.Summary.Skipped != 1 || inventory.Summary.Removed != 0 {
+		t.Fatalf("summary = %+v, want failed removal counted as one skipped item and no safe/removal total", inventory.Summary)
+	}
 	if backend.deleteCalls != 0 {
 		t.Fatal("branch delete ran after remove failed")
 	}
@@ -530,6 +539,25 @@ func TestGlobalClassificationPoolScansManyRepositories(t *testing.T) {
 	}
 }
 
+func BenchmarkRunClassifies350Worktrees(b *testing.B) {
+	const repoCount = 10
+	const recordsPerRepo = 35
+	backend := newLargeFakeGit(repoCount, recordsPerRepo)
+	application := New(backend)
+
+	b.ReportAllocs()
+	for b.Loop() {
+		backend.resetCounters()
+		inventory, err := application.Run(context.Background(), Options{Roots: []string{"/scan"}})
+		if err != nil {
+			b.Fatalf("Run() error = %v", err)
+		}
+		if len(inventory.Worktrees) != repoCount*recordsPerRepo {
+			b.Fatalf("worktrees = %d, want %d", len(inventory.Worktrees), repoCount*recordsPerRepo)
+		}
+	}
+}
+
 type fakeGit struct {
 	mu               sync.Mutex
 	repository       model.Repository
@@ -565,6 +593,43 @@ func newFakeGit(records ...model.RegisteredWorktree) *fakeGit {
 		repositories: []model.Repository{{CommonDir: "/repo/.git", PrimaryPath: "/repo"}},
 		records:      records,
 	}
+}
+
+func newLargeFakeGit(repoCount, recordsPerRepo int) *fakeGit {
+	backend := newFakeGit()
+	backend.repositories = nil
+	backend.recordsByRepo = make(map[string][]model.RegisteredWorktree)
+	backend.cleanByPath = make(map[string]bool)
+	backend.ancestor = true
+	backend.remote = true
+	for repoIndex := 0; repoIndex < repoCount; repoIndex++ {
+		repo := model.Repository{
+			CommonDir:   fmt.Sprintf("/repo-%02d/.git", repoIndex),
+			PrimaryPath: fmt.Sprintf("/repo-%02d", repoIndex),
+		}
+		backend.repositories = append(backend.repositories, repo)
+		for recordIndex := 0; recordIndex < recordsPerRepo; recordIndex++ {
+			path := fmt.Sprintf("/repo-%02d-worktrees/feature-%02d", repoIndex, recordIndex)
+			backend.recordsByRepo[repo.PrimaryPath] = append(backend.recordsByRepo[repo.PrimaryPath], model.RegisteredWorktree{
+				Path:   path,
+				Head:   fmt.Sprintf("head-%02d-%02d", repoIndex, recordIndex),
+				Branch: fmt.Sprintf("feature-%02d", recordIndex),
+			})
+			backend.cleanByPath[path] = true
+		}
+	}
+	return backend
+}
+
+func (f *fakeGit) resetCounters() {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.cleanCalls = 0
+	f.activeCleanCalls = 0
+	f.maxCleanCalls = 0
+	f.removeCalls = 0
+	f.pruneCalls = 0
+	f.deleteCalls = 0
 }
 
 func (f *fakeGit) Discover(context.Context, []string) ([]model.Repository, []error) {

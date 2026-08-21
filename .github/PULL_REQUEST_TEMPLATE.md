@@ -9,6 +9,7 @@ What user-visible problem or engineering risk does this address?
 ## Validation
 
 - [ ] `make ci`
+- [ ] Release packaging touched and `make release-check VERSION=ci-check PLATFORMS="linux/amd64"` was run.
 
 ## Compatibility And Safety
 

@@ -14,16 +14,20 @@
 - `make race`
 - `make cov`
 - `make build`
+- `make perf-check`
 
 GitHub Actions jobs run on the `wtgc-arc` self-hosted scale set. Each job
 bootstraps only the missing Debian packages it needs; production runner images
 should preinstall those tools to avoid package installation on every cold start.
+When the repository is made public, the runner policy is expected to move to
+GitHub-hosted Linux, macOS, and Windows runners so native OS verification can
+replace the current private ARC-only workflow.
 
 Tool versions are pinned in `Makefile`:
 
 - `golangci-lint`: `v2.9.0`
 - `gosec`: `v2.22.11`
-- Go toolchain target: `go1.26.1`
+- Go toolchain target: `go1.26.5`
 - Coverage floor: `COVERAGE_MIN`; safety and failure-path tests keep it enforced.
 - `GOSEC_FLAGS`: currently excludes `G204` because wtgc intentionally shells
   out to Git through argument-vector subprocess calls. Source changes to the
@@ -35,7 +39,7 @@ Tool versions are pinned in `Makefile`:
   workflow and Lefthook YAML parsing. Ruby is a required development tool so
   this validation cannot be silently skipped.
 - `make release-check`: runs `automation-check`, builds a local release, writes
-  checksums, and verifies one checksum entry per archive.
+  checksums, and verifies one checksum entry per release asset.
 
 ## Pre-Commit Hook
 
@@ -97,16 +101,20 @@ and error paths before loading the job; launchd does not create it.
 
 ## GitHub Actions
 
-`.github/workflows/ci.yml` runs pull-request and default-branch checks across:
+`.github/workflows/ci.yml` runs pull-request and default-branch checks on the
+private `wtgc-arc` scale set. It mirrors `make ci`, then runs a Linux release
+packaging smoke check through `make release-check`.
 
-- macOS
-- Linux
-- Windows
+`.github/workflows/release-please.yml` runs on default-branch pushes. It opens
+or updates Release Please PRs and, when a release is created, calls the reusable
+release workflow with the tag produced by Release Please.
 
-`.github/workflows/release.yml` builds tagged release artifacts and publishes
-checksums. Release packaging requires `./cmd/wtgc`. Release jobs pin all
-remaining GitHub actions to full upstream commit SHAs with version comments,
-flatten downloaded artifacts into one release directory, regenerate one
-`checksums.txt`, validate it, and publish with `gh release create` using the
-workflow `GH_TOKEN`. Rerunning an existing tag uploads the verified assets with
-`gh release upload --clobber`, so a partially completed publish can recover.
+`.github/workflows/release.yml` is the reusable and manual release workflow. It
+builds the same Linux, macOS, and Windows artifact matrix as the release path,
+generates an SPDX JSON SBOM for the release asset set, rebuilds
+`checksums.txt`, validates every release asset, and uploads assets with
+`gh release upload` or creates the release if it has not been published yet.
+Release packaging requires `./cmd/wtgc`. Artifact attestations are skipped while
+the repository is private unless `ENABLE_PRIVATE_ATTESTATIONS=true` is
+configured, because GitHub only enables private attestations on plans that
+support them.

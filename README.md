@@ -12,11 +12,30 @@ remote ref. Dirty, locked, primary, detached, or ambiguous worktrees stay kept.
 
 The v1 CLI is implemented as a single, dependency-free Go binary. It is safe by
 default: every invocation is a dry-run unless `--yes` or `--interactive` is
-provided. V1 has no application UI or TUI. If a future UI/TUI is approved, it
-must use `github.com/ben-ranford/stave`; Stave is not included in v1 because
-the current product is CLI-only and standard-library-only.
+provided. V1 has no application UI or TUI.
+
+Release artifacts target Linux, macOS, and Windows on amd64 and arm64. CI
+currently cross-compiles those targets from the private `wtgc-arc` Linux runner
+scale set; native hosted-runner verification is planned for the public cutover.
 
 ## Install
+
+Download a release binary and verify its checksum:
+
+```bash
+WTGC_VERSION=v1.0.0
+WTGC_OS=darwin
+WTGC_ARCH=arm64
+curl -LO "https://github.com/ben-ranford/wtgc/releases/download/${WTGC_VERSION}/wtgc_${WTGC_VERSION}_${WTGC_OS}_${WTGC_ARCH}.tar.gz"
+curl -LO "https://github.com/ben-ranford/wtgc/releases/download/${WTGC_VERSION}/checksums.txt"
+shasum -a 256 -c checksums.txt --ignore-missing
+tar -xzf "wtgc_${WTGC_VERSION}_${WTGC_OS}_${WTGC_ARCH}.tar.gz"
+install "wtgc_${WTGC_VERSION}_${WTGC_OS}_${WTGC_ARCH}/wtgc" /usr/local/bin/wtgc
+```
+
+Windows artifacts are `.zip` archives and contain `wtgc.exe`.
+
+Install from source:
 
 ```bash
 go install github.com/ben-ranford/wtgc/cmd/wtgc@latest
@@ -35,6 +54,20 @@ Preview cleanup across a projects directory:
 
 ```bash
 wtgc clean --scan-root "$HOME/Projects"
+```
+
+The preview names every decision and leaves the filesystem unchanged:
+
+```text
+PATH                                  BRANCH       CLASSIFICATION  DIRTY  ACTION        SIZE     RECLAIMED  REASON
+/Users/me/Projects/app-worktrees/123  feature/123  safe_to_remove  clean  would_remove  1.8 GiB  0 B        clean branch tip is reachable from both the default branch and a remote-tracking ref
+
+Summary:
+  dry run: true
+  safe: 1
+  removed: 0
+  potential reclaimable: 1.8 GiB
+  reclaimed: 0 B
 ```
 
 Remove every worktree classified `safe_to_remove`:
@@ -62,6 +95,15 @@ Git commands inherit cancellation from `SIGINT`/`SIGTERM` and have no arbitrary
 deadline by default. For unattended environments, set an explicit backstop such
 as `WTGC_GIT_TIMEOUT=2m`.
 
+## Requirements
+
+- Git `2.36+` is the documented runtime floor. wtgc depends on modern
+  `git worktree list --porcelain -z`, `git worktree remove`, and
+  `git worktree prune` behavior.
+- A local remote `HEAD` symbolic ref must be configured, for example
+  `origin/HEAD -> origin/main`.
+- Source builds and development require Go `1.26.5` or newer.
+
 ## Safety Model
 
 Version 1 cleanup eligibility is intentionally narrow:
@@ -71,6 +113,9 @@ Version 1 cleanup eligibility is intentionally narrow:
   unambiguous local remote `HEAD` symbolic ref.
 - Remote reachability must also prove the worktree head is present on a
   reachable remote ref.
+- Squash merges can remain classified as `unmerged` because the original branch
+  tip is not reachable from the default branch. GitHub/GitLab PR-state checks
+  are intentionally deferred to a follow-up release.
 - Dirty, locked, primary, detached, or unreadable worktrees are not removed.
 - Stale Git administrative records can be reported as `stale_orphaned`, but
   removal remains explicit and auditable.
@@ -93,7 +138,7 @@ inspected, and the summary includes potential and actual reclaimed byte totals.
 
 Requirements:
 
-- Go `1.26.x` or newer
+- Go `1.26.5` or newer
 - POSIX shell for local hooks and release packaging
 - Ruby with its standard YAML library for automation configuration validation
 
@@ -127,20 +172,25 @@ environment variables.
 
 ## Release
 
-Tag releases build cross-platform artifacts in GitHub Actions and publish
-checksums. Release publishing uses the GitHub CLI and the workflow
-`GH_TOKEN`; third-party release write actions are not used. Local release
-packaging uses the same static binary entrypoint and validates that every
-archive has exactly one checksum entry:
+Release Please manages release PRs from Conventional Commits. After a release PR
+is merged to `main`, the Release Please workflow tags the release, calls the
+reusable release workflow, creates cross-platform archives, generates an SPDX
+SBOM, rebuilds checksums, and uploads release assets through GitHub Actions.
+
+Local packaging uses the same static binary entrypoint and validates that every
+release asset has exactly one checksum entry:
 
 ```bash
-make release VERSION=v0.1.0 PLATFORMS="darwin/arm64 linux/amd64 windows/amd64"
+make release VERSION=v1.0.0 PLATFORMS="darwin/arm64 linux/amd64 windows/amd64"
 ```
 
 ## Docs
 
-- Architecture: `docs/architecture.md`
-- Safety contract: `docs/safety.md`
-- CI and hooks: `docs/ci-usage.md`
-- JSON schema: `docs/inventory-schema.md`
-- Contribution guide: `CONTRIBUTING.md`
+- [Architecture](docs/architecture.md)
+- [Safety contract](docs/safety.md)
+- [CI and hooks](docs/ci-usage.md)
+- [JSON schema](docs/inventory-schema.md)
+- [Contribution guide](CONTRIBUTING.md)
+- [Support](SUPPORT.md)
+- [Security policy](SECURITY.md)
+- [Code of Conduct](CODE_OF_CONDUCT.md)

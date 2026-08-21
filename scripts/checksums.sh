@@ -13,10 +13,10 @@ tmp_file="$(mktemp)"
 file_list="$tmp_file.files"
 trap 'rm -f "$tmp_file" "$file_list"' EXIT INT TERM
 
-find "$dist_dir" -type f \( -name '*.tar.gz' -o -name '*.zip' \) | sort > "$file_list"
+find "$dist_dir" -type f \( -name '*.tar.gz' -o -name '*.zip' -o -name '*.spdx.json' \) | sort > "$file_list"
 
 if [ ! -s "$file_list" ]; then
-  echo "no release archives found in $dist_dir" >&2
+  echo "no release assets found in $dist_dir" >&2
   exit 1
 fi
 

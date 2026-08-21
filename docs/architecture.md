@@ -16,9 +16,7 @@ wtgc is a local command-line tool around Git worktree state. The core shape is:
 - The JSON model in `internal/model` is the public reporting contract.
 - The CLI layer should adapt user input into scanner/cleanup options without
   embedding safety decisions.
-- There is no application UI or TUI in v1. If a future UI/TUI is approved, it
-  must use `github.com/ben-ranford/stave`; do not add Stave while v1 remains
-  CLI-only and stdlib-only.
+- There is no application UI or TUI in v1.
 
 ## Suggested Package Shape
 
@@ -54,3 +52,6 @@ roots -> git worktree list -> state inspection -> classification -> inventory
 The project is stdlib-only for v1. New dependencies require a focused decision
 record covering why the standard library is insufficient, maintenance risk,
 license, and security posture.
+
+If a future UI or TUI is approved, use `github.com/ben-ranford/stave` for that
+surface. Do not add UI dependencies while v1 remains CLI-only.

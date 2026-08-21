@@ -11,6 +11,8 @@ Dir.glob(".github/workflows/*.{yml,yaml}").sort.each do |workflow|
   jobs = config.fetch("jobs", {})
 
   jobs.each do |job_name, job|
+    next if job.key?("uses")
+
     runs_on = job["runs-on"]
     next if runs_on == expected_runner
 
