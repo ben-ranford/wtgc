@@ -67,9 +67,10 @@ ci: automation-check format-check lint security vuln suppressions test race cov 
 
 automation-check:
 	@set -e; for script in scripts/*.sh .githooks/pre-commit examples/hooks/*; do sh -n "$$script"; done
-	./scripts/check-github-actions-pinning.sh
-	./scripts/check-automation-examples.sh
 	@command -v ruby >/dev/null 2>&1 || (echo "ruby is required to validate workflow YAML"; exit 1)
+	./scripts/check-github-actions-pinning.sh
+	ruby scripts/check-github-actions-runners.rb
+	./scripts/check-automation-examples.sh
 	ruby -e 'require "yaml"; ARGV.each { |path| YAML.load_file(path) }' .github/workflows/*.yml examples/lefthook.yml
 
 release:
