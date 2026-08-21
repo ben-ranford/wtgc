@@ -7,6 +7,7 @@ import (
 	"io"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/ben-ranford/wtgc/internal/model"
 )
@@ -103,6 +104,38 @@ func TestRunReturnsOneWhenReportWriteFails(t *testing.T) {
 	}
 	if !strings.Contains(stderr.String(), "write report: write failed") {
 		t.Fatalf("stderr = %q, want report write error", stderr.String())
+	}
+}
+
+func TestGitCommandTimeoutFromEnv(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name      string
+		value     string
+		want      time.Duration
+		wantError string
+	}{
+		{name: "default", want: 30 * time.Second},
+		{name: "explicit", value: "150ms", want: 150 * time.Millisecond},
+		{name: "invalid", value: "soon", wantError: "invalid duration"},
+		{name: "zero", value: "0s", wantError: "greater than zero"},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			got, err := gitCommandTimeoutFromEnv(test.value)
+			if test.wantError != "" {
+				if err == nil || !strings.Contains(err.Error(), test.wantError) {
+					t.Fatalf("error = %v, want substring %q", err, test.wantError)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("gitCommandTimeoutFromEnv error = %v", err)
+			}
+			if got != test.want {
+				t.Fatalf("timeout = %s, want %s", got, test.want)
+			}
+		})
 	}
 }
 

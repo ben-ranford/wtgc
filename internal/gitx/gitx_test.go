@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/ben-ranford/wtgc/internal/model"
 )
@@ -42,6 +43,22 @@ func TestNewDefaultsToGitBinary(t *testing.T) {
 	client := New("")
 	if client.gitBinary != "git" {
 		t.Fatalf("gitBinary = %q, want git", client.gitBinary)
+	}
+	if client.commandTimeout <= 0 {
+		t.Fatalf("commandTimeout = %s, want positive default", client.commandTimeout)
+	}
+}
+
+func TestRunTimesOutHungGitCommand(t *testing.T) {
+	t.Parallel()
+	client := NewWithTimeout(hangingGitBinary(t), 25*time.Millisecond)
+
+	_, err := client.List(context.Background(), model.Repository{PrimaryPath: t.TempDir(), CommonDir: "/repo/.git"})
+	if err == nil {
+		t.Fatal("List error = nil, want timeout")
+	}
+	if !strings.Contains(err.Error(), "timed out after") || !strings.Contains(err.Error(), "context deadline exceeded") {
+		t.Fatalf("error = %q, want timeout evidence", err.Error())
 	}
 }
 
@@ -564,6 +581,18 @@ func fakeGitBinary(t *testing.T, outputs map[string]string) string {
 		"\n"
 	if err := os.WriteFile(script, []byte(content), 0o755); err != nil {
 		t.Fatalf("write fake git: %v", err)
+	}
+	return script
+}
+
+func hangingGitBinary(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	script := filepath.Join(dir, "git")
+	content := "#!/bin/sh\n" +
+		"sleep 60\n"
+	if err := os.WriteFile(script, []byte(content), 0o755); err != nil {
+		t.Fatalf("write hanging git: %v", err)
 	}
 	return script
 }

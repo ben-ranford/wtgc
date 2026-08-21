@@ -446,6 +446,95 @@ func TestCleanHandlesPathsWithSpacesAcrossScanRemoveAndDelete(t *testing.T) {
 	}
 }
 
+func TestCleanTreatsShellMetacharactersAndUnicodeAsData(t *testing.T) {
+	repo := newRepository(t)
+	branch := "feature/inject-;echo-PWNED-\u4e2d"
+	marker := filepath.Join(repo.Root, "PWNED")
+	worktree := repo.CreateMergedWorktreeAt(t, branch, filepath.Join(repo.Worktrees, "$(touch PWNED)-\u4e2d"))
+
+	inv := runWTGC(t, repo.Root, "clean", "--yes", "--delete-branch", "--json", "--scan-root", repo.Root)
+
+	if _, err := os.Stat(marker); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("shell metacharacter marker exists or stat failed unexpectedly: %v", err)
+	}
+	if _, err := os.Stat(worktree); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("metacharacter worktree exists after cleanup or stat failed unexpectedly: %v", err)
+	}
+	item := requireWorktree(t, inv, worktree)
+	if !item.Removed {
+		t.Fatal("Removed = false for metacharacter worktree, want true")
+	}
+	if !item.BranchDeleted {
+		t.Fatal("BranchDeleted = false for unicode branch, want true")
+	}
+	if repo.BranchExists(t, branch) {
+		t.Fatal("unicode branch still exists after --delete-branch cleanup")
+	}
+}
+
+func TestCleanInteractiveNoKeepsSafeWorktree(t *testing.T) {
+	repo := newRepository(t)
+	worktree := repo.CreateMergedWorktree(t, "feature/interactive-no")
+
+	cmd := exec.Command(wtgcBinary(t), "clean", "--interactive", "--json", "--scan-root", repo.Root)
+	cmd.Dir = repo.Root
+	cmd.Stdin = strings.NewReader("n\n")
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("wtgc interactive failed: %v\nstderr:\n%s\nstdout:\n%s", err, stderr.String(), string(out))
+	}
+	if !strings.Contains(stderr.String(), "? [y/N]") {
+		t.Fatalf("stderr = %q, want confirmation prompt", stderr.String())
+	}
+
+	var inv model.Inventory
+	if err := json.Unmarshal(out, &inv); err != nil {
+		t.Fatalf("json.Unmarshal CLI output failed: %v\nstdout:\n%s\nstderr:\n%s", err, string(out), stderr.String())
+	}
+	requireExists(t, worktree, "interactively rejected worktree was removed")
+	item := requireWorktree(t, inv, worktree)
+	if item.Classification != model.Kept {
+		t.Fatalf("classification = %q, want %q", item.Classification, model.Kept)
+	}
+	if item.Action != model.ActionKept {
+		t.Fatalf("action = %q, want %q", item.Action, model.ActionKept)
+	}
+	if !strings.Contains(item.Reason, "interactive choice") {
+		t.Fatalf("reason = %q, want interactive choice evidence", item.Reason)
+	}
+}
+
+func TestCleanInteractiveEOFKeepsSafeWorktree(t *testing.T) {
+	repo := newRepository(t)
+	worktree := repo.CreateMergedWorktree(t, "feature/interactive-eof")
+
+	cmd := exec.Command(wtgcBinary(t), "clean", "--interactive", "--json", "--scan-root", repo.Root)
+	cmd.Dir = repo.Root
+	cmd.Stdin = strings.NewReader("")
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("wtgc interactive EOF failed: %v\nstderr:\n%s\nstdout:\n%s", err, stderr.String(), string(out))
+	}
+
+	var inv model.Inventory
+	if err := json.Unmarshal(out, &inv); err != nil {
+		t.Fatalf("json.Unmarshal CLI output failed: %v\nstdout:\n%s\nstderr:\n%s", err, string(out), stderr.String())
+	}
+	requireExists(t, worktree, "interactive EOF removed safe worktree")
+	item := requireWorktree(t, inv, worktree)
+	if item.Classification != model.Kept {
+		t.Fatalf("classification = %q, want %q", item.Classification, model.Kept)
+	}
+	if !strings.Contains(item.Reason, "interactive choice") {
+		t.Fatalf("reason = %q, want interactive choice evidence", item.Reason)
+	}
+	requireKept(t, item)
+}
+
 func TestCleanSymlinkedProtectedCurrentWorktree(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("symlink creation requires privileges on some Windows environments")

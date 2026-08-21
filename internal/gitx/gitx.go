@@ -14,21 +14,29 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/ben-ranford/wtgc/internal/model"
 )
 
 // Client executes Git commands for repository discovery and cleanup.
 type Client struct {
-	gitBinary string
+	gitBinary      string
+	commandTimeout time.Duration
 }
 
 // New returns a Git client. Empty gitBinary defaults to "git".
 func New(gitBinary string) *Client {
+	return NewWithTimeout(gitBinary, 30*time.Second)
+}
+
+// NewWithTimeout returns a Git client with a per-command deadline. A non-positive
+// timeout disables the client-level deadline and relies on the caller context.
+func NewWithTimeout(gitBinary string, commandTimeout time.Duration) *Client {
 	if gitBinary == "" {
 		gitBinary = "git"
 	}
-	return &Client{gitBinary: gitBinary}
+	return &Client{gitBinary: gitBinary, commandTimeout: commandTimeout}
 }
 
 // Discover recursively finds Git repositories and worktrees beneath roots,
@@ -412,10 +420,20 @@ func (c *Client) run(ctx context.Context, dir string, args ...string) ([]byte, e
 	if strings.TrimSpace(dir) == "" {
 		return nil, errors.New("git command directory is required")
 	}
-	cmd := exec.CommandContext(ctx, c.gitBinary, args...)
+	commandCtx := ctx
+	cancel := func() {}
+	if c.commandTimeout > 0 {
+		commandCtx, cancel = context.WithTimeout(ctx, c.commandTimeout)
+	}
+	defer cancel()
+
+	cmd := exec.CommandContext(commandCtx, c.gitBinary, args...)
 	cmd.Dir = dir
 	out, err := cmd.CombinedOutput()
 	if err != nil {
+		if commandCtx.Err() != nil {
+			return nil, fmt.Errorf("%s %s in %q timed out after %s: %w: %s", c.gitBinary, strings.Join(args, " "), dir, c.commandTimeout, commandCtx.Err(), strings.TrimSpace(string(out)))
+		}
 		return nil, fmt.Errorf("%s %s in %q failed: %w: %s", c.gitBinary, strings.Join(args, " "), dir, err, strings.TrimSpace(string(out)))
 	}
 	return out, nil

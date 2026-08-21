@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/ben-ranford/wtgc/internal/app"
 	"github.com/ben-ranford/wtgc/internal/cli"
@@ -22,7 +23,12 @@ var (
 )
 
 func main() {
-	os.Exit(run(context.Background(), os.Args[1:], os.Stdin, os.Stdout, os.Stderr, gitx.New("git"), os.Getwd))
+	timeout, err := gitCommandTimeoutFromEnv(os.Getenv("WTGC_GIT_TIMEOUT"))
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "WTGC_GIT_TIMEOUT: %v\n", err)
+		os.Exit(2)
+	}
+	os.Exit(run(context.Background(), os.Args[1:], os.Stdin, os.Stdout, os.Stderr, gitx.NewWithTimeout("git", timeout), os.Getwd))
 }
 
 func run(
@@ -108,4 +114,18 @@ func confirmer(input io.Reader, output io.Writer, deleteBranch bool) func(model.
 			return false
 		}
 	}
+}
+
+func gitCommandTimeoutFromEnv(value string) (time.Duration, error) {
+	if strings.TrimSpace(value) == "" {
+		return 30 * time.Second, nil
+	}
+	duration, err := time.ParseDuration(value)
+	if err != nil {
+		return 0, err
+	}
+	if duration <= 0 {
+		return 0, fmt.Errorf("must be greater than zero")
+	}
+	return duration, nil
 }
