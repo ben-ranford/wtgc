@@ -41,13 +41,6 @@ func (c *Client) Discover(ctx context.Context, roots []string) ([]model.Reposito
 
 	seen := map[string]string{}
 	var errs []error
-	skippedDirectories := map[string]struct{}{
-		"node_modules": {},
-		"vendor":       {},
-		"target":       {},
-		"dist":         {},
-		".cache":       {},
-	}
 	for _, root := range roots {
 		if strings.TrimSpace(root) == "" {
 			errs = append(errs, errors.New("empty discovery root"))
@@ -74,11 +67,6 @@ func (c *Client) Discover(ctx context.Context, roots []string) ([]model.Reposito
 					return filepath.SkipDir
 				}
 				return nil
-			}
-			if d.IsDir() && path != absRoot {
-				if _, skip := skippedDirectories[d.Name()]; skip {
-					return filepath.SkipDir
-				}
 			}
 			if d.Name() != ".git" {
 				return nil
@@ -238,11 +226,6 @@ func (c *Client) DefaultBranch(ctx context.Context, repo model.Repository) (stri
 		}
 		resolved[strings.TrimPrefix(branch, prefix)] = struct{}{}
 	}
-	if len(resolved) == 1 {
-		for branch := range resolved {
-			return branch, nil
-		}
-	}
 	if len(resolved) > 1 {
 		branches := make([]string, 0, len(resolved))
 		for branch := range resolved {
@@ -251,7 +234,18 @@ func (c *Client) DefaultBranch(ctx context.Context, repo model.Repository) (stri
 		sort.Strings(branches)
 		return "", fmt.Errorf("detect default branch: remote HEADs disagree: %s", strings.Join(branches, ", "))
 	}
-	return "", fmt.Errorf("detect default branch: no local remote HEAD is configured: %w", errors.Join(errs...))
+	if len(resolved) == 0 {
+		return "", fmt.Errorf("detect default branch: no local remote HEAD is configured: %w", errors.Join(errs...))
+	}
+	if len(errs) > 0 {
+		return "", fmt.Errorf("detect default branch: every remote must have a valid local remote HEAD: %w", errors.Join(errs...))
+	}
+	if len(resolved) == 1 {
+		for branch := range resolved {
+			return branch, nil
+		}
+	}
+	return "", errors.New("detect default branch: no local remote HEAD is configured")
 }
 
 // IsClean reports whether path has no tracked or untracked changes.
@@ -352,21 +346,43 @@ func (c *Client) Prune(ctx context.Context, repo model.Repository) error {
 	return err
 }
 
-// DeleteBranch deletes a local branch with Git's safe `-d` behavior.
-func (c *Client) DeleteBranch(ctx context.Context, repo model.Repository, shortBranch string) error {
+// DeleteBranch deletes a local branch only when its exact current tip is merged
+// into the named default branch.
+func (c *Client) DeleteBranch(ctx context.Context, repo model.Repository, shortBranch, defaultBranch string) error {
 	if err := validateRepository(repo); err != nil {
 		return err
 	}
-	if strings.TrimSpace(shortBranch) == "" {
-		return errors.New("branch is required")
+	if err := validateShortBranchName("branch", shortBranch); err != nil {
+		return err
 	}
-	if strings.HasPrefix(shortBranch, "-") {
-		return fmt.Errorf("refusing branch name that looks like an option: %q", shortBranch)
+	if err := validateShortBranchName("default branch", defaultBranch); err != nil {
+		return err
 	}
-	if strings.HasPrefix(shortBranch, "refs/") {
-		return fmt.Errorf("expected short branch name, got %q", shortBranch)
+	if shortBranch == defaultBranch {
+		return fmt.Errorf("refusing to delete default branch %q", defaultBranch)
 	}
-	_, err := c.run(ctx, repo.PrimaryPath, "branch", "-d", "--", shortBranch)
+
+	branchRef := "refs/heads/" + shortBranch
+	defaultRef := "refs/heads/" + defaultBranch
+	out, err := c.run(ctx, repo.PrimaryPath, "rev-parse", "--verify", branchRef+"^{commit}")
+	if err != nil {
+		return fmt.Errorf("resolve branch %s: %w", branchRef, err)
+	}
+	branchOID := strings.TrimSpace(string(out))
+	if !isFullObjectID(branchOID) {
+		return fmt.Errorf("resolve branch %s: unexpected object id %q", branchRef, branchOID)
+	}
+	if _, err := c.run(ctx, repo.PrimaryPath, "rev-parse", "--verify", defaultRef+"^{commit}"); err != nil {
+		return fmt.Errorf("resolve default branch %s: %w", defaultRef, err)
+	}
+	merged, err := c.IsAncestor(ctx, repo, branchOID, defaultRef)
+	if err != nil {
+		return fmt.Errorf("prove %s is merged into %s: %w", branchRef, defaultRef, err)
+	}
+	if !merged {
+		return fmt.Errorf("refusing to delete unmerged branch %q", shortBranch)
+	}
+	_, err = c.run(ctx, repo.PrimaryPath, "update-ref", "-d", branchRef, branchOID)
 	return err
 }
 
@@ -417,6 +433,36 @@ func validateRepository(repo model.Repository) error {
 
 func shortBranch(ref string) string {
 	return strings.TrimPrefix(ref, "refs/heads/")
+}
+
+func validateShortBranchName(label, branch string) error {
+	if strings.TrimSpace(branch) == "" {
+		return fmt.Errorf("%s is required", label)
+	}
+	if branch != strings.TrimSpace(branch) {
+		return fmt.Errorf("%s has surrounding whitespace: %q", label, branch)
+	}
+	if strings.HasPrefix(branch, "-") {
+		return fmt.Errorf("refusing %s name that looks like an option: %q", label, branch)
+	}
+	if strings.HasPrefix(branch, "refs/") {
+		return fmt.Errorf("expected short %s name, got %q", label, branch)
+	}
+	if strings.Contains(branch, "\\") {
+		return fmt.Errorf("%s contains invalid character: %q", label, branch)
+	}
+	if branch == "@" || strings.Contains(branch, "..") || strings.Contains(branch, "//") || strings.Contains(branch, "@{") {
+		return fmt.Errorf("%s is not a valid short branch name: %q", label, branch)
+	}
+	if strings.HasPrefix(branch, "/") || strings.HasSuffix(branch, "/") || strings.HasSuffix(branch, ".") || strings.HasSuffix(branch, ".lock") {
+		return fmt.Errorf("%s is not a valid short branch name: %q", label, branch)
+	}
+	for _, char := range branch {
+		if char <= ' ' || strings.ContainsRune("~^:?*[", char) || char == 0x7f {
+			return fmt.Errorf("%s contains invalid character: %q", label, branch)
+		}
+	}
+	return nil
 }
 
 func isFullObjectID(value string) bool {

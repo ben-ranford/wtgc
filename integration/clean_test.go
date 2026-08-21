@@ -144,6 +144,170 @@ func TestCleanYesKeepsUnmergedWorktree(t *testing.T) {
 	}
 }
 
+func TestCleanYesKeepsLocallyMergedUnpushedWorktree(t *testing.T) {
+	repo := newRepository(t)
+	worktree := repo.CreateLocallyMergedWorktree(t, "feature/local-only")
+
+	inv := runWTGC(t, repo.Root, "clean", "--yes", "--json", "--scan-root", repo.Root)
+
+	requireExists(t, worktree, "locally merged unpushed worktree was removed")
+	item := requireWorktree(t, inv, worktree)
+	if item.Classification != model.Unmerged {
+		t.Fatalf("classification = %q, want %q", item.Classification, model.Unmerged)
+	}
+	if !strings.Contains(item.Reason, "remote") {
+		t.Fatalf("reason = %q, want remote reachability explanation", item.Reason)
+	}
+	requireDirty(t, item, false)
+	requireKept(t, item)
+	if inv.Summary.ReclaimedBytes != 0 {
+		t.Fatalf("reclaimed_bytes = %d, want 0", inv.Summary.ReclaimedBytes)
+	}
+}
+
+func TestCleanMissingRemoteHEADReturnsNonzeroJSONAndKeepsInventory(t *testing.T) {
+	repo := newRepository(t)
+	worktree := repo.CreateMergedWorktree(t, "feature/missing-remote-head")
+	testgit.Run(t, repo.Path, "remote", "set-head", "origin", "-d")
+
+	inv := runWTGCExpectExit(t, repo.Root, 1, "clean", "--yes", "--json", "--scan-root", repo.Root)
+
+	requireExists(t, worktree, "worktree was removed when remote HEAD was missing")
+	if len(inv.Errors) == 0 {
+		t.Fatal("errors is empty, want missing remote HEAD error")
+	}
+	if !containsString(inv.Errors, "remote HEAD") {
+		t.Fatalf("errors = %#v, want missing remote HEAD error", inv.Errors)
+	}
+	item := requireWorktree(t, inv, worktree)
+	if item.Classification != model.Kept {
+		t.Fatalf("classification = %q, want %q", item.Classification, model.Kept)
+	}
+	if item.Error == "" {
+		t.Fatal("item.Error is empty, want default branch error")
+	}
+	requireDirty(t, item, false)
+	requireKept(t, item)
+	if inv.Summary.ReclaimedBytes != 0 {
+		t.Fatalf("reclaimed_bytes = %d, want 0", inv.Summary.ReclaimedBytes)
+	}
+}
+
+func TestCleanAmbiguousRemoteHEADReturnsNonzeroJSONAndKeepsInventory(t *testing.T) {
+	repo := newRepository(t)
+	worktree := repo.CreateMergedWorktree(t, "feature/ambiguous-remote-head")
+	testgit.Run(t, repo.Path, "checkout", "-b", "trunk", "main")
+	testgit.Run(t, repo.Path, "push", "origin", "trunk")
+	testgit.Run(t, repo.Path, "checkout", "main")
+	testgit.Run(t, repo.Path, "remote", "add", "backup", repo.Origin)
+	testgit.Run(t, repo.Path, "fetch", "backup")
+	testgit.Run(t, repo.Path, "symbolic-ref", "refs/remotes/backup/HEAD", "refs/remotes/backup/trunk")
+
+	inv := runWTGCExpectExit(t, repo.Root, 1, "clean", "--yes", "--json", "--scan-root", repo.Root)
+
+	requireExists(t, worktree, "worktree was removed when remote HEAD was ambiguous")
+	if len(inv.Errors) == 0 {
+		t.Fatal("errors is empty, want ambiguous remote HEAD error")
+	}
+	if !containsString(inv.Errors, "remote HEADs disagree") {
+		t.Fatalf("errors = %#v, want ambiguous remote HEAD error", inv.Errors)
+	}
+	item := requireWorktree(t, inv, worktree)
+	if item.Classification != model.Kept {
+		t.Fatalf("classification = %q, want %q", item.Classification, model.Kept)
+	}
+	if item.Error == "" {
+		t.Fatal("item.Error is empty, want default branch error")
+	}
+	requireDirty(t, item, false)
+	requireKept(t, item)
+	if inv.Summary.ReclaimedBytes != 0 {
+		t.Fatalf("reclaimed_bytes = %d, want 0", inv.Summary.ReclaimedBytes)
+	}
+}
+
+func TestCleanOneBadScanRootReturnsNonzeroJSONAndKeepsGoodInventory(t *testing.T) {
+	repo := newRepository(t)
+	worktree := repo.CreateMergedWorktree(t, "feature/good-root")
+	badRoot := filepath.Join(repo.Root, "missing root")
+
+	inv := runWTGCExpectExit(t, repo.Root, 1, "clean", "--json", "--scan-root", badRoot, "--scan-root", repo.Root)
+
+	if len(inv.Errors) == 0 {
+		t.Fatal("errors is empty, want bad scan root error")
+	}
+	if !containsString(inv.Errors, "stat root") {
+		t.Fatalf("errors = %#v, want stat root error", inv.Errors)
+	}
+	item := requireWorktree(t, inv, worktree)
+	if item.Classification != model.SafeToRemove {
+		t.Fatalf("classification = %q, want %q", item.Classification, model.SafeToRemove)
+	}
+	if item.Action != model.ActionWouldRemove {
+		t.Fatalf("action = %q, want %q", item.Action, model.ActionWouldRemove)
+	}
+	if item.ReclaimedBytes != 0 {
+		t.Fatalf("reclaimed_bytes = %d, want 0 in dry-run", item.ReclaimedBytes)
+	}
+}
+
+func TestCleanYesKeepsStagedDirtyMergedWorktree(t *testing.T) {
+	repo := newRepository(t)
+	worktree := repo.CreateMergedWorktree(t, "feature/staged-dirty")
+	testgit.WriteFile(t, filepath.Join(worktree, "staged.txt"), "staged\n")
+	testgit.Run(t, worktree, "add", "staged.txt")
+
+	inv := runWTGC(t, repo.Root, "clean", "--yes", "--json", "--scan-root", repo.Root)
+
+	requireExists(t, worktree, "staged dirty worktree was removed")
+	item := requireWorktree(t, inv, worktree)
+	if item.Classification != model.MergedButDirty {
+		t.Fatalf("classification = %q, want %q", item.Classification, model.MergedButDirty)
+	}
+	requireDirty(t, item, true)
+	requireKept(t, item)
+}
+
+func TestCleanYesKeepsDirtyUnmergedWorktree(t *testing.T) {
+	repo := newRepository(t)
+	worktree := repo.CreateUnmergedWorktree(t, "feature/dirty-unmerged")
+	testgit.WriteFile(t, filepath.Join(worktree, "local.txt"), "local\n")
+
+	inv := runWTGC(t, repo.Root, "clean", "--yes", "--json", "--scan-root", repo.Root)
+
+	requireExists(t, worktree, "dirty unmerged worktree was removed")
+	item := requireWorktree(t, inv, worktree)
+	if item.Classification != model.Kept {
+		t.Fatalf("classification = %q, want %q", item.Classification, model.Kept)
+	}
+	if !strings.Contains(item.Reason, "dirty") {
+		t.Fatalf("reason = %q, want dirty unmerged explanation", item.Reason)
+	}
+	requireDirty(t, item, true)
+	requireKept(t, item)
+}
+
+func TestCleanYesKeepsDirtySubmoduleMergedWorktree(t *testing.T) {
+	repo := newRepository(t)
+	submoduleOrigin := newSubmoduleOrigin(t)
+	testgit.Run(t, repo.Path, "-c", "protocol.file.allow=always", "submodule", "add", submoduleOrigin, "modules/lib")
+	testgit.Run(t, repo.Path, "commit", "-m", "add submodule")
+	testgit.Run(t, repo.Path, "push", "origin", "main")
+	worktree := repo.CreateMergedWorktree(t, "feature/dirty-submodule")
+	testgit.Run(t, worktree, "-c", "protocol.file.allow=always", "submodule", "update", "--init", "modules/lib")
+	testgit.WriteFile(t, filepath.Join(worktree, "modules", "lib", "README.md"), "changed in submodule\n")
+
+	inv := runWTGC(t, repo.Root, "clean", "--yes", "--json", "--scan-root", repo.Root)
+
+	requireExists(t, worktree, "dirty submodule worktree was removed")
+	item := requireWorktree(t, inv, worktree)
+	if item.Classification != model.MergedButDirty {
+		t.Fatalf("classification = %q, want %q", item.Classification, model.MergedButDirty)
+	}
+	requireDirty(t, item, true)
+	requireKept(t, item)
+}
+
 func TestCleanJSONEmitsParseableInventory(t *testing.T) {
 	repo := newRepository(t)
 	repo.CreateMergedWorktree(t, "feature/json")
@@ -244,6 +408,101 @@ func TestCleanYesKeepsCurrentWorktree(t *testing.T) {
 	}
 }
 
+func TestCleanHandlesPathsWithSpacesAcrossScanRemoveAndDelete(t *testing.T) {
+	repo := newRepository(t)
+	spacedRoot := filepath.Join(repo.Root, "scan root with spaces")
+	if err := os.MkdirAll(spacedRoot, 0o750); err != nil {
+		t.Fatalf("create spaced scan root: %v", err)
+	}
+	spacedPath := filepath.Join(spacedRoot, "worktree name with spaces")
+	worktree := repo.CreateMergedWorktreeAt(t, "feature/spaced-path", spacedPath)
+
+	inv := runWTGC(t, repo.Root, "clean", "--yes", "--delete-branch", "--json", "--scan-root", spacedRoot)
+
+	if _, err := os.Stat(worktree); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("spaced worktree exists after cleanup or stat failed unexpectedly: %v", err)
+	}
+	item := requireWorktree(t, inv, worktree)
+	if !item.Removed {
+		t.Fatal("Removed = false for spaced path worktree, want true")
+	}
+	if !item.BranchDeleted {
+		t.Fatal("BranchDeleted = false for spaced path worktree, want true")
+	}
+	if item.Action != model.ActionRemovedBranchDeleted {
+		t.Fatalf("action = %q, want %q", item.Action, model.ActionRemovedBranchDeleted)
+	}
+	if item.ReclaimedBytes <= 0 {
+		t.Fatalf("reclaimed_bytes = %d, want positive reclaimed bytes", item.ReclaimedBytes)
+	}
+	if inv.Summary.Removed != 1 {
+		t.Fatalf("summary.removed = %d, want 1", inv.Summary.Removed)
+	}
+	if inv.Summary.ReclaimedBytes <= 0 {
+		t.Fatalf("summary.reclaimed_bytes = %d, want positive reclaimed bytes", inv.Summary.ReclaimedBytes)
+	}
+	if repo.BranchExists(t, "feature/spaced-path") {
+		t.Fatal("branch still exists after spaced path --delete-branch cleanup")
+	}
+}
+
+func TestCleanSymlinkedProtectedCurrentWorktree(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("symlink creation requires privileges on some Windows environments")
+	}
+	repo := newRepository(t)
+	worktree := repo.CreateMergedWorktree(t, "feature/symlink-protected")
+	linkWorktree := filepath.Join(repo.Root, "linked current worktree")
+	if err := os.Symlink(worktree, linkWorktree); err != nil {
+		t.Fatalf("create symlinked worktree cwd: %v", err)
+	}
+
+	inv := runWTGCInDir(t, linkWorktree, "clean", "--yes", "--json", "--scan-root", repo.Root)
+
+	requireExists(t, worktree, "protected current worktree under symlinked scan root was removed")
+	item := requireWorktree(t, inv, worktree)
+	if item.Classification != model.Kept {
+		t.Fatalf("classification = %q, want %q", item.Classification, model.Kept)
+	}
+	if !strings.Contains(item.Reason, "running process") {
+		t.Fatalf("reason = %q, want protected cwd explanation", item.Reason)
+	}
+	requireDirty(t, item, false)
+	requireKept(t, item)
+}
+
+func TestCleanDeleteBranchSucceedsWhenPrimaryHeadIsUnrelatedButBranchMergedToDefault(t *testing.T) {
+	repo := newRepository(t)
+	worktree := repo.CreateMergedWorktree(t, "feature/delete-from-unrelated-primary")
+	testgit.Run(t, repo.Path, "checkout", "--orphan", "scratch")
+	testgit.Run(t, repo.Path, "rm", "-rf", ".")
+	testgit.WriteFile(t, filepath.Join(repo.Path, "scratch.txt"), "scratch\n")
+	testgit.Run(t, repo.Path, "add", ".")
+	testgit.Run(t, repo.Path, "commit", "-m", "scratch")
+
+	inv := runWTGC(t, repo.Root, "clean", "--yes", "--delete-branch", "--json", "--scan-root", repo.Root)
+
+	if _, err := os.Stat(worktree); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("worktree exists after cleanup or stat failed unexpectedly: %v", err)
+	}
+	item := requireWorktree(t, inv, worktree)
+	if !item.Removed {
+		t.Fatal("Removed = false, want true")
+	}
+	if !item.BranchDeleted {
+		t.Fatal("BranchDeleted = false, want true")
+	}
+	if item.Action != model.ActionRemovedBranchDeleted {
+		t.Fatalf("action = %q, want %q", item.Action, model.ActionRemovedBranchDeleted)
+	}
+	if item.ReclaimedBytes <= 0 {
+		t.Fatalf("reclaimed_bytes = %d, want positive reclaimed bytes", item.ReclaimedBytes)
+	}
+	if repo.BranchExists(t, "feature/delete-from-unrelated-primary") {
+		t.Fatal("branch still exists after --delete-branch cleanup from unrelated primary HEAD")
+	}
+}
+
 func runWTGC(t *testing.T, scanDir string, args ...string) model.Inventory {
 	t.Helper()
 	return runWTGCInDir(t, scanDir, args...)
@@ -257,16 +516,26 @@ func newRepository(t *testing.T) *testgit.Repository {
 
 func runWTGCInDir(t *testing.T, dir string, args ...string) model.Inventory {
 	t.Helper()
+	return runWTGCExpectExit(t, dir, 0, args...)
+}
+
+func runWTGCExpectExit(t *testing.T, dir string, wantExit int, args ...string) model.Inventory {
+	t.Helper()
 	cmd := exec.Command(wtgcBinary(t), args...)
 	cmd.Dir = dir
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	out, err := cmd.Output()
+	gotExit := 0
 	if err != nil {
 		if exitErr, ok := err.(*exec.ExitError); ok {
-			t.Fatalf("wtgc failed with exit %d\nstderr:\n%s\nstdout:\n%s", exitErr.ExitCode(), stderr.String(), string(out))
+			gotExit = exitErr.ExitCode()
+		} else {
+			t.Fatalf("wtgc failed: %v\nstderr:\n%s", err, stderr.String())
 		}
-		t.Fatalf("wtgc failed: %v\nstderr:\n%s", err, stderr.String())
+	}
+	if gotExit != wantExit {
+		t.Fatalf("wtgc exit = %d, want %d\nstderr:\n%s\nstdout:\n%s", gotExit, wantExit, stderr.String(), string(out))
 	}
 
 	var inv model.Inventory
@@ -274,6 +543,22 @@ func runWTGCInDir(t *testing.T, dir string, args ...string) model.Inventory {
 		t.Fatalf("json.Unmarshal CLI output failed: %v\nstdout:\n%s\nstderr:\n%s", err, string(out), stderr.String())
 	}
 	return inv
+}
+
+func newSubmoduleOrigin(t *testing.T) string {
+	t.Helper()
+	root := t.TempDir()
+	origin := filepath.Join(root, "submodule.git")
+	work := filepath.Join(root, "submodule")
+	testgit.Run(t, root, "init", "--bare", "--initial-branch=main", origin)
+	testgit.Run(t, root, "clone", origin, work)
+	testgit.Run(t, work, "config", "user.email", "test@example.com")
+	testgit.Run(t, work, "config", "user.name", "Test User")
+	testgit.WriteFile(t, filepath.Join(work, "README.md"), "submodule\n")
+	testgit.Run(t, work, "add", "README.md")
+	testgit.Run(t, work, "commit", "-m", "initial")
+	testgit.Run(t, work, "push", "-u", "origin", "main")
+	return origin
 }
 
 func requireWTGCCommand(t *testing.T) string {
@@ -329,6 +614,48 @@ func requireWorktree(t *testing.T, inv model.Inventory, path string) model.Workt
 	}
 	t.Fatalf("inventory missing worktree %s; got %#v", path, inv.Worktrees)
 	return model.Worktree{}
+}
+
+func requireExists(t *testing.T, path, message string) {
+	t.Helper()
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("%s: %v", message, err)
+	}
+}
+
+func requireKept(t *testing.T, item model.Worktree) {
+	t.Helper()
+	if item.Removed {
+		t.Fatal("Removed = true, want false")
+	}
+	if item.BranchDeleted {
+		t.Fatal("BranchDeleted = true for kept worktree, want false")
+	}
+	if item.Action != model.ActionKept {
+		t.Fatalf("action = %q, want %q", item.Action, model.ActionKept)
+	}
+	if item.ReclaimedBytes != 0 {
+		t.Fatalf("reclaimed_bytes = %d, want 0", item.ReclaimedBytes)
+	}
+}
+
+func requireDirty(t *testing.T, item model.Worktree, want bool) {
+	t.Helper()
+	if item.Dirty == nil {
+		t.Fatalf("dirty = nil, want %v", want)
+	}
+	if *item.Dirty != want {
+		t.Fatalf("dirty = %v, want %v", *item.Dirty, want)
+	}
+}
+
+func containsString(values []string, want string) bool {
+	for _, value := range values {
+		if strings.Contains(value, want) {
+			return true
+		}
+	}
+	return false
 }
 
 func canonicalPath(t *testing.T, path string) string {

@@ -48,3 +48,18 @@ func TestPublishedSchemaMatchesModelContract(t *testing.T) {
 		t.Fatalf("schema is missing classifications: %v", want)
 	}
 }
+
+func TestInventoryJSONSerializesEmptyWorktreesAsArray(t *testing.T) {
+	t.Parallel()
+	data, err := json.Marshal(Inventory{})
+	if err != nil {
+		t.Fatalf("json.Marshal error = %v", err)
+	}
+	var got map[string]json.RawMessage
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatalf("json.Unmarshal error = %v", err)
+	}
+	if string(got["worktrees"]) != "[]" {
+		t.Fatalf("worktrees JSON = %s, want [] in %s", got["worktrees"], data)
+	}
+}

@@ -12,7 +12,9 @@ remote ref. Dirty, locked, primary, detached, or ambiguous worktrees stay kept.
 
 The v1 CLI is implemented as a single, dependency-free Go binary. It is safe by
 default: every invocation is a dry-run unless `--yes` or `--interactive` is
-provided.
+provided. V1 has no application UI or TUI. If a future UI/TUI is approved, it
+must use `github.com/ben-ranford/stave`; Stave is not included in v1 because
+the current product is CLI-only and standard-library-only.
 
 ## Install
 
@@ -79,7 +81,9 @@ Machine-readable inventory output is documented in:
 - `docs/inventory-schema.md`
 - `docs/inventory.schema.json`
 
-The schema version is currently `1.0.0`.
+The schema version is currently `1.0.0`. Each JSON document is a complete action
+log: every row has an `action` and `reclaimed_bytes`, `dirty` is included when
+inspected, and the summary includes potential and actual reclaimed byte totals.
 
 ## Development
 
@@ -87,6 +91,7 @@ Requirements:
 
 - Go `1.26.x` or newer
 - POSIX shell for local hooks and release packaging
+- Ruby with its standard YAML library for automation configuration validation
 
 Run the normal checks:
 
@@ -112,10 +117,17 @@ Install fast local pre-commit hooks:
 make hooks-install
 ```
 
+Automation examples for dry-run hooks, Lefthook manual jobs, cron, and launchd
+live under `examples/`. Mutation examples are opt-in through explicit flags or
+environment variables.
+
 ## Release
 
 Tag releases build cross-platform artifacts in GitHub Actions and publish
-checksums. Local release packaging uses the same static binary entrypoint:
+checksums. Release publishing uses the GitHub CLI and the workflow
+`GH_TOKEN`; third-party release write actions are not used. Local release
+packaging uses the same static binary entrypoint and validates that every
+archive has exactly one checksum entry:
 
 ```bash
 make release VERSION=v0.1.0 PLATFORMS="darwin/arm64 linux/amd64 windows/amd64"

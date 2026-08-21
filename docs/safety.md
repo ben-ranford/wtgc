@@ -51,17 +51,21 @@ branch, HEAD, cleanliness, ancestry, remote reachability, and protection state
 still pass. A stale record is likewise rechecked before `git worktree prune`.
 Any changed or unreadable state blocks that action.
 
-`git worktree remove` updates metadata for a live worktree itself. Because
-`git worktree prune --expire=now` is repository-wide, wtgc invokes it only when
-at least one stale record from that repository was explicitly accepted and all
-stale records considered in the run still pass revalidation.
+`git worktree remove` applies only to live worktrees classified as
+`safe_to_remove`. Stale administrative records classified as `stale_orphaned`
+are a distinct metadata-prune action. Because `git worktree prune --expire=now`
+is repository-wide, wtgc invokes it only when at least one stale record from
+that repository was explicitly accepted and all stale records considered in the
+run still pass revalidation.
 
 ## Branch Deletion
 
 Branch deletion is separate from worktree removal. It is opt-in through
-`--delete-branch`, reported through `branch_deleted`, and uses Git's safe
-`branch -d` behavior after the same local ancestry and remote-reachability
-proof.
+`--delete-branch` and reported through `branch_deleted`. Immediately before
+deletion, wtgc resolves the exact branch object, proves it is an ancestor of the
+local default branch, and atomically deletes that ref only if it still points to
+the proven object. This expected-object check prevents a concurrent branch
+update from being deleted.
 
 ## Cache Warnings
 

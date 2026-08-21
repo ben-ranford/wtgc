@@ -170,7 +170,7 @@ func (*mainFakeGit) Prune(context.Context, model.Repository) error {
 	return nil
 }
 
-func (*mainFakeGit) DeleteBranch(context.Context, model.Repository, string) error {
+func (*mainFakeGit) DeleteBranch(context.Context, model.Repository, string, string) error {
 	return nil
 }
 

@@ -10,15 +10,25 @@ if [ ! -d "$dist_dir" ]; then
 fi
 
 tmp_file="$(mktemp)"
-trap 'rm -f "$tmp_file"' EXIT INT TERM
+file_list="$tmp_file.files"
+trap 'rm -f "$tmp_file" "$file_list"' EXIT INT TERM
 
-find "$dist_dir" -maxdepth 1 -type f ! -name 'checksums.txt' | sort | while IFS= read -r file; do
+find "$dist_dir" -type f \( -name '*.tar.gz' -o -name '*.zip' \) | sort > "$file_list"
+
+if [ ! -s "$file_list" ]; then
+  echo "no release archives found in $dist_dir" >&2
+  exit 1
+fi
+
+while IFS= read -r file; do
+  rel="${file#"$dist_dir"/}"
   if command -v sha256sum >/dev/null 2>&1; then
-    sha256sum "$file"
+    hash="$(sha256sum "$file" | awk '{print $1}')"
   else
-    shasum -a 256 "$file"
+    hash="$(shasum -a 256 "$file" | awk '{print $1}')"
   fi
-done > "$tmp_file"
+  printf '%s  %s\n' "$hash" "$rel"
+done < "$file_list" > "$tmp_file"
 
 mv "$tmp_file" "$checksum_file"
 echo "Wrote $checksum_file"

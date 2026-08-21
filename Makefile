@@ -1,4 +1,4 @@
-.PHONY: format fmt format-check lint security vuln suppressions test race cov build ci release clean toolchain-check tools-install setup hooks-install hooks-uninstall
+.PHONY: format fmt format-check lint security vuln suppressions test race cov build ci release release-check automation-check clean toolchain-check tools-install setup hooks-install hooks-uninstall
 
 PACKAGE_PATTERN ?= ./...
 BINARY_NAME ?= wtgc
@@ -63,7 +63,14 @@ build:
 	mkdir -p "$(BIN_DIR)"
 	$(GO_CMD) build -trimpath -ldflags="-X main.version=$(VERSION)" -o "$(BIN_DIR)/$(BINARY_NAME)" "$(CMD_PATH)"
 
-ci: format-check lint security vuln suppressions test race cov build
+ci: automation-check format-check lint security vuln suppressions test race cov build
+
+automation-check:
+	@set -e; for script in scripts/*.sh .githooks/pre-commit examples/hooks/*; do sh -n "$$script"; done
+	./scripts/check-github-actions-pinning.sh
+	./scripts/check-automation-examples.sh
+	@command -v ruby >/dev/null 2>&1 || (echo "ruby is required to validate workflow YAML"; exit 1)
+	ruby -e 'require "yaml"; ARGV.each { |path| YAML.load_file(path) }' .github/workflows/*.yml examples/lefthook.yml
 
 release:
 	@test -d "$(CMD_PATH)" || (echo "$(CMD_PATH) does not exist; release packaging requires the CLI entrypoint."; exit 1)
@@ -87,6 +94,10 @@ release:
 		rm -rf "$$output_dir"; \
 	done
 	./scripts/checksums.sh "$(DIST_DIR)"
+	./scripts/validate-release-artifacts.sh "$(DIST_DIR)"
+
+release-check: automation-check
+	$(MAKE) release VERSION="$(VERSION)" PLATFORMS="$(PLATFORMS)"
 
 clean:
 	rm -rf "$(BIN_DIR)" "$(DIST_DIR)" .artifacts

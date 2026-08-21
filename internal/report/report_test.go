@@ -11,6 +11,8 @@ import (
 )
 
 func testInventory() model.Inventory {
+	clean := false
+	dirty := true
 	return model.Inventory{
 		SchemaVersion: "1.0.0",
 		GeneratedAt:   time.Date(2026, 8, 21, 10, 30, 0, 0, time.UTC),
@@ -23,6 +25,7 @@ func testInventory() model.Inventory {
 				Repository:     "/tmp/repo",
 				DiskBytes:      1536,
 				Classification: model.SafeToRemove,
+				Dirty:          &clean,
 				Reason:         "merged and clean",
 			},
 			{
@@ -31,6 +34,7 @@ func testInventory() model.Inventory {
 				Repository:     "/tmp/repo",
 				DiskBytes:      5 * 1024 * 1024,
 				Classification: model.MergedButDirty,
+				Dirty:          &dirty,
 				Reason:         "dirty worktree",
 				Error:          "has local changes",
 			},
@@ -77,9 +81,13 @@ func TestWriteHumanEmitsReadableTableAndSummary(t *testing.T) {
 		"PATH",
 		"BRANCH",
 		"CLASSIFICATION",
+		"DIRTY",
 		"ACTION",
 		"SIZE",
+		"RECLAIMED",
 		"/tmp/repo-wt/feature",
+		"clean",
+		"dirty",
 		"1.5 KiB",
 		"5.0 MiB",
 		"Summary:",
@@ -124,11 +132,12 @@ func TestAction(t *testing.T) {
 		want     string
 	}{
 		{name: "kept", worktree: model.Worktree{Classification: model.Kept}, want: "kept"},
-		{name: "dry run remove", worktree: model.Worktree{Classification: model.SafeToRemove}, want: "would-remove"},
-		{name: "dry run prune", worktree: model.Worktree{Classification: model.Prunable}, want: "would-prune"},
+		{name: "dry run remove", worktree: model.Worktree{Classification: model.SafeToRemove}, want: "would_remove"},
+		{name: "dry run prune", worktree: model.Worktree{Classification: model.Prunable}, want: "would_prune"},
 		{name: "removed", worktree: model.Worktree{Removed: true}, want: "removed"},
 		{name: "pruned", worktree: model.Worktree{Removed: true, Prunable: true}, want: "pruned"},
-		{name: "branch deleted", worktree: model.Worktree{Removed: true, BranchDeleted: true}, want: "removed+branch-deleted"},
+		{name: "branch deleted", worktree: model.Worktree{Removed: true, BranchDeleted: true}, want: "removed_branch_deleted"},
+		{name: "explicit", worktree: model.Worktree{Action: model.ActionKept, Classification: model.SafeToRemove}, want: "kept"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			if got := action(test.worktree); got != test.want {

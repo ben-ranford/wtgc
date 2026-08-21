@@ -34,18 +34,20 @@ func Write(w io.Writer, inv model.Inventory, format Format) error {
 
 func writeHuman(w io.Writer, inv model.Inventory) error {
 	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
-	fmt.Fprintln(tw, "PATH\tBRANCH\tCLASSIFICATION\tACTION\tSIZE\tREASON")
+	fmt.Fprintln(tw, "PATH\tBRANCH\tCLASSIFICATION\tDIRTY\tACTION\tSIZE\tRECLAIMED\tREASON")
 	for _, wt := range inv.Worktrees {
 		reason := wt.Reason
 		if wt.Error != "" {
 			reason = strings.TrimSpace(reason + "; " + wt.Error)
 		}
-		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\n",
+		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
 			wt.Path,
 			emptyDash(wt.Branch),
 			wt.Classification,
+			dirtyString(wt.Dirty),
 			action(wt),
 			ByteString(wt.DiskBytes),
+			ByteString(wt.ReclaimedBytes),
 			reason,
 		)
 	}
@@ -79,22 +81,35 @@ func writeHuman(w io.Writer, inv model.Inventory) error {
 }
 
 func action(worktree model.Worktree) string {
+	if worktree.Action != "" {
+		return string(worktree.Action)
+	}
 	if worktree.Removed {
 		if worktree.Prunable {
-			return "pruned"
+			return string(model.ActionPruned)
 		}
 		if worktree.BranchDeleted {
-			return "removed+branch-deleted"
+			return string(model.ActionRemovedBranchDeleted)
 		}
-		return "removed"
+		return string(model.ActionRemoved)
 	}
 	if worktree.Classification == model.SafeToRemove {
-		return "would-remove"
+		return string(model.ActionWouldRemove)
 	}
 	if worktree.Classification == model.Prunable {
-		return "would-prune"
+		return string(model.ActionWouldPrune)
 	}
-	return "kept"
+	return string(model.ActionKept)
+}
+
+func dirtyString(value *bool) string {
+	if value == nil {
+		return "unknown"
+	}
+	if *value {
+		return "dirty"
+	}
+	return "clean"
 }
 
 func emptyDash(value string) string {

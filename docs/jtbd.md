@@ -57,6 +57,9 @@ script without scraping terminal output.
 Acceptance criteria:
 
 - JSON output follows `docs/inventory.schema.json`.
+- Each JSON automation document is the complete action log, including a required
+  per-worktree `action`, optional `dirty`, per-worktree `reclaimed_bytes`, and
+  summary totals.
 - Exit behavior distinguishes successful scans from scan failures.
 - Hook and cron examples default to dry-run/report mode.
 
@@ -84,8 +87,9 @@ The primary job is delivered through these independently verifiable slices:
 6. Default every run to dry-run and require `--yes` or `--interactive` for
    mutation.
 7. Re-list and reclassify immediately before removal or metadata pruning.
-8. Remove only through `git worktree remove`, then prune accepted stale metadata
-   through Git.
+8. Remove only `safe_to_remove` live worktrees through `git worktree remove`,
+   then prune accepted `stale_orphaned` metadata through Git as a separate
+   action.
 9. Keep local branches unless `--delete-branch` is explicitly supplied.
 10. Produce stable human and JSON reports for hooks and scheduled jobs.
 11. Ship cross-platform static binaries behind local, CI, security, race, and
@@ -97,3 +101,5 @@ The primary job is delivered through these independently verifiable slices:
 - Remote branch deletion by default.
 - Force-removing dirty, locked, primary, or ambiguous worktrees.
 - Cache invalidation warnings before cache behavior is introduced.
+- Application UI or TUI. If a future UI/TUI is approved, it must use
+  `github.com/ben-ranford/stave`; v1 remains CLI-only.

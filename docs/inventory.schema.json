@@ -43,7 +43,9 @@
         "repository",
         "disk_bytes",
         "classification",
-        "reason"
+        "reason",
+        "action",
+        "reclaimed_bytes"
       ],
       "properties": {
         "path": { "type": "string" },
@@ -58,6 +60,19 @@
         "detached": { "type": "boolean" },
         "locked": { "type": "boolean" },
         "prunable": { "type": "boolean" },
+        "dirty": { "type": "boolean" },
+        "action": {
+          "type": "string",
+          "enum": [
+            "kept",
+            "would_remove",
+            "would_prune",
+            "removed",
+            "pruned",
+            "removed_branch_deleted"
+          ]
+        },
+        "reclaimed_bytes": { "type": "integer", "minimum": 0 },
         "removed": { "type": "boolean" },
         "branch_deleted": { "type": "boolean" },
         "error": { "type": "string" }

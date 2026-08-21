@@ -22,9 +22,9 @@ jobs:
           - windows-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
       - name: Setup Go
-        uses: actions/setup-go@v6
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
         with:
           go-version-file: go.mod
       - name: Install make (Windows)
@@ -62,16 +62,16 @@ jobs:
             goarch: arm64
     steps:
       - name: Checkout
-        uses: actions/checkout@v6
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
       - name: Setup Go
-        uses: actions/setup-go@v6
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
         with:
           go-version-file: go.mod
       - name: Build artifact
         run: |
           make release VERSION=${GITHUB_REF_NAME} PLATFORMS="${{ matrix.goos }}/${{ matrix.goarch }}"
       - name: Upload artifact
-        uses: actions/upload-artifact@v6
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f # v6
         with:
           name: wtgc-${{ matrix.goos }}-${{ matrix.goarch }}
           path: |
@@ -86,20 +86,21 @@ jobs:
     permissions:
       contents: write
     steps:
+      - name: Checkout
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
       - name: Download artifacts
-        uses: actions/download-artifact@v7
+        uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
         with:
-          path: dist
-          merge-multiple: true
-      - name: Merge checksums
+          path: dist/artifacts
+      - name: Prepare release assets
         run: |
-          find dist -name checksums.txt -print0 | xargs -0 cat | sort -u > dist/checksums-merged.txt
-          mv dist/checksums-merged.txt dist/checksums.txt
-      - name: Publish GitHub release
-        uses: softprops/action-gh-release@v3
-        with:
-          files: |
-            dist/*.tar.gz
-            dist/*.zip
-            dist/checksums.txt
-          generate_release_notes: true
+          ./scripts/flatten-release-artifacts.sh dist/artifacts dist/release
+      - name: Publish GitHub release with GitHub CLI
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release upload "$GITHUB_REF_NAME" dist/release/* --clobber
+          else
+            gh release create "$GITHUB_REF_NAME" dist/release/* --generate-notes --verify-tag
+          fi

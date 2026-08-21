@@ -9,11 +9,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/ben-ranford/wtgc/internal/app"
 	"github.com/ben-ranford/wtgc/internal/model"
 )
-
-var _ app.Git = New("git")
 
 func TestParseWorktreeListPorcelainZ(t *testing.T) {
 	input := []byte("worktree /repo\x00HEAD abc123\x00branch refs/heads/main\x00\x00worktree /repo-wt\x00HEAD def456\x00detached\x00locked maintenance\x00prunable gitdir file points to non-existent location\x00")
@@ -87,14 +84,26 @@ func TestClientMethodsRejectInvalidInputsBeforeGitRuns(t *testing.T) {
 			return client.Remove(ctx, validRepo, " ")
 		}, want: "worktree path is required"},
 		{name: "delete branch missing branch", run: func() error {
-			return client.DeleteBranch(ctx, validRepo, "")
+			return client.DeleteBranch(ctx, validRepo, "", "main")
 		}, want: "branch is required"},
 		{name: "delete branch option-like branch", run: func() error {
-			return client.DeleteBranch(ctx, validRepo, "-danger")
+			return client.DeleteBranch(ctx, validRepo, "-danger", "main")
 		}, want: "looks like an option"},
 		{name: "delete branch full ref", run: func() error {
-			return client.DeleteBranch(ctx, validRepo, "refs/heads/feature")
+			return client.DeleteBranch(ctx, validRepo, "refs/heads/feature", "main")
 		}, want: "expected short branch name"},
+		{name: "delete branch missing default branch", run: func() error {
+			return client.DeleteBranch(ctx, validRepo, "feature", "")
+		}, want: "default branch is required"},
+		{name: "delete branch option-like default branch", run: func() error {
+			return client.DeleteBranch(ctx, validRepo, "feature", "-main")
+		}, want: "looks like an option"},
+		{name: "delete branch full default ref", run: func() error {
+			return client.DeleteBranch(ctx, validRepo, "feature", "refs/heads/main")
+		}, want: "expected short default branch name"},
+		{name: "delete default branch", run: func() error {
+			return client.DeleteBranch(ctx, validRepo, "main", "main")
+		}, want: "refusing to delete default branch"},
 		{name: "prune missing repository", run: func() error {
 			return client.Prune(ctx, model.Repository{})
 		}, want: "repository path is required"},
@@ -145,6 +154,39 @@ func TestDefaultBranchReportsMissingLocalRemoteHead(t *testing.T) {
 	}
 }
 
+func TestDefaultBranchFailsWhenAnyRemoteHeadIsMissing(t *testing.T) {
+	t.Parallel()
+	client := New(fakeGitBinary(t, map[string]string{
+		"remote": "origin\nupstream\n",
+		"symbolic-ref --quiet --short refs/remotes/origin/HEAD": "origin/main\n",
+	}))
+
+	_, err := client.DefaultBranch(context.Background(), model.Repository{PrimaryPath: t.TempDir(), CommonDir: "/repo/.git"})
+	if err == nil {
+		t.Fatal("DefaultBranch error = nil, want missing remote HEAD")
+	}
+	if !strings.Contains(err.Error(), "every remote must have a valid local remote HEAD") {
+		t.Fatalf("error = %q, want fail-closed remote HEAD error", err.Error())
+	}
+}
+
+func TestDefaultBranchFailsWhenAnyRemoteHeadIsUnexpected(t *testing.T) {
+	t.Parallel()
+	client := New(fakeGitBinary(t, map[string]string{
+		"remote": "origin\nupstream\n",
+		"symbolic-ref --quiet --short refs/remotes/origin/HEAD":   "origin/main\n",
+		"symbolic-ref --quiet --short refs/remotes/upstream/HEAD": "origin/main\n",
+	}))
+
+	_, err := client.DefaultBranch(context.Background(), model.Repository{PrimaryPath: t.TempDir(), CommonDir: "/repo/.git"})
+	if err == nil {
+		t.Fatal("DefaultBranch error = nil, want unexpected remote HEAD")
+	}
+	if !strings.Contains(err.Error(), "unexpected ref") {
+		t.Fatalf("error = %q, want unexpected ref", err.Error())
+	}
+}
+
 func TestRemoteContainsIgnoresRemoteHeadRefs(t *testing.T) {
 	t.Parallel()
 	client := New(fakeGitBinary(t, map[string]string{
@@ -189,6 +231,8 @@ func TestRealGitClient(t *testing.T) {
 	run(t, repo, "git", "commit", "-m", "feature")
 	run(t, repo, "git", "push", "-u", "origin", "feature")
 	run(t, repo, "git", "checkout", "main")
+	run(t, repo, "git", "merge", "--ff-only", "feature")
+	run(t, repo, "git", "push", "origin", "main")
 	wt := filepath.Join(root, "repo-wt")
 	run(t, repo, "git", "worktree", "add", wt, "feature")
 
@@ -267,11 +311,105 @@ func TestRealGitClient(t *testing.T) {
 	if _, err := os.Stat(wt); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("worktree still exists or stat failed unexpectedly: %v", err)
 	}
-	if err := client.DeleteBranch(ctx, repoRecord, "feature"); err != nil {
+	if err := client.DeleteBranch(ctx, repoRecord, "feature", "main"); err != nil {
 		t.Fatalf("DeleteBranch: %v", err)
 	}
 	if err := client.Prune(ctx, repoRecord); err != nil {
 		t.Fatalf("Prune: %v", err)
+	}
+}
+
+func TestDiscoverFindsNestedRepositoriesInBuildAndDependencyDirs(t *testing.T) {
+	requireGit(t)
+	ctx := context.Background()
+	root := t.TempDir()
+	repo := filepath.Join(root, "node_modules", "pkg")
+	wt := filepath.Join(root, "vendor", "pkg-wt")
+	run(t, root, "git", "init", "--initial-branch=main", repo)
+	configureTestUser(t, repo)
+	writeFile(t, filepath.Join(repo, "file.txt"), "base\n")
+	run(t, repo, "git", "add", "file.txt")
+	run(t, repo, "git", "commit", "-m", "initial")
+	run(t, repo, "git", "branch", "feature")
+	run(t, repo, "git", "worktree", "add", wt, "feature")
+
+	repos, errs := New("git").Discover(ctx, []string{root})
+	if len(errs) > 0 {
+		t.Fatalf("Discover errors: %v", errs)
+	}
+	if len(repos) != 1 {
+		t.Fatalf("got %d repos, want deduped nested repo: %#v", len(repos), repos)
+	}
+	if findRepoByPath(repos, repo).PrimaryPath == "" {
+		t.Fatalf("did not discover nested repo under node_modules/vendor: %#v", repos)
+	}
+}
+
+func TestDeleteBranchDeletesMergedBranchWhenPrimaryOnUnrelatedBranch(t *testing.T) {
+	requireGit(t)
+	ctx := context.Background()
+	root := t.TempDir()
+	repo := initRepoWithCommit(t, root)
+	run(t, repo, "git", "branch", "feature")
+	run(t, repo, "git", "checkout", "-b", "unrelated")
+
+	client := New("git")
+	repoRecord := repositoryRecord(t, repo)
+	if err := client.DeleteBranch(ctx, repoRecord, "feature", "main"); err != nil {
+		t.Fatalf("DeleteBranch: %v", err)
+	}
+	if branchExists(t, repo, "feature") {
+		t.Fatal("feature branch still exists")
+	}
+}
+
+func TestDeleteBranchRejectsUnmergedBranch(t *testing.T) {
+	requireGit(t)
+	ctx := context.Background()
+	root := t.TempDir()
+	repo := initRepoWithCommit(t, root)
+	run(t, repo, "git", "checkout", "-b", "feature")
+	writeFile(t, filepath.Join(repo, "feature.txt"), "feature\n")
+	run(t, repo, "git", "add", "feature.txt")
+	run(t, repo, "git", "commit", "-m", "feature")
+	run(t, repo, "git", "checkout", "main")
+
+	err := New("git").DeleteBranch(ctx, repositoryRecord(t, repo), "feature", "main")
+	if err == nil {
+		t.Fatal("DeleteBranch error = nil, want unmerged rejection")
+	}
+	if !strings.Contains(err.Error(), "unmerged branch") {
+		t.Fatalf("error = %q, want unmerged rejection", err.Error())
+	}
+	if !branchExists(t, repo, "feature") {
+		t.Fatal("feature branch was deleted")
+	}
+}
+
+func TestDeleteBranchRejectsChangedBranchAfterProof(t *testing.T) {
+	requireGit(t)
+	ctx := context.Background()
+	root := t.TempDir()
+	repo := initRepoWithCommit(t, root)
+	run(t, repo, "git", "branch", "feature")
+	run(t, repo, "git", "checkout", "-b", "race")
+	writeFile(t, filepath.Join(repo, "race.txt"), "race\n")
+	run(t, repo, "git", "add", "race.txt")
+	run(t, repo, "git", "commit", "-m", "race")
+	raceOID := strings.TrimSpace(string(runOutput(t, repo, "git", "rev-parse", "HEAD")))
+	run(t, repo, "git", "checkout", "main")
+
+	wrapper := gitRaceWrapper(t, repo, raceOID)
+	err := New(wrapper).DeleteBranch(ctx, repositoryRecord(t, repo), "feature", "main")
+	if err == nil {
+		t.Fatal("DeleteBranch error = nil, want update-ref old-oid rejection")
+	}
+	if !branchExists(t, repo, "feature") {
+		t.Fatal("feature branch was deleted")
+	}
+	got := strings.TrimSpace(string(runOutput(t, repo, "git", "rev-parse", "refs/heads/feature")))
+	if got != raceOID {
+		t.Fatalf("feature oid = %s, want raced oid %s", got, raceOID)
 	}
 }
 
@@ -289,6 +427,86 @@ func run(t *testing.T, dir string, name string, args ...string) {
 	if out, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("%s %v failed: %v\n%s", name, args, err, string(out))
 	}
+}
+
+func runOutput(t *testing.T, dir string, name string, args ...string) []byte {
+	t.Helper()
+	cmd := exec.Command(name, args...)
+	cmd.Dir = dir
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("%s %v failed: %v\n%s", name, args, err, string(out))
+	}
+	return out
+}
+
+func configureTestUser(t *testing.T, repo string) {
+	t.Helper()
+	run(t, repo, "git", "config", "user.email", "test@example.com")
+	run(t, repo, "git", "config", "user.name", "Test User")
+}
+
+func initRepoWithCommit(t *testing.T, root string) string {
+	t.Helper()
+	repo := filepath.Join(root, "repo")
+	run(t, root, "git", "init", "--initial-branch=main", repo)
+	configureTestUser(t, repo)
+	writeFile(t, filepath.Join(repo, "file.txt"), "base\n")
+	run(t, repo, "git", "add", "file.txt")
+	run(t, repo, "git", "commit", "-m", "initial")
+	return repo
+}
+
+func repositoryRecord(t *testing.T, repo string) model.Repository {
+	t.Helper()
+	common := strings.TrimSpace(string(runOutput(t, repo, "git", "rev-parse", "--git-common-dir")))
+	if !filepath.IsAbs(common) {
+		common = filepath.Join(repo, common)
+	}
+	return model.Repository{PrimaryPath: repo, CommonDir: canonicalTestPath(common)}
+}
+
+func branchExists(t *testing.T, repo, branch string) bool {
+	t.Helper()
+	cmd := exec.Command("git", "show-ref", "--verify", "--quiet", "refs/heads/"+branch)
+	cmd.Dir = repo
+	err := cmd.Run()
+	if err == nil {
+		return true
+	}
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) && exitErr.ExitCode() == 1 {
+		return false
+	}
+	t.Fatalf("git show-ref failed: %v", err)
+	return false
+}
+
+func gitRaceWrapper(t *testing.T, repo, raceOID string) string {
+	t.Helper()
+	realGit, err := exec.LookPath("git")
+	if err != nil {
+		t.Fatalf("find git: %v", err)
+	}
+	dir := t.TempDir()
+	script := filepath.Join(dir, "git")
+	content := "#!/bin/sh\n" +
+		"real_git=" + quoteShell(realGit) + "\n" +
+		"repo=" + quoteShell(repo) + "\n" +
+		"race_oid=" + quoteShell(raceOID) + "\n" +
+		"if [ \"$1\" = merge-base ] && [ \"$2\" = --is-ancestor ]; then\n" +
+		"  \"$real_git\" \"$@\"\n" +
+		"  status=$?\n" +
+		"  if [ $status -eq 0 ]; then\n" +
+		"    \"$real_git\" -C \"$repo\" update-ref refs/heads/feature \"$race_oid\"\n" +
+		"  fi\n" +
+		"  exit $status\n" +
+		"fi\n" +
+		"exec \"$real_git\" \"$@\"\n"
+	if err := os.WriteFile(script, []byte(content), 0o755); err != nil {
+		t.Fatalf("write git wrapper: %v", err)
+	}
+	return script
 }
 
 func writeFile(t *testing.T, path, content string) {

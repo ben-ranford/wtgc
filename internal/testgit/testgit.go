@@ -70,6 +70,11 @@ func WriteFile(t *testing.T, path, content string) {
 
 func (r *Repository) CreateMergedWorktree(t *testing.T, branch string) string {
 	t.Helper()
+	return r.CreateMergedWorktreeAt(t, branch, filepath.Join(r.Worktrees, safePathName(branch)))
+}
+
+func (r *Repository) CreateMergedWorktreeAt(t *testing.T, branch, path string) string {
+	t.Helper()
 	Run(t, r.Path, "checkout", "main")
 	Run(t, r.Path, "checkout", "-b", branch)
 	WriteFile(t, filepath.Join(r.Path, branchFileName(branch)), branch+"\n")
@@ -80,7 +85,6 @@ func (r *Repository) CreateMergedWorktree(t *testing.T, branch string) string {
 	Run(t, r.Path, "merge", "--no-ff", "--no-edit", branch)
 	Run(t, r.Path, "push", "origin", "main")
 
-	path := filepath.Join(r.Worktrees, safePathName(branch))
 	Run(t, r.Path, "worktree", "add", path, branch)
 	return path
 }
@@ -94,6 +98,21 @@ func (r *Repository) CreateUnmergedWorktree(t *testing.T, branch string) string 
 	Run(t, r.Path, "commit", "-m", "commit "+branch)
 	Run(t, r.Path, "push", "-u", "origin", branch)
 	Run(t, r.Path, "checkout", "main")
+
+	path := filepath.Join(r.Worktrees, safePathName(branch))
+	Run(t, r.Path, "worktree", "add", path, branch)
+	return path
+}
+
+func (r *Repository) CreateLocallyMergedWorktree(t *testing.T, branch string) string {
+	t.Helper()
+	Run(t, r.Path, "checkout", "main")
+	Run(t, r.Path, "checkout", "-b", branch)
+	WriteFile(t, filepath.Join(r.Path, branchFileName(branch)), branch+"\n")
+	Run(t, r.Path, "add", ".")
+	Run(t, r.Path, "commit", "-m", "commit "+branch)
+	Run(t, r.Path, "checkout", "main")
+	Run(t, r.Path, "merge", "--no-ff", "--no-edit", branch)
 
 	path := filepath.Join(r.Worktrees, safePathName(branch))
 	Run(t, r.Path, "worktree", "add", path, branch)

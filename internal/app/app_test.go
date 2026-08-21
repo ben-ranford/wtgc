@@ -3,8 +3,10 @@ package app
 import (
 	"context"
 	"errors"
+	"fmt"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/ben-ranford/wtgc/internal/model"
 )
@@ -77,6 +79,32 @@ func TestExecuteRevalidatesBeforeRemoval(t *testing.T) {
 	}
 }
 
+func TestDirtyUnmergedWorktreeIsKept(t *testing.T) {
+	t.Parallel()
+	backend := newFakeGit(branchRecord("feature"))
+	backend.clean = []bool{false}
+	backend.ancestor = false
+	backend.remote = true
+
+	inventory, err := New(backend).Run(context.Background(), Options{Roots: []string{"/scan"}, Execute: true})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	item := inventory.Worktrees[0]
+	if item.Classification != model.Kept {
+		t.Fatalf("classification = %q, want %q", item.Classification, model.Kept)
+	}
+	if item.Dirty == nil || !*item.Dirty {
+		t.Fatalf("dirty = %v, want true", item.Dirty)
+	}
+	if item.Action != model.ActionKept {
+		t.Fatalf("action = %q, want %q", item.Action, model.ActionKept)
+	}
+	if backend.removeCalls != 0 {
+		t.Fatal("dirty unmerged worktree was removed")
+	}
+}
+
 func TestExecuteRemovesThenOptionallyDeletesBranch(t *testing.T) {
 	t.Parallel()
 	backend := newFakeGit(branchRecord("feature"))
@@ -98,8 +126,34 @@ func TestExecuteRemovesThenOptionallyDeletesBranch(t *testing.T) {
 	if !inventory.Worktrees[0].Removed || !inventory.Worktrees[0].BranchDeleted {
 		t.Fatalf("result = %+v, want removed branch", inventory.Worktrees[0])
 	}
+	if inventory.Worktrees[0].Action != model.ActionRemovedBranchDeleted {
+		t.Fatalf("action = %q, want %q", inventory.Worktrees[0].Action, model.ActionRemovedBranchDeleted)
+	}
+	if inventory.Worktrees[0].ReclaimedBytes != 2048 || inventory.Summary.ReclaimedBytes != 2048 {
+		t.Fatalf("reclaimed item/summary = %d/%d, want 2048/2048", inventory.Worktrees[0].ReclaimedBytes, inventory.Summary.ReclaimedBytes)
+	}
 	if backend.pruneCalls != 0 {
 		t.Fatalf("Prune() calls = %d, want 0 without an accepted stale record", backend.pruneCalls)
+	}
+}
+
+func TestDryRunPopulatesActionAndReclaimedFields(t *testing.T) {
+	t.Parallel()
+	backend := newFakeGit(branchRecord("feature"))
+	backend.clean = []bool{true}
+	backend.ancestor = true
+	backend.remote = true
+
+	inventory, err := New(backend).Run(context.Background(), Options{Roots: []string{"/scan"}})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	item := inventory.Worktrees[0]
+	if item.Action != model.ActionWouldRemove {
+		t.Fatalf("action = %q, want %q", item.Action, model.ActionWouldRemove)
+	}
+	if item.ReclaimedBytes != 0 || inventory.Summary.ReclaimedBytes != 0 {
+		t.Fatalf("reclaimed item/summary = %d/%d, want 0/0", item.ReclaimedBytes, inventory.Summary.ReclaimedBytes)
 	}
 }
 
@@ -138,15 +192,32 @@ func TestNoRepositoriesReturnsDiscoveryError(t *testing.T) {
 
 func TestDefaultBranchErrorPreventsUnsafeClassification(t *testing.T) {
 	t.Parallel()
-	backend := newFakeGit(branchRecord("feature"))
+	backend := newFakeGit(branchRecord("feature"), model.RegisteredWorktree{Path: "/repo-worktrees/missing", Prunable: true})
 	backend.defaultErr = errors.New("remote head missing")
 
 	inventory, err := New(backend).Run(context.Background(), Options{Roots: []string{"/scan"}, Execute: true})
 	if err == nil {
 		t.Fatal("Run() error = nil, want default branch error")
 	}
-	if len(inventory.Worktrees) != 0 {
-		t.Fatalf("worktrees = %#v, want scan to stop before classification", inventory.Worktrees)
+	if len(inventory.Worktrees) != 2 {
+		t.Fatalf("worktrees = %#v, want records emitted after list succeeds", inventory.Worktrees)
+	}
+	foundPrunable := false
+	for _, item := range inventory.Worktrees {
+		if item.Prunable {
+			foundPrunable = true
+			if item.Classification != model.Prunable {
+				t.Fatalf("prunable classification = %q, want %q", item.Classification, model.Prunable)
+			}
+		} else if item.Classification != model.Kept {
+			t.Fatalf("live classification = %q, want %q", item.Classification, model.Kept)
+		}
+		if item.Error == "" || !contains(item.Error, "default branch") {
+			t.Fatalf("worktree error = %q, want default branch error", item.Error)
+		}
+	}
+	if !foundPrunable {
+		t.Fatal("default-branch error inventory did not retain prunable record")
 	}
 	if backend.removeCalls != 0 || backend.pruneCalls != 0 {
 		t.Fatalf("mutating calls remove/prune = %d/%d, want 0/0", backend.removeCalls, backend.pruneCalls)
@@ -249,6 +320,9 @@ func TestExecutePrunesAcceptedPrunableMetadata(t *testing.T) {
 	if !inventory.Worktrees[0].Removed {
 		t.Fatalf("removed = false, want prunable metadata marked removed")
 	}
+	if inventory.Worktrees[0].Action != model.ActionPruned {
+		t.Fatalf("action = %q, want %q", inventory.Worktrees[0].Action, model.ActionPruned)
+	}
 }
 
 func TestPrunableRevalidationBlocksWhenMetadataChanges(t *testing.T) {
@@ -260,16 +334,16 @@ func TestPrunableRevalidationBlocksWhenMetadataChanges(t *testing.T) {
 	}
 
 	inventory, err := New(backend).Run(context.Background(), Options{Roots: []string{"/scan"}, Execute: true})
-	if err != nil {
-		t.Fatalf("Run() error = %v", err)
+	if err == nil {
+		t.Fatal("Run() error = nil, want changed prunable set error")
 	}
 	if backend.pruneCalls != 0 {
 		t.Fatal("prune ran after prunable metadata changed")
 	}
-	if got := inventory.Worktrees[0].Classification; got != model.Kept {
-		t.Fatalf("classification = %q, want %q", got, model.Kept)
+	if got := inventory.Worktrees[0].Classification; got != model.Error {
+		t.Fatalf("classification = %q, want %q", got, model.Error)
 	}
-	if !contains(inventory.Worktrees[0].Reason, "revalidation blocked prune") {
+	if !contains(inventory.Worktrees[0].Reason, "prunable set changed") {
 		t.Fatalf("reason = %q, want revalidation block", inventory.Worktrees[0].Reason)
 	}
 }
@@ -288,6 +362,32 @@ func TestPrunableRevalidationErrorFailsClosed(t *testing.T) {
 	}
 	if backend.pruneCalls != 0 {
 		t.Fatal("prune ran after prunable revalidation error")
+	}
+}
+
+func TestPrunableExactSetChangeBlocksPrune(t *testing.T) {
+	t.Parallel()
+	backend := newFakeGit(model.RegisteredWorktree{Path: "/repo-worktrees/missing-a", Prunable: true})
+	backend.listResults = [][]model.RegisteredWorktree{
+		{{Path: "/repo-worktrees/missing-a", Prunable: true}},
+		{
+			{Path: "/repo-worktrees/missing-a", Prunable: true},
+			{Path: "/repo-worktrees/missing-b", Prunable: true},
+		},
+	}
+
+	inventory, err := New(backend).Run(context.Background(), Options{Roots: []string{"/scan"}, Execute: true})
+	if err == nil {
+		t.Fatal("Run() error = nil, want changed prunable set error")
+	}
+	if backend.pruneCalls != 0 {
+		t.Fatal("prune ran after prunable set changed")
+	}
+	if inventory.Worktrees[0].Action != model.ActionKept {
+		t.Fatalf("action = %q, want %q", inventory.Worktrees[0].Action, model.ActionKept)
+	}
+	if !contains(inventory.Worktrees[0].Error, "changed") {
+		t.Fatalf("item error = %q, want changed-set evidence", inventory.Worktrees[0].Error)
 	}
 }
 
@@ -359,25 +459,104 @@ func TestDeleteBranchErrorRetainsBranch(t *testing.T) {
 	}
 }
 
+func TestGlobalClassificationPoolScansManyRepositories(t *testing.T) {
+	t.Parallel()
+	const repoCount = 10
+	const recordsPerRepo = 35
+	const workerCount = 8
+	backend := newFakeGit()
+	backend.repositories = nil
+	backend.recordsByRepo = make(map[string][]model.RegisteredWorktree)
+	backend.cleanByPath = make(map[string]bool)
+	backend.cleanStarted = make(chan struct{}, repoCount*recordsPerRepo)
+	cleanRelease := make(chan struct{})
+	backend.cleanRelease = cleanRelease
+	backend.ancestor = true
+	backend.remote = true
+	for repoIndex := 0; repoIndex < repoCount; repoIndex++ {
+		repo := model.Repository{
+			CommonDir:   fmt.Sprintf("/repo-%02d/.git", repoIndex),
+			PrimaryPath: fmt.Sprintf("/repo-%02d", repoIndex),
+		}
+		backend.repositories = append(backend.repositories, repo)
+		for recordIndex := 0; recordIndex < recordsPerRepo; recordIndex++ {
+			path := fmt.Sprintf("/repo-%02d-worktrees/feature-%02d", repoIndex, recordIndex)
+			backend.recordsByRepo[repo.PrimaryPath] = append(backend.recordsByRepo[repo.PrimaryPath], model.RegisteredWorktree{
+				Path:   path,
+				Head:   fmt.Sprintf("head-%02d-%02d", repoIndex, recordIndex),
+				Branch: fmt.Sprintf("feature-%02d", recordIndex),
+			})
+			backend.cleanByPath[path] = true
+		}
+	}
+
+	type runResult struct {
+		inventory model.Inventory
+		err       error
+	}
+	resultCh := make(chan runResult, 1)
+	go func() {
+		inventory, err := New(backend).Run(context.Background(), Options{Roots: []string{"/scan"}})
+		resultCh <- runResult{inventory: inventory, err: err}
+	}()
+	for range workerCount {
+		select {
+		case <-backend.cleanStarted:
+		case <-time.After(time.Second):
+			close(cleanRelease)
+			t.Fatal("classification workers did not start concurrently")
+		}
+	}
+	close(cleanRelease)
+	result := <-resultCh
+	inventory, err := result.inventory, result.err
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if len(inventory.Worktrees) != repoCount*recordsPerRepo {
+		t.Fatalf("worktrees = %d, want %d", len(inventory.Worktrees), repoCount*recordsPerRepo)
+	}
+	if backend.cleanCalls != repoCount*recordsPerRepo {
+		t.Fatalf("clean calls = %d, want %d", backend.cleanCalls, repoCount*recordsPerRepo)
+	}
+	if backend.maxCleanCalls != workerCount {
+		t.Fatalf("maximum concurrent clean calls = %d, want %d", backend.maxCleanCalls, workerCount)
+	}
+	for i := 1; i < len(inventory.Worktrees); i++ {
+		prev, cur := inventory.Worktrees[i-1], inventory.Worktrees[i]
+		if prev.Repository > cur.Repository || (prev.Repository == cur.Repository && prev.Path > cur.Path) {
+			t.Fatalf("worktrees not sorted at %d: %s/%s before %s/%s", i, prev.Repository, prev.Path, cur.Repository, cur.Path)
+		}
+	}
+}
+
 type fakeGit struct {
-	mu           sync.Mutex
-	repository   model.Repository
-	repositories []model.Repository
-	records      []model.RegisteredWorktree
-	listResults  [][]model.RegisteredWorktree
-	listErrs     []error
-	clean        []bool
-	cleanErr     error
-	defaultErr   error
-	ancestor     bool
-	remote       bool
-	diskErr      error
-	removeErr    error
-	pruneErr     error
-	deleteErr    error
-	removeCalls  int
-	pruneCalls   int
-	deleteCalls  int
+	mu               sync.Mutex
+	repository       model.Repository
+	repositories     []model.Repository
+	records          []model.RegisteredWorktree
+	recordsByRepo    map[string][]model.RegisteredWorktree
+	listResults      [][]model.RegisteredWorktree
+	listErrs         []error
+	clean            []bool
+	cleanByPath      map[string]bool
+	cleanDelay       time.Duration
+	cleanStarted     chan struct{}
+	cleanRelease     <-chan struct{}
+	cleanCalls       int
+	activeCleanCalls int
+	maxCleanCalls    int
+	cleanErr         error
+	defaultErr       error
+	ancestor         bool
+	remote           bool
+	diskErr          error
+	removeErr        error
+	pruneErr         error
+	deleteErr        error
+	removeCalls      int
+	pruneCalls       int
+	deleteCalls      int
 }
 
 func newFakeGit(records ...model.RegisteredWorktree) *fakeGit {
@@ -393,7 +572,7 @@ func (f *fakeGit) Discover(context.Context, []string) ([]model.Repository, []err
 	defer f.mu.Unlock()
 	return append([]model.Repository(nil), f.repositories...), nil
 }
-func (f *fakeGit) List(context.Context, model.Repository) ([]model.RegisteredWorktree, error) {
+func (f *fakeGit) List(_ context.Context, repo model.Repository) ([]model.RegisteredWorktree, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	var err error
@@ -409,6 +588,9 @@ func (f *fakeGit) List(context.Context, model.Repository) ([]model.RegisteredWor
 		f.listResults = f.listResults[1:]
 		return records, nil
 	}
+	if f.recordsByRepo != nil {
+		return append([]model.RegisteredWorktree(nil), f.recordsByRepo[repo.PrimaryPath]...), nil
+	}
 	return append([]model.RegisteredWorktree(nil), f.records...), nil
 }
 func (f *fakeGit) DefaultBranch(context.Context, model.Repository) (string, error) {
@@ -417,11 +599,37 @@ func (f *fakeGit) DefaultBranch(context.Context, model.Repository) (string, erro
 	}
 	return "main", nil
 }
-func (f *fakeGit) IsClean(context.Context, string) (bool, error) {
+func (f *fakeGit) IsClean(_ context.Context, path string) (bool, error) {
 	f.mu.Lock()
-	defer f.mu.Unlock()
+	f.cleanCalls++
+	f.activeCleanCalls++
+	if f.activeCleanCalls > f.maxCleanCalls {
+		f.maxCleanCalls = f.activeCleanCalls
+	}
+	delay := f.cleanDelay
+	started := f.cleanStarted
+	release := f.cleanRelease
+	f.mu.Unlock()
+
+	if started != nil {
+		started <- struct{}{}
+	}
+	if release != nil {
+		<-release
+	} else if delay > 0 {
+		time.Sleep(delay)
+	}
+
+	f.mu.Lock()
+	defer func() {
+		f.activeCleanCalls--
+		f.mu.Unlock()
+	}()
 	if f.cleanErr != nil {
 		return false, f.cleanErr
+	}
+	if f.cleanByPath != nil {
+		return f.cleanByPath[path], nil
 	}
 	if len(f.clean) == 0 {
 		return false, nil
@@ -456,7 +664,7 @@ func (f *fakeGit) Prune(context.Context, model.Repository) error {
 	f.pruneCalls++
 	return f.pruneErr
 }
-func (f *fakeGit) DeleteBranch(context.Context, model.Repository, string) error {
+func (f *fakeGit) DeleteBranch(context.Context, model.Repository, string, string) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.deleteCalls++

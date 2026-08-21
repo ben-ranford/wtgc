@@ -1,7 +1,10 @@
 // Package model defines the stable inventory and reporting contract.
 package model
 
-import "time"
+import (
+	"encoding/json"
+	"time"
+)
 
 // Repository identifies a repository by its shared Git directory and primary
 // working tree. CommonDir is the stable deduplication key across linked
@@ -36,6 +39,18 @@ const (
 	Error          Classification = "error"
 )
 
+// Action is the explicit cleanup action taken or planned for a worktree.
+type Action string
+
+const (
+	ActionKept                 Action = "kept"
+	ActionWouldRemove          Action = "would_remove"
+	ActionWouldPrune           Action = "would_prune"
+	ActionRemoved              Action = "removed"
+	ActionPruned               Action = "pruned"
+	ActionRemovedBranchDeleted Action = "removed_branch_deleted"
+)
+
 // Worktree is one registered Git worktree and its cleanup decision.
 type Worktree struct {
 	Path           string         `json:"path"`
@@ -50,6 +65,9 @@ type Worktree struct {
 	Detached       bool           `json:"detached,omitempty"`
 	Locked         bool           `json:"locked,omitempty"`
 	Prunable       bool           `json:"prunable,omitempty"`
+	Dirty          *bool          `json:"dirty,omitempty"`
+	Action         Action         `json:"action"`
+	ReclaimedBytes int64          `json:"reclaimed_bytes"`
 	Removed        bool           `json:"removed,omitempty"`
 	BranchDeleted  bool           `json:"branch_deleted,omitempty"`
 	Error          string         `json:"error,omitempty"`
@@ -77,4 +95,14 @@ type Inventory struct {
 	Worktrees     []Worktree `json:"worktrees"`
 	Summary       Summary    `json:"summary"`
 	Errors        []string   `json:"errors,omitempty"`
+}
+
+// MarshalJSON keeps the published contract stable: an empty inventory reports
+// worktrees as [] rather than null.
+func (inv Inventory) MarshalJSON() ([]byte, error) {
+	type inventoryAlias Inventory
+	if inv.Worktrees == nil {
+		inv.Worktrees = []Worktree{}
+	}
+	return json.Marshal(inventoryAlias(inv))
 }
