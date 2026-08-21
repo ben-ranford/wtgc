@@ -15,6 +15,10 @@
 - `make cov`
 - `make build`
 
+GitHub Actions jobs run on the `wtgc-arc` self-hosted scale set. Each job
+bootstraps only the missing Debian packages it needs; production runner images
+should preinstall those tools to avoid package installation on every cold start.
+
 Tool versions are pinned in `Makefile`:
 
 - `golangci-lint`: `v2.9.0`

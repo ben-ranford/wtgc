@@ -23,6 +23,9 @@ jobs:
         with:
           go-version-file: go.mod
 
+      - name: Bootstrap ARC runner tools
+        run: ./scripts/bootstrap-runner-tools.sh make ruby tar
+
       - name: Run CI target
         run: make ci
 

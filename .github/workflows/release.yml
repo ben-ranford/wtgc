@@ -20,6 +20,8 @@ jobs:
         uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
         with:
           go-version-file: go.mod
+      - name: Bootstrap ARC runner tools
+        run: ./scripts/bootstrap-runner-tools.sh make ruby tar
       - name: Run CI target
         run: make ci
 
@@ -51,6 +53,8 @@ jobs:
         uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
         with:
           go-version-file: go.mod
+      - name: Bootstrap ARC runner tools
+        run: ./scripts/bootstrap-runner-tools.sh make tar zip
       - name: Build artifact
         run: |
           make release VERSION=${GITHUB_REF_NAME} PLATFORMS="${{ matrix.goos }}/${{ matrix.goarch }}"
@@ -76,6 +80,8 @@ jobs:
         uses: actions/download-artifact@37930b1c2abaa49bbe596cd826c3c89aef350131 # v7
         with:
           path: dist/artifacts
+      - name: Bootstrap ARC runner tools
+        run: ./scripts/bootstrap-runner-tools.sh gh
       - name: Prepare release assets
         run: |
           ./scripts/flatten-release-artifacts.sh dist/artifacts dist/release
