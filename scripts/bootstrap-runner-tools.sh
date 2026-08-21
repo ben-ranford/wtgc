@@ -7,17 +7,35 @@ if [ "$#" -eq 0 ]; then
 fi
 
 packages=""
+
+tool_available() {
+  case "$1" in
+    gcc)
+      command -v gcc >/dev/null 2>&1 &&
+        printf '#include <stdlib.h>\n#include <pthread.h>\n' |
+          gcc -x c -E - >/dev/null 2>&1
+      ;;
+    *)
+      command -v "$1" >/dev/null 2>&1
+      ;;
+  esac
+}
+
 for tool in "$@"; do
   case "$tool" in
-    gcc|gh|make|ruby|tar|zip)
+    gcc)
+      package="build-essential"
+      ;;
+    gh|make|ruby|tar|zip)
+      package="$tool"
       ;;
     *)
       echo "unsupported runner tool: $tool" >&2
       exit 2
       ;;
   esac
-  if ! command -v "$tool" >/dev/null 2>&1; then
-    packages="$packages $tool"
+  if ! tool_available "$tool"; then
+    packages="$packages $package"
   fi
 done
 
@@ -42,11 +60,10 @@ run_apt() {
 }
 
 run_apt update
-# Package names match their commands on the Debian-based ARC runner image.
 run_apt install -y --no-install-recommends $packages
 
 for tool in "$@"; do
-  if ! command -v "$tool" >/dev/null 2>&1; then
+  if ! tool_available "$tool"; then
     echo "runner tool installation did not provide: $tool" >&2
     exit 1
   fi
