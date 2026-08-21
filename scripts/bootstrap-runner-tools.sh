@@ -9,7 +9,7 @@ fi
 packages=""
 for tool in "$@"; do
   case "$tool" in
-    gh|make|ruby|tar|zip)
+    gcc|gh|make|ruby|tar|zip)
       ;;
     *)
       echo "unsupported runner tool: $tool" >&2
