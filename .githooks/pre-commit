@@ -1,0 +1,22 @@
+#!/usr/bin/env sh
+set -eu
+
+# Git exports repository-local variables to hooks. Unset them before tests create
+# temporary repositories so fixture Git commands cannot target this worktree.
+for variable in $(git rev-parse --local-env-vars); do
+  unset "$variable"
+done
+
+echo "[pre-commit] running format check"
+make format-check
+
+echo "[pre-commit] checking inline suppressions"
+make suppressions
+
+echo "[pre-commit] running tests"
+make test
+
+echo "[pre-commit] running build"
+make build
+
+echo "[pre-commit] checks passed"
