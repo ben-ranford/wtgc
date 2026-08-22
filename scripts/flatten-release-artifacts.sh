@@ -29,6 +29,8 @@ case "$release_real" in
     echo "refusing release output directory inside artifact source: $release_dir" >&2
     exit 1
     ;;
+  *)
+    ;;
 esac
 case "$source_real" in
   "$release_real"/*)
