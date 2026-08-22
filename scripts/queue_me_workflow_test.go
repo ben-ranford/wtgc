@@ -15,6 +15,8 @@ func TestQueueMeWorkflowContract(t *testing.T) {
 		"pull_request_target:",
 		"workflow_dispatch:",
 		"push:",
+		"workflow_run:",
+		"workflows: [ci]",
 		"- main",
 		"- labeled",
 		"- unlabeled",
