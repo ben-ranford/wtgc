@@ -50,55 +50,7 @@ func (c *Client) Discover(ctx context.Context, roots []string) ([]model.Reposito
 	seen := map[string]string{}
 	var errs []error
 	for _, root := range roots {
-		if strings.TrimSpace(root) == "" {
-			errs = append(errs, errors.New("empty discovery root"))
-			continue
-		}
-		absRoot, err := filepath.Abs(root)
-		if err != nil {
-			errs = append(errs, fmt.Errorf("resolve root %q: %w", root, err))
-			continue
-		}
-		info, err := os.Stat(absRoot)
-		if err != nil {
-			errs = append(errs, fmt.Errorf("stat root %q: %w", absRoot, err))
-			continue
-		}
-		if !info.IsDir() {
-			errs = append(errs, fmt.Errorf("root %q is not a directory", absRoot))
-			continue
-		}
-		resolvedRoot, err := filepath.EvalSymlinks(absRoot)
-		if err != nil {
-			errs = append(errs, fmt.Errorf("resolve root symlinks %q: %w", absRoot, err))
-			continue
-		}
-		err = filepath.WalkDir(resolvedRoot, func(path string, d fs.DirEntry, walkErr error) error {
-			if walkErr != nil {
-				errs = append(errs, fmt.Errorf("walk %q: %w", path, walkErr))
-				if d != nil && d.IsDir() {
-					return filepath.SkipDir
-				}
-				return nil
-			}
-			if d.Name() != ".git" {
-				return nil
-			}
-			worktreePath := filepath.Dir(path)
-			commonGitDir, err := c.commonGitDir(ctx, worktreePath)
-			if err != nil {
-				errs = append(errs, fmt.Errorf("common git dir for %q: %w", worktreePath, err))
-			} else if _, ok := seen[commonGitDir]; !ok {
-				seen[commonGitDir] = worktreePath
-			}
-			if d.IsDir() {
-				return filepath.SkipDir
-			}
-			return nil
-		})
-		if err != nil {
-			errs = append(errs, fmt.Errorf("walk root %q: %w", resolvedRoot, err))
-		}
+		c.discoverRoot(ctx, root, seen, &errs)
 	}
 
 	commonDirs := make([]string, 0, len(seen))
@@ -122,6 +74,61 @@ func (c *Client) Discover(ctx context.Context, roots []string) ([]model.Reposito
 		repos = append(repos, repo)
 	}
 	return repos, errs
+}
+
+func (c *Client) discoverRoot(ctx context.Context, root string, seen map[string]string, errs *[]error) {
+	if strings.TrimSpace(root) == "" {
+		*errs = append(*errs, errors.New("empty discovery root"))
+		return
+	}
+	absRoot, err := filepath.Abs(root)
+	if err != nil {
+		*errs = append(*errs, fmt.Errorf("resolve root %q: %w", root, err))
+		return
+	}
+	info, err := os.Stat(absRoot)
+	if err != nil {
+		*errs = append(*errs, fmt.Errorf("stat root %q: %w", absRoot, err))
+		return
+	}
+	if !info.IsDir() {
+		*errs = append(*errs, fmt.Errorf("root %q is not a directory", absRoot))
+		return
+	}
+	resolvedRoot, err := filepath.EvalSymlinks(absRoot)
+	if err != nil {
+		*errs = append(*errs, fmt.Errorf("resolve root symlinks %q: %w", absRoot, err))
+		return
+	}
+	if err := c.walkRepositoryRoot(ctx, resolvedRoot, seen, errs); err != nil {
+		*errs = append(*errs, fmt.Errorf("walk root %q: %w", resolvedRoot, err))
+	}
+}
+
+func (c *Client) walkRepositoryRoot(ctx context.Context, root string, seen map[string]string, errs *[]error) error {
+	return filepath.WalkDir(root, func(path string, d fs.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			*errs = append(*errs, fmt.Errorf("walk %q: %w", path, walkErr))
+			if d != nil && d.IsDir() {
+				return filepath.SkipDir
+			}
+			return nil
+		}
+		if d.Name() != ".git" {
+			return nil
+		}
+		worktreePath := filepath.Dir(path)
+		commonGitDir, err := c.commonGitDir(ctx, worktreePath)
+		if err != nil {
+			*errs = append(*errs, fmt.Errorf("common git dir for %q: %w", worktreePath, err))
+		} else if _, ok := seen[commonGitDir]; !ok {
+			seen[commonGitDir] = worktreePath
+		}
+		if d.IsDir() {
+			return filepath.SkipDir
+		}
+		return nil
+	})
 }
 
 // List returns raw worktree records for a repository.
