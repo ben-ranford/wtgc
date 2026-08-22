@@ -93,9 +93,11 @@ jobs:
         run: |
           echo "date=$(git show -s --format=%cI '${{ inputs.sha }}')" >> "$GITHUB_OUTPUT"
       - name: Build artifact
+        env:
+          RELEASE_TAG: ${{ inputs.tag_name }}
         run: |
           make release \
-            VERSION='${{ inputs.tag_name }}' \
+            VERSION="$RELEASE_TAG" \
             COMMIT='${{ inputs.sha }}' \
             BUILD_DATE='${{ steps.metadata.outputs.date }}' \
             PLATFORMS='${{ matrix.goos }}/${{ matrix.goarch }}'
