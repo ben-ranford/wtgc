@@ -45,7 +45,7 @@ jobs:
             const pullRequest = context.payload.pull_request || (await github.rest.pulls.get({
               owner: context.repo.owner,
               repo: context.repo.repo,
-              pull_number: Number(core.getInput('pr-number')),
+              pull_number: Number(context.payload.inputs?.['pr-number']),
             })).data;
             if (pullRequest.labels.length === 0) {
               core.setFailed('Pull requests must have at least one label.');
