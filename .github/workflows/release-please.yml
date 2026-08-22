@@ -44,9 +44,9 @@ jobs:
       - name: Trigger PR metadata validation for Release Please PR
         env:
           GH_TOKEN: ${{ github.token }}
-          RELEASE_PR_BASE_REF: ${{ github.event.repository.default_branch }}
+          RELEASE_PR_BRANCH: ${{ fromJSON(needs.release-please.outputs.pr).headBranchName }}
           RELEASE_PR_NUMBER: ${{ fromJSON(needs.release-please.outputs.pr).number }}
-        run: gh workflow run pr-metadata.yml --ref "$RELEASE_PR_BASE_REF" -f pr-number="$RELEASE_PR_NUMBER"
+        run: gh workflow run pr-metadata.yml --ref "$RELEASE_PR_BRANCH" -f pr-number="$RELEASE_PR_NUMBER"
 
   release-assets:
     needs: release-please

@@ -78,12 +78,12 @@ func TestValidateRequiresAllHeadingsButAllowsBlankNotes(t *testing.T) {
 }
 
 func TestValidateOnlyExemptsTrustedReleasePleasePRs(t *testing.T) {
-	identity := releasePleaseIdentity{headRepositoryFullName: "ben-ranford/wtgc", repositoryFullName: "ben-ranford/wtgc"}
-	if err := validate("chore: release 1.2.3", "release-please--branches--main", "## Changelog\n", identity); err != nil {
+	identity := releasePleaseIdentity{headRepositoryFullName: "ben-ranford/wtgc", repositoryFullName: "ben-ranford/wtgc", releasePleaseAuthor: "ben-ranford", pullRequestAuthor: "ben-ranford"}
+	if err := validate("chore: release 1.2.3", "release-please--branches--main--components--wtgc", "## Changelog\n", identity); err != nil {
 		t.Fatalf("trusted release PR rejected: %v", err)
 	}
-	for _, candidate := range []releasePleaseIdentity{{}, {headRepositoryFullName: "fork/wtgc", repositoryFullName: "ben-ranford/wtgc"}} {
-		err := validate("chore: release 1.2.3", "release-please--branches--main", "## Changelog\n", candidate)
+	for _, candidate := range []releasePleaseIdentity{{}, {headRepositoryFullName: "fork/wtgc", repositoryFullName: "ben-ranford/wtgc", releasePleaseAuthor: "ben-ranford", pullRequestAuthor: "ben-ranford"}, {headRepositoryFullName: "ben-ranford/wtgc", repositoryFullName: "ben-ranford/wtgc", releasePleaseAuthor: "ben-ranford", pullRequestAuthor: "other-user"}} {
+		err := validate("chore: release 1.2.3", "release-please--branches--main--components--wtgc", "## Changelog\n", candidate)
 		if err == nil || !strings.Contains(err.Error(), `missing required template section`) {
 			t.Fatalf("untrusted release PR error = %v", err)
 		}
@@ -119,7 +119,7 @@ func TestHelpers(t *testing.T) {
 	if hasMeaningfulContent("<!--\nhidden placeholder\n-->") {
 		t.Fatal("multiline HTML comments counted as meaningful content")
 	}
-	if !fieldHasValue("- Safety: None", "Safety") || fieldHasValue("- Safety:  ", "Safety") {
+	if !fieldHasValue("- Safety: None", "Safety") || fieldHasValue("- Safety:  ", "Safety") || fieldHasValue("- Safety: <!-- not filled -->", "Safety") || fieldHasValue("```yaml\n- Safety: None\n```", "Safety") {
 		t.Fatal("fieldHasValue did not distinguish filled and empty fields")
 	}
 	if code := writeError(&errWriter{}, "failure"); code != 1 {

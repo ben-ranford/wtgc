@@ -14,8 +14,9 @@ import (
 const maxBodyBytes = 1 << 20
 
 var (
-	titlePattern        = regexp.MustCompile(`^(feat|fix|perf|docs|refactor|revert|test|ci|build|chore)(\([a-z0-9][a-z0-9._/-]*\))?!?: [^\s].+$`)
-	releaseTitlePattern = regexp.MustCompile(`^chore: release [0-9]+\.[0-9]+\.[0-9]+$`)
+	titlePattern          = regexp.MustCompile(`^(feat|fix|perf|docs|refactor|revert|test|ci|build|chore)(\([a-z0-9][a-z0-9._/-]*\))?!?: [^\s].+$`)
+	releaseTitlePattern   = regexp.MustCompile(`^chore: release [0-9]+\.[0-9]+\.[0-9]+$`)
+	releaseHeadRefPattern = regexp.MustCompile(`^release-please--branches--main(?:--components--[a-z0-9._-]+)?$`)
 
 	placeholderTexts = []string{
 		"What user-visible problem or engineering risk does this address?",
@@ -36,6 +37,8 @@ type repoMergePolicy struct {
 type releasePleaseIdentity struct {
 	headRepositoryFullName string
 	repositoryFullName     string
+	releasePleaseAuthor    string
+	pullRequestAuthor      string
 }
 
 func main() {
@@ -49,6 +52,8 @@ func run(args []string, getenv func(string) string, stderr io.Writer) int {
 	headRef := fs.String("head-ref", strings.TrimSpace(getenv("PR_HEAD_REF")), "pull request head ref")
 	headRepositoryFullName := fs.String("head-repo-full-name", strings.TrimSpace(getenv("PR_HEAD_REPO_FULL_NAME")), "pull request head repository full name")
 	repositoryFullName := fs.String("repo-full-name", strings.TrimSpace(getenv("REPOSITORY_FULL_NAME")), "repository full name")
+	releasePleaseAuthor := fs.String("release-please-author-login", strings.TrimSpace(getenv("RELEASE_PLEASE_AUTHOR_LOGIN")), "trusted Release Please author login")
+	pullRequestAuthor := fs.String("pr-author-login", strings.TrimSpace(getenv("PR_AUTHOR_LOGIN")), "pull request author login")
 	bodyFile := fs.String("body-file", "", "path to a file containing the pull request body")
 	checkRepoPolicy := fs.Bool("check-repo-policy", false, "validate repository merge policy")
 	allowMergeCommit := fs.String("allow-merge-commit", strings.TrimSpace(getenv("REPO_ALLOW_MERGE_COMMIT")), "whether the repository allows merge commits")
@@ -63,7 +68,7 @@ func run(args []string, getenv func(string) string, stderr io.Writer) int {
 	if err != nil {
 		return writeError(stderr, "read PR body: %v\n", err)
 	}
-	identity := releasePleaseIdentity{*headRepositoryFullName, *repositoryFullName}
+	identity := releasePleaseIdentity{*headRepositoryFullName, *repositoryFullName, *releasePleaseAuthor, *pullRequestAuthor}
 	if err := validate(*title, *headRef, body, identity); err != nil {
 		return writeError(stderr, "%v\n", err)
 	}
@@ -147,10 +152,12 @@ func validate(title, headRef, body string, identity releasePleaseIdentity) error
 }
 
 func isTrustedReleasePleasePR(headRef, title string, identity releasePleaseIdentity) bool {
-	return strings.TrimSpace(headRef) == "release-please--branches--main" &&
+	return releaseHeadRefPattern.MatchString(strings.TrimSpace(headRef)) &&
 		releaseTitlePattern.MatchString(strings.TrimSpace(title)) &&
 		strings.TrimSpace(identity.headRepositoryFullName) != "" &&
-		strings.TrimSpace(identity.headRepositoryFullName) == strings.TrimSpace(identity.repositoryFullName)
+		strings.TrimSpace(identity.headRepositoryFullName) == strings.TrimSpace(identity.repositoryFullName) &&
+		strings.TrimSpace(identity.releasePleaseAuthor) != "" &&
+		strings.TrimSpace(identity.releasePleaseAuthor) == strings.TrimSpace(identity.pullRequestAuthor)
 }
 
 func parseSections(body string) map[string]string {
@@ -250,9 +257,10 @@ func stripCodeFences(content string) string {
 }
 
 func fieldHasValue(content, field string) bool {
+	content = stripHTMLComments(stripCodeFences(content))
 	pattern := regexp.MustCompile(`(?m)^-\s*` + regexp.QuoteMeta(field) + `:\s*(.+)$`)
 	match := pattern.FindStringSubmatch(content)
-	return len(match) == 2 && strings.TrimSpace(match[1]) != ""
+	return len(match) == 2 && hasMeaningfulContent(match[1])
 }
 
 func validateRepoMergePolicy(policy repoMergePolicy) error {

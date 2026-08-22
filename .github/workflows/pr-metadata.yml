@@ -47,6 +47,9 @@ jobs:
               repo: context.repo.repo,
               pull_number: Number(context.payload.inputs?.['pr-number']),
             })).data;
+            if (context.eventName === 'workflow_dispatch' && (pullRequest.head.sha !== process.env.GITHUB_SHA || pullRequest.head.ref !== process.env.GITHUB_REF_NAME)) {
+              throw new Error('dispatched PR must match the workflow ref and SHA');
+            }
             if (pullRequest.labels.length === 0) {
               core.setFailed('Pull requests must have at least one label.');
             }
@@ -56,7 +59,16 @@ jobs:
             core.exportVariable('PR_TITLE', pullRequest.title || '');
             core.exportVariable('PR_HEAD_REF', pullRequest.head.ref || '');
             core.exportVariable('PR_HEAD_REPO_FULL_NAME', pullRequest.head.repo?.full_name || '');
+            core.exportVariable('PR_AUTHOR_LOGIN', pullRequest.user.login || '');
             core.exportVariable('REPOSITORY_FULL_NAME', context.repo.owner + '/' + context.repo.repo);
+
+      - name: Read Release Please identity
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
+        with:
+          github-token: ${{ secrets.RELEASE_PLEASE_TOKEN }}
+          script: |
+            const { data: user } = await github.rest.users.getAuthenticated();
+            core.exportVariable('RELEASE_PLEASE_AUTHOR_LOGIN', user.login);
 
       - name: Read repository merge policy
         uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
@@ -68,10 +80,10 @@ jobs:
             });
             const eventRepo = context.payload.repository || {};
             const firstDefined = (...values) => values.find((value) => value !== undefined && value !== null);
-            core.exportVariable('REPO_ALLOW_MERGE_COMMIT', String(firstDefined(repo.allow_merge_commit, repo.allowMergeCommit, eventRepo.allow_merge_commit, eventRepo.allowMergeCommit, false)));
-            core.exportVariable('REPO_ALLOW_REBASE_MERGE', String(firstDefined(repo.allow_rebase_merge, repo.allowRebaseMerge, eventRepo.allow_rebase_merge, eventRepo.allowRebaseMerge, false)));
-            core.exportVariable('REPO_ALLOW_SQUASH_MERGE', String(firstDefined(repo.allow_squash_merge, repo.allowSquashMerge, eventRepo.allow_squash_merge, eventRepo.allowSquashMerge, true)));
-            core.exportVariable('REPO_SQUASH_MERGE_COMMIT_TITLE', String(firstDefined(repo.squash_merge_commit_title, repo.squashMergeCommitTitle, eventRepo.squash_merge_commit_title, eventRepo.squashMergeCommitTitle, 'PR_TITLE')));
+            core.exportVariable('REPO_ALLOW_MERGE_COMMIT', String(firstDefined(repo.allow_merge_commit, repo.allowMergeCommit, eventRepo.allow_merge_commit, eventRepo.allowMergeCommit, '')));
+            core.exportVariable('REPO_ALLOW_REBASE_MERGE', String(firstDefined(repo.allow_rebase_merge, repo.allowRebaseMerge, eventRepo.allow_rebase_merge, eventRepo.allowRebaseMerge, '')));
+            core.exportVariable('REPO_ALLOW_SQUASH_MERGE', String(firstDefined(repo.allow_squash_merge, repo.allowSquashMerge, eventRepo.allow_squash_merge, eventRepo.allowSquashMerge, '')));
+            core.exportVariable('REPO_SQUASH_MERGE_COMMIT_TITLE', String(firstDefined(repo.squash_merge_commit_title, repo.squashMergeCommitTitle, eventRepo.squash_merge_commit_title, eventRepo.squashMergeCommitTitle, '')));
 
       - name: Validate PR title and template
-        run: go run ./tools/prcheck --check-repo-policy --title "$PR_TITLE" --head-ref "$PR_HEAD_REF" --head-repo-full-name "$PR_HEAD_REPO_FULL_NAME" --repo-full-name "$REPOSITORY_FULL_NAME" --body-file "$PR_BODY_FILE"
+        run: go run ./tools/prcheck --check-repo-policy --title "$PR_TITLE" --head-ref "$PR_HEAD_REF" --head-repo-full-name "$PR_HEAD_REPO_FULL_NAME" --repo-full-name "$REPOSITORY_FULL_NAME" --release-please-author-login "$RELEASE_PLEASE_AUTHOR_LOGIN" --pr-author-login "$PR_AUTHOR_LOGIN" --body-file "$PR_BODY_FILE"
