@@ -104,6 +104,14 @@ GitHub-hosted runners. It verifies the test suite natively on Linux, macOS, and
 Windows, then runs the full automation gate and release packaging smoke check on
 Ubuntu through `make ci` and `make release-check`.
 
+The `sonarqube quality gate` job generates the Go coverage report, uploads the
+analysis, and waits up to ten minutes for SonarQube to compute the quality gate.
+It is a required status check for `main`, so a pull request cannot merge until
+SonarQube passes. Configure the repository's `SONAR_TOKEN` Actions secret before
+enabling the workflow. For a self-hosted SonarQube Server, also set the
+`SONAR_HOST_URL` Actions variable; leave it unset for SonarQube Cloud. The
+SonarQube project key is `ben-ranford_wtgc`.
+
 `.github/workflows/release-please.yml` runs on default-branch pushes. It opens
 or updates Release Please PRs and, when a release is created, calls the reusable
 release workflow with the tag produced by Release Please.
