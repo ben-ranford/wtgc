@@ -192,7 +192,7 @@ func parseH2(line string) (string, bool) {
 }
 
 func hasMeaningfulContent(content string) bool {
-	content = stripCodeFences(content)
+	content = stripHTMLComments(stripCodeFences(content))
 	for _, placeholder := range placeholderTexts {
 		content = strings.ReplaceAll(content, placeholder, "")
 	}
@@ -203,6 +203,37 @@ func hasMeaningfulContent(content string) bool {
 		}
 	}
 	return false
+}
+
+func stripHTMLComments(content string) string {
+	var kept []string
+	inComment := false
+	for _, line := range strings.Split(content, "\n") {
+		for {
+			if inComment {
+				end := strings.Index(line, "-->")
+				if end < 0 {
+					line = ""
+					break
+				}
+				line = line[end+len("-->"):]
+				inComment = false
+			}
+			start := strings.Index(line, "<!--")
+			if start < 0 {
+				break
+			}
+			end := strings.Index(line[start+len("<!--"):], "-->")
+			if end < 0 {
+				line = line[:start]
+				inComment = true
+				break
+			}
+			line = line[:start] + line[start+len("<!--")+end+len("-->"):]
+		}
+		kept = append(kept, line)
+	}
+	return strings.Join(kept, "\n")
 }
 
 func stripCodeFences(content string) string {

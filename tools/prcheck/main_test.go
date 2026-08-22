@@ -116,6 +116,9 @@ func TestHelpers(t *testing.T) {
 	if hasMeaningfulContent("<!-- comment -->\n```\nmake ci\n```") {
 		t.Fatal("comments and code fences counted as meaningful content")
 	}
+	if hasMeaningfulContent("<!--\nhidden placeholder\n-->") {
+		t.Fatal("multiline HTML comments counted as meaningful content")
+	}
 	if !fieldHasValue("- Safety: None", "Safety") || fieldHasValue("- Safety:  ", "Safety") {
 		t.Fatal("fieldHasValue did not distinguish filled and empty fields")
 	}
