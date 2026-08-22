@@ -17,10 +17,14 @@ on:
       - edited
       - auto_merge_enabled
   workflow_run:
-    workflows: [ci]
+    workflows:
+      - ci
+      - pr metadata
     types: [completed]
   pull_request_review:
-    types: [submitted]
+    types:
+      - submitted
+      - dismissed
 
 concurrency:
   group: queue-me-${{ github.repository }}
