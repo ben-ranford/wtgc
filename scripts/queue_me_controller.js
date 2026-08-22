@@ -8,7 +8,8 @@ function labelName(label) {
 }
 
 function hasLabel(pull, queueLabel) {
-  return (pull.labels || []).some((label) => labelName(label) === queueLabel);
+  const labels = pull?.labels?.nodes || pull?.labels || [];
+  return labels.some((label) => labelName(label) === queueLabel);
 }
 
 function sortQueuedPulls(pulls) {
@@ -58,6 +59,7 @@ async function pullState(github, owner, repo, number) {
           isDraft
           mergeable
           mergeStateStatus
+          labels(first: 100) { nodes { name } }
           autoMergeRequest {
             enabledAt
             mergeMethod
@@ -216,8 +218,23 @@ async function armAutoMerge(github, pullRequestId, expectedHeadOid) {
   );
 }
 
-async function armOrMerge(github, state, { expectedBaseRefName, expectedBaseRefOid }) {
+async function armOrMerge(github, state, {
+  expectedBaseRefName,
+  expectedBaseRefOid,
+  queueLabel,
+}) {
   assertExpectedBaseState(state, expectedBaseRefName, expectedBaseRefOid);
+  const current = await pullStateByID(github, state.id);
+  if (!hasLabel(current, queueLabel)) {
+    throw new Error(`Pull request no longer has the ${queueLabel} label while advancing the queue.`);
+  }
+  if (current.headRefOid !== state.headRefOid) {
+    throw new Error(
+      `Pull request head moved from ${shortSHA(state.headRefOid)} to ${shortSHA(current.headRefOid)} while advancing the queue.`,
+    );
+  }
+  assertExpectedBaseState(current, expectedBaseRefName, expectedBaseRefOid);
+  state = current;
   if (state.autoMergeRequest) {
     return 'armed';
   }
@@ -236,6 +253,9 @@ async function armOrMerge(github, state, { expectedBaseRefName, expectedBaseRefO
       );
     }
     assertExpectedBaseState(refreshed, expectedBaseRefName, expectedBaseRefOid);
+    if (!hasLabel(refreshed, queueLabel)) {
+      throw new Error(`Pull request no longer has the ${queueLabel} label while advancing the queue.`);
+    }
     if (refreshed.mergeable === 'MERGEABLE' && refreshed.mergeStateStatus === 'CLEAN') {
       await mergeNow(github, refreshed.id, state.headRefOid);
       return 'merged';
@@ -256,6 +276,7 @@ async function pullStateByID(github, pullRequestId) {
           headRefOid
           mergeable
           mergeStateStatus
+          labels(first: 100) { nodes { name } }
           autoMergeRequest { enabledAt mergeMethod }
         }
       }
@@ -434,6 +455,7 @@ async function runController({
     const result = await armOrMerge(github, state, {
       expectedBaseRefName: defaultBranch,
       expectedBaseRefOid: branch.commit.sha,
+      queueLabel,
     });
     const rebaseSummary = update.rebased
       ? `Rebased \`${shortSHA(leader.head.sha)}\` to \`${shortSHA(update.headSHA)}\` on current \`${defaultBranch}\`.`

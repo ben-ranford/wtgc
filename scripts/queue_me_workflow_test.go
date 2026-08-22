@@ -29,7 +29,7 @@ func TestQueueMeWorkflowContract(t *testing.T) {
 		"github.ref == 'refs/heads/main'",
 		"permissions:\n  contents: read",
 		"actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v2",
-		"client-id: ${{ vars.QUEUE_APP_CLIENT_ID }}",
+		"app-id: ${{ vars.QUEUE_APP_ID }}",
 		"private-key: ${{ secrets.QUEUE_APP_PRIVATE_KEY }}",
 		"permission-contents: write",
 		"permission-issues: write",

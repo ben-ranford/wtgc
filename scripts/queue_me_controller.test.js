@@ -48,6 +48,7 @@ function makeHarness(options = {}) {
         mergeable: 'MERGEABLE',
         mergeStateStatus: 'BLOCKED',
         autoMergeRequest: null,
+        labels: pull.labels,
         ...(options.initialStates?.[pull.number] || {}),
       },
     ]),
@@ -129,7 +130,10 @@ function makeHarness(options = {}) {
       if (query.includes('QueuePullStateByID')) {
         const state = [...states.values()].find((value) => value.id === variables.pullRequestId);
         return {
-          node: { ...state },
+          node: {
+            ...state,
+            ...(options.removeQueueLabelBeforeArm ? { labels: [] } : {}),
+          },
         };
       }
       if (query.includes('DisableQueueAutoMerge')) {
@@ -306,6 +310,20 @@ test('controller rebases a stale leader and merges it when repository rules are 
   assert.deepEqual(harness.calls.armed, []);
   assert.match(harness.calls.comments[0].body, /Rebased/);
   assert.match(harness.calls.comments[0].body, /GitHub squash-merged it/);
+});
+
+test('controller pauses instead of advancing a leader removed from queue-me before arming', async () => {
+  const leader = makePull(10);
+  const harness = makeHarness({
+    pulls: [leader],
+    removeQueueLabelBeforeArm: true,
+  });
+
+  await assert.rejects(runController(harness.args), /no longer has the queue-me label/);
+
+  assert.deepEqual(harness.calls.armed, []);
+  assert.deepEqual(harness.calls.merged, []);
+  assert.match(harness.calls.comments[0].body, /Queue paused/);
 });
 
 test('removing queue-me disables auto-merge and leaves an empty queue green', async () => {

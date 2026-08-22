@@ -133,7 +133,7 @@ Create and install a GitHub App on this repository with these repository
 permissions: Contents (read and write), Issues (read and write), Pull requests
 (read and write), and Workflows (read and write). Then configure:
 
-- Repository variable `QUEUE_APP_CLIENT_ID`: the GitHub App client ID.
+- Repository variable `QUEUE_APP_ID`: the GitHub App's numeric App ID.
 - Repository secret `QUEUE_APP_PRIVATE_KEY`: the GitHub App private key in PEM
   format.
 
