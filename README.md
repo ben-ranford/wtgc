@@ -31,6 +31,10 @@ working-tree state before calling anything removable.
 clean + merged locally + reachable remotely + not protected = eligible
 ```
 
+Squash merges are a known conservative miss. The original branch tip is usually
+not an ancestor of the default branch, so v1 reports it as `unmerged` even when
+the pull request landed.
+
 For a live worktree, missing proof means it stays. False negatives waste disk;
 false positives destroy work. Given that choice, `wtgc` leaves the worktree
 alone. Live worktrees are removed through `git worktree remove`, never raw
