@@ -99,8 +99,17 @@ go install github.com/ben-ranford/wtgc/cmd/wtgc@latest
 ```
 
 Release automation is configured to publish prebuilt archives for Linux, macOS,
-and Windows on amd64 and arm64. Checksums, an SPDX SBOM, and provenance will be
-published beside them on [GitHub Releases](https://github.com/ben-ranford/wtgc/releases).
+and Windows on amd64 and arm64. Checksums and an SPDX SBOM will be published
+beside them on [GitHub Releases](https://github.com/ben-ranford/wtgc/releases).
+GitHub records provenance as an artifact attestation. Verify a downloaded
+archive with:
+
+```bash
+gh attestation verify PATH/TO/WTGC_ARCHIVE -R ben-ranford/wtgc
+```
+
+See GitHub's [attestation verification guide](https://docs.github.com/en/actions/how-tos/secure-your-work/use-artifact-attestations/use-artifact-attestations#verifying-an-artifact-attestation-for-binaries)
+for details.
 
 Runtime requirements:
 
