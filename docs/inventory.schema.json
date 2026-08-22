@@ -1,0 +1,108 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/ben-ranford/wtgc/blob/main/docs/inventory.schema.json",
+  "title": "wtgc Inventory",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "generated_at", "dry_run", "roots", "worktrees", "summary"],
+  "properties": {
+    "schema_version": { "type": "string", "const": "1.0.0" },
+    "generated_at": { "type": "string", "format": "date-time" },
+    "dry_run": { "type": "boolean" },
+    "roots": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
+    "worktrees": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/worktree" }
+    },
+    "summary": { "$ref": "#/$defs/summary" },
+    "errors": {
+      "type": "array",
+      "items": { "type": "string" }
+    }
+  },
+  "$defs": {
+    "classification": {
+      "type": "string",
+      "enum": [
+        "safe_to_remove",
+        "merged_but_dirty",
+        "unmerged",
+        "stale_orphaned",
+        "kept",
+        "error"
+      ]
+    },
+    "worktree": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "path",
+        "repository",
+        "disk_bytes",
+        "classification",
+        "reason",
+        "action",
+        "reclaimed_bytes"
+      ],
+      "properties": {
+        "path": { "type": "string" },
+        "branch": { "type": "string" },
+        "head": { "type": "string" },
+        "repository": { "type": "string" },
+        "default_branch": { "type": "string" },
+        "disk_bytes": { "type": "integer", "minimum": 0 },
+        "classification": { "$ref": "#/$defs/classification" },
+        "reason": { "type": "string" },
+        "primary": { "type": "boolean" },
+        "detached": { "type": "boolean" },
+        "locked": { "type": "boolean" },
+        "prunable": { "type": "boolean" },
+        "dirty": { "type": "boolean" },
+        "action": {
+          "type": "string",
+          "enum": [
+            "kept",
+            "would_remove",
+            "would_prune",
+            "removed",
+            "pruned",
+            "removed_branch_deleted"
+          ]
+        },
+        "reclaimed_bytes": { "type": "integer", "minimum": 0 },
+        "removed": { "type": "boolean" },
+        "branch_deleted": { "type": "boolean" },
+        "error": { "type": "string" }
+      }
+    },
+    "summary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "repositories",
+        "scanned",
+        "safe",
+        "removed",
+        "skipped",
+        "pruned",
+        "potential_bytes",
+        "reclaimed_bytes",
+        "duration_ns"
+      ],
+      "properties": {
+        "repositories": { "type": "integer", "minimum": 0 },
+        "scanned": { "type": "integer", "minimum": 0 },
+        "safe": { "type": "integer", "minimum": 0 },
+        "removed": { "type": "integer", "minimum": 0 },
+        "skipped": { "type": "integer", "minimum": 0 },
+        "pruned": { "type": "integer", "minimum": 0 },
+        "potential_bytes": { "type": "integer", "minimum": 0 },
+        "reclaimed_bytes": { "type": "integer", "minimum": 0 },
+        "duration_ns": { "type": "integer", "minimum": 0 }
+      }
+    }
+  }
+}

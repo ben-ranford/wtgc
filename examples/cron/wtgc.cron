@@ -1,0 +1,9 @@
+SHELL=/bin/sh
+WTGC_BIN=/usr/local/bin/wtgc
+WTGC_SCAN_ROOT=$HOME/Projects
+WTGC_STATE_DIR=$HOME/.local/state/wtgc
+
+15 9 * * 1-5 mkdir -p "$WTGC_STATE_DIR" && "$WTGC_BIN" clean --json --scan-root "$WTGC_SCAN_ROOT" > "$WTGC_STATE_DIR/cron-latest.json" 2>> "$WTGC_STATE_DIR/cron.log"
+
+# Mutation is opt-in. Review dry-run output before enabling a cleanup schedule.
+# 30 9 * * 5 test "$WTGC_MUTATE" = "1" && mkdir -p "$WTGC_STATE_DIR" && "$WTGC_BIN" clean --yes --json --scan-root "$WTGC_SCAN_ROOT" > "$WTGC_STATE_DIR/cron-cleanup.json" 2>> "$WTGC_STATE_DIR/cron.log"

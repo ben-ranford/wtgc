@@ -1,0 +1,14 @@
+#!/usr/bin/env sh
+set -eu
+
+WTGC_BIN="${WTGC_BIN:-wtgc}"
+WTGC_SCAN_ROOT="${WTGC_SCAN_ROOT:-$(pwd)}"
+WTGC_STATE_DIR="${WTGC_STATE_DIR:-${XDG_STATE_HOME:-$HOME/.local/state}/wtgc}"
+
+mkdir -p "$WTGC_STATE_DIR"
+
+"$WTGC_BIN" clean --json --scan-root "$WTGC_SCAN_ROOT" > "$WTGC_STATE_DIR/post-merge.json"
+
+if [ "${WTGC_MUTATE:-0}" = "1" ]; then
+  "$WTGC_BIN" clean --yes --json --scan-root "$WTGC_SCAN_ROOT" > "$WTGC_STATE_DIR/post-merge-cleanup.json"
+fi
