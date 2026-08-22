@@ -41,7 +41,7 @@ jobs:
           contains(github.event.pull_request.labels.*.name, 'queue-me')
         )
       )
-    runs-on: wtgc-arc
+    runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
       - name: Check queue app configuration

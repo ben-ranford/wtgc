@@ -24,7 +24,7 @@ func TestQueueMeWorkflowContract(t *testing.T) {
 		"- edited",
 		"- auto_merge_enabled",
 		"cancel-in-progress: false",
-		"runs-on: wtgc-arc",
+		"runs-on: ubuntu-latest",
 		"github.event_name == 'workflow_dispatch' &&",
 		"github.ref == 'refs/heads/main'",
 		"permissions:\n  contents: read",
