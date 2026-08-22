@@ -54,7 +54,6 @@ func TestNewDefaultsToGitBinary(t *testing.T) {
 }
 
 func TestRunTimesOutHungGitCommand(t *testing.T) {
-	t.Parallel()
 	client := NewWithTimeout(hangingGitBinary(t), 25*time.Millisecond)
 
 	_, err := client.List(context.Background(), model.Repository{PrimaryPath: t.TempDir(), CommonDir: "/repo/.git"})

@@ -111,7 +111,7 @@ func readQueueMeFile(t *testing.T, path string) string {
 	if err != nil {
 		t.Fatalf("read %s: %v", path, err)
 	}
-	return string(content)
+	return strings.ReplaceAll(string(content), "\r\n", "\n")
 }
 
 func queueMeRepoPath(t *testing.T, path string) string {
