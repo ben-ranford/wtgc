@@ -46,6 +46,14 @@ type markdownFenceState struct {
 	fenceMarker string
 }
 
+type sectionParser struct {
+	sections   map[string]string
+	current    string
+	content    strings.Builder
+	fenceState markdownFenceState
+	inComment  bool
+}
+
 func main() {
 	os.Exit(run(os.Args[1:], os.Getenv, os.Stderr))
 }
@@ -166,40 +174,55 @@ func isTrustedReleasePleasePR(headRef, title string, identity releasePleaseIdent
 }
 
 func parseSections(body string) map[string]string {
-	sections := make(map[string]string)
-	var current string
-	var content strings.Builder
-	fenceState := markdownFenceState{}
-	inComment := false
-	flush := func() {
-		if current != "" {
-			sections[current] = strings.TrimSpace(content.String())
-			content.Reset()
-		}
-	}
+	parser := sectionParser{sections: make(map[string]string)}
 	for _, line := range strings.Split(body, "\n") {
-		parsedLine := line
-		if !fenceState.inFence {
-			parsedLine, inComment = stripLineHTMLComments(line, inComment)
-		}
-		if !fenceState.consume(parsedLine) && !fenceState.inFence {
-			if _, originalHeading := parseH2(line); originalHeading {
-				heading, ok := parseH2(parsedLine)
-				if !ok {
-					continue
-				}
-				flush()
-				current = heading
-				continue
-			}
-		}
-		if current != "" {
-			content.WriteString(parsedLine)
-			content.WriteByte('\n')
-		}
+		parser.consume(line)
 	}
-	flush()
-	return sections
+	parser.flush()
+	return parser.sections
+}
+
+func (parser *sectionParser) consume(line string) {
+	parsedLine := parser.normalize(line)
+	if parser.startSection(line, parsedLine) {
+		return
+	}
+	if parser.current != "" {
+		parser.content.WriteString(parsedLine)
+		parser.content.WriteByte('\n')
+	}
+}
+
+func (parser *sectionParser) normalize(line string) string {
+	if !parser.fenceState.inFence {
+		line, parser.inComment = stripLineHTMLComments(line, parser.inComment)
+	}
+	parser.fenceState.consume(line)
+	return line
+}
+
+func (parser *sectionParser) startSection(originalLine, parsedLine string) bool {
+	if parser.fenceState.inFence {
+		return false
+	}
+	if _, ok := parseH2(originalLine); !ok {
+		return false
+	}
+	heading, ok := parseH2(parsedLine)
+	if !ok {
+		return false
+	}
+	parser.flush()
+	parser.current = heading
+	return true
+}
+
+func (parser *sectionParser) flush() {
+	if parser.current == "" {
+		return
+	}
+	parser.sections[parser.current] = strings.TrimSpace(parser.content.String())
+	parser.content.Reset()
 }
 
 func parseH2(line string) (string, bool) {
