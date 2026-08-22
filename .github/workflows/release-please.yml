@@ -33,6 +33,21 @@ jobs:
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
 
+  release-pr-metadata:
+    needs: release-please
+    if: ${{ needs.release-please.outputs.prs_created == 'true' }}
+    runs-on: ubuntu-latest
+    permissions:
+      actions: write
+      contents: read
+    steps:
+      - name: Trigger PR metadata validation for Release Please PR
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_PR_BRANCH: ${{ fromJSON(needs.release-please.outputs.pr).headBranchName }}
+          RELEASE_PR_NUMBER: ${{ fromJSON(needs.release-please.outputs.pr).number }}
+        run: gh workflow run pr-metadata.yml --ref "$RELEASE_PR_BRANCH" -f pr-number="$RELEASE_PR_NUMBER"
+
   release-assets:
     needs: release-please
     if: ${{ needs.release-please.outputs.release_created == 'true' }}
