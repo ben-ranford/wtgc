@@ -134,9 +134,13 @@ func (r *Repository) CreateDetachedWorktree(t *testing.T, name string) string {
 
 func (r *Repository) BranchExists(t *testing.T, branch string) bool {
 	t.Helper()
-	cmd := exec.Command("git", "show-ref", "--verify", "--quiet", "refs/heads/"+branch)
+	gitPath, err := exec.LookPath("git")
+	if err != nil {
+		t.Fatalf("find git: %v", err)
+	}
+	cmd := exec.Command(gitPath, "show-ref", "--verify", "--quiet", "refs/heads/"+branch)
 	cmd.Dir = r.Path
-	err := cmd.Run()
+	err = cmd.Run()
 	if err == nil {
 		return true
 	}
