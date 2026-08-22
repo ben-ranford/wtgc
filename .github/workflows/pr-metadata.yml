@@ -25,17 +25,6 @@ jobs:
       contents: read
       pull-requests: read
     steps:
-      - name: Checkout
-        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
-        with:
-          ref: main
-          persist-credentials: false
-
-      - name: Setup Go
-        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
-        with:
-          go-version-file: go.mod
-
       - name: Write PR body
         uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
         with:
@@ -86,5 +75,82 @@ jobs:
             core.exportVariable('REPO_ALLOW_SQUASH_MERGE', String(firstDefined(repo.allow_squash_merge, repo.allowSquashMerge, eventRepo.allow_squash_merge, eventRepo.allowSquashMerge, '')));
             core.exportVariable('REPO_SQUASH_MERGE_COMMIT_TITLE', String(firstDefined(repo.squash_merge_commit_title, repo.squashMergeCommitTitle, eventRepo.squash_merge_commit_title, eventRepo.squashMergeCommitTitle, '')));
 
-      - name: Validate PR title and template
-        run: go run ./tools/prcheck --check-repo-policy --title "$PR_TITLE" --head-ref "$PR_HEAD_REF" --head-repo-full-name "$PR_HEAD_REPO_FULL_NAME" --repo-full-name "$REPOSITORY_FULL_NAME" --release-please-author-login "$RELEASE_PLEASE_AUTHOR_LOGIN" --pr-author-login "$PR_AUTHOR_LOGIN" --body-file "$PR_BODY_FILE"
+      - name: Validate PR metadata
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
+        with:
+          script: |
+            const fs = require('node:fs');
+            const titlePattern = /^(feat|fix|perf|docs|refactor|revert|test|ci|build|chore)(\([a-z0-9][a-z0-9._/-]*\))?!?: [^\s].+$/;
+            const releaseTitlePattern = /^chore: release [0-9]+\.[0-9]+\.[0-9]+$/;
+            const releaseHeadRefPattern = /^release-please--branches--main(?:--components--[a-z0-9._-]+)?$/;
+            const requiredHeadings = ['Problem', 'Changes', 'Validation', 'Compatibility And Safety', 'Notes'];
+            const requiredSafetyFields = ['Worktree deletion behavior', 'JSON schema or output changes', 'Migration or release impact'];
+            const placeholders = [
+              'What user-visible problem or engineering risk does this address?',
+              'Commands and checks run:',
+              'Anything reviewers should pay special attention to?',
+            ];
+            const stripCodeFences = (content) => {
+              let inFence = false;
+              return content.split('\n').filter((line) => {
+                if (line.trimStart().startsWith('```')) {
+                  inFence = !inFence;
+                  return false;
+                }
+                return !inFence;
+              }).join('\n');
+            };
+            const stripHTMLComments = (content) => content.replace(/<!--[\s\S]*?-->/g, '');
+            const meaningful = (content) => stripHTMLComments(stripCodeFences(content))
+              .split('\n')
+              .map((line) => line.trim())
+              .some((line) => line !== '' && line !== '-' && !placeholders.includes(line));
+            const sections = new Map();
+            let section = '';
+            let content = [];
+            let inFence = false;
+            const flush = () => {
+              if (section) sections.set(section, content.join('\n').trim());
+              content = [];
+            };
+            for (const line of fs.readFileSync(process.env.PR_BODY_FILE, 'utf8').split('\n')) {
+              if (line.trimStart().startsWith('```')) inFence = !inFence;
+              if (!inFence && line.startsWith('## ') && !line.startsWith('### ')) {
+                flush();
+                section = line.slice(3).trim();
+              } else if (section) {
+                content.push(line);
+              }
+            }
+            flush();
+            const failures = [];
+            if (!titlePattern.test(process.env.PR_TITLE || '')) {
+              failures.push('PR title must use the approved Conventional Commit format.');
+            }
+            const trustedReleasePlease = releaseHeadRefPattern.test(process.env.PR_HEAD_REF || '') &&
+              releaseTitlePattern.test(process.env.PR_TITLE || '') &&
+              process.env.PR_HEAD_REPO_FULL_NAME === process.env.REPOSITORY_FULL_NAME &&
+              process.env.RELEASE_PLEASE_AUTHOR_LOGIN !== '' &&
+              process.env.RELEASE_PLEASE_AUTHOR_LOGIN === process.env.PR_AUTHOR_LOGIN;
+            if (!trustedReleasePlease) {
+              for (const heading of requiredHeadings) {
+                const value = sections.get(heading);
+                if (value === undefined) failures.push(`PR body is missing required template section "${heading}".`);
+                else if (heading !== 'Notes' && !meaningful(value)) failures.push(`PR section "${heading}" must be completed.`);
+              }
+              const safety = sections.get('Compatibility And Safety') || '';
+              for (const field of requiredSafetyFields) {
+                const match = stripHTMLComments(stripCodeFences(safety)).match(new RegExp(`^\\-\\s*${field.replace(/[.*+?^${}()|[\\]\\]/g, '\\$&')}:\\s*(.+)$`, 'm'));
+                if (!match || !meaningful(match[1])) failures.push(`Compatibility And Safety field "${field}" must be filled.`);
+              }
+            }
+            const policy = [
+              [process.env.REPO_ALLOW_SQUASH_MERGE, 'true', 'Repository must allow squash merges.'],
+              [process.env.REPO_ALLOW_MERGE_COMMIT, 'false', 'Repository must disable merge commits.'],
+              [process.env.REPO_ALLOW_REBASE_MERGE, 'false', 'Repository must disable rebase merges.'],
+              [process.env.REPO_SQUASH_MERGE_COMMIT_TITLE, 'PR_TITLE', 'Repository squash merge titles must default to the PR title.'],
+            ];
+            for (const [actual, expected, message] of policy) {
+              if (actual !== expected) failures.push(`${message} Expected "${expected}", got "${actual || ''}".`);
+            }
+            if (failures.length > 0) core.setFailed(failures.join('\n'));
