@@ -454,7 +454,9 @@ func (c *Client) run(ctx context.Context, dir string, args ...string) ([]byte, e
 		return nil, errors.New("git command directory is required")
 	}
 	commandCtx := ctx
-	cancel := func() {}
+	cancel := func() {
+		// No timeout is configured.
+	}
 	if c.commandTimeout > 0 {
 		commandCtx, cancel = context.WithTimeout(ctx, c.commandTimeout)
 	}
