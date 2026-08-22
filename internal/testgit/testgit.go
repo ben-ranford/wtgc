@@ -15,6 +15,8 @@ type Repository struct {
 	Worktrees string
 }
 
+const commitMessagePrefix = "commit "
+
 func NewRepository(t *testing.T) *Repository {
 	t.Helper()
 	RequireGit(t)
@@ -83,7 +85,7 @@ func (r *Repository) CreateMergedWorktreeAt(t *testing.T, branch, path string) s
 	Run(t, r.Path, "checkout", "-b", branch)
 	WriteFile(t, filepath.Join(r.Path, branchFileName(branch)), branch+"\n")
 	Run(t, r.Path, "add", ".")
-	Run(t, r.Path, "commit", "-m", "commit "+branch)
+	Run(t, r.Path, "commit", "-m", commitMessagePrefix+branch)
 	Run(t, r.Path, "push", "-u", "origin", branch)
 	Run(t, r.Path, "checkout", "main")
 	Run(t, r.Path, "merge", "--no-ff", "--no-edit", branch)
@@ -99,7 +101,7 @@ func (r *Repository) CreateUnmergedWorktree(t *testing.T, branch string) string 
 	Run(t, r.Path, "checkout", "-b", branch)
 	WriteFile(t, filepath.Join(r.Path, branchFileName(branch)), branch+"\n")
 	Run(t, r.Path, "add", ".")
-	Run(t, r.Path, "commit", "-m", "commit "+branch)
+	Run(t, r.Path, "commit", "-m", commitMessagePrefix+branch)
 	Run(t, r.Path, "push", "-u", "origin", branch)
 	Run(t, r.Path, "checkout", "main")
 
@@ -114,7 +116,7 @@ func (r *Repository) CreateLocallyMergedWorktree(t *testing.T, branch string) st
 	Run(t, r.Path, "checkout", "-b", branch)
 	WriteFile(t, filepath.Join(r.Path, branchFileName(branch)), branch+"\n")
 	Run(t, r.Path, "add", ".")
-	Run(t, r.Path, "commit", "-m", "commit "+branch)
+	Run(t, r.Path, "commit", "-m", commitMessagePrefix+branch)
 	Run(t, r.Path, "checkout", "main")
 	Run(t, r.Path, "merge", "--no-ff", "--no-edit", branch)
 
