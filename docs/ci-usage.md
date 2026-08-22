@@ -149,11 +149,13 @@ the pull request ahead of them.
 
 ### Pause and removal behavior
 
-The leader pauses with a status comment when it is a draft, has a rebase
-conflict, its base or head changes while the controller acts, or targets a
-branch other than `main`. Current fork branches can wait in the queue, but a
-stale fork is never rebased by the repository-scoped App; its contributor must
-rebase and push it manually.
+The next queued pull request pauses with a status comment when it is a draft,
+has a rebase conflict, its base or head changes while the controller acts, or
+targets a branch other than `main`. A rebase conflict does not block later
+queued pull requests: the controller checks the next item and returns to the
+conflicted pull request when its branch is updated. Current fork branches can
+wait in the queue, but a stale fork is never rebased by the repository-scoped
+App; its contributor must rebase and push it manually.
 
 Remove `queue-me` to leave the queue. The controller disables that pull
 request's auto-merge and updates its single marked status comment. Retargeting
