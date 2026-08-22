@@ -5,7 +5,9 @@
     "helpers:pinGitHubActionDigests"
   ],
   "dependencyDashboard": true,
+  "automerge": true,
   "automergeType": "pr",
+  "automergeStrategy": "squash",
   "platformAutomerge": true,
   "lockFileMaintenance": {
     "enabled": true,
