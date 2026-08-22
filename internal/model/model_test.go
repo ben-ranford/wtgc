@@ -8,6 +8,10 @@ import (
 	"testing"
 )
 
+type publishedSchemaClassification struct {
+	Enum []Classification `json:"enum"`
+}
+
 type publishedSchemaVersion struct {
 	Const string `json:"const"`
 }
@@ -28,9 +32,7 @@ func TestPublishedSchemaMatchesModelContract(t *testing.T) {
 			SchemaVersion publishedSchemaVersion `json:"schema_version"`
 		} `json:"properties"`
 		Definitions struct {
-			Classification struct {
-				Enum []Classification `json:"enum"`
-			} `json:"classification"`
+			Classification publishedSchemaClassification `json:"classification"`
 		} `json:"$defs"`
 	}
 	if err := json.Unmarshal(data, &schema); err != nil {
