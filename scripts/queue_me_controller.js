@@ -129,6 +129,30 @@ async function syncStatusComment(
   });
 }
 
+async function hasQueueStatusComment(github, owner, repo, number) {
+  const comments = await github.paginate(github.rest.issues.listComments, {
+    owner,
+    repo,
+    issue_number: number,
+    per_page: 100,
+  });
+  return comments.some(
+    (comment) => comment.user?.type === 'Bot' && comment.body?.includes(COMMENT_MARKER),
+  );
+}
+
+async function reconcileIneligibleQueuePulls(github, owner, repo, pulls, queueLabel, defaultBranch) {
+  for (const pull of pulls) {
+    if (hasLabel(pull, queueLabel) && pull.base?.ref === defaultBranch) {
+      continue;
+    }
+    if (!await hasQueueStatusComment(github, owner, repo, pull.number)) {
+      continue;
+    }
+    await disableAutoMerge(github, owner, repo, pull.number);
+  }
+}
+
 async function disableAutoMerge(github, owner, repo, number) {
   const state = await pullState(github, owner, repo, number);
   if (!state?.autoMergeRequest) {
@@ -362,12 +386,14 @@ async function runController({
     owner,
     repo,
     state: 'open',
-    base: defaultBranch,
     sort: 'created',
     direction: 'asc',
     per_page: 100,
   });
-  const queued = sortQueuedPulls(pulls.filter((pull) => hasLabel(pull, queueLabel)));
+  await reconcileIneligibleQueuePulls(github, owner, repo, pulls, queueLabel, defaultBranch);
+  const queued = sortQueuedPulls(pulls.filter(
+    (pull) => hasLabel(pull, queueLabel) && pull.base?.ref === defaultBranch,
+  ));
   if (queued.length === 0) {
     core.notice(`No open ${defaultBranch} pull requests carry the ${queueLabel} label.`);
     return;

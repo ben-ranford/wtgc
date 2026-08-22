@@ -54,6 +54,9 @@ function makeHarness(options = {}) {
     ]),
   );
   const comments = new Map();
+  for (const number of options.managedPullNumbers || []) {
+    comments.set(number, [{ id: number, body: `${'<!-- queue-me-controller -->'}\nmanaged`, user: { type: 'Bot' } }]);
+  }
   const calls = {
     armed: [],
     armExpectedHeads: [],
@@ -342,6 +345,20 @@ test('removing queue-me disables auto-merge and leaves an empty queue green', as
   assert.deepEqual(harness.calls.armed, []);
   assert.match(harness.calls.comments[0].body, /automatic merge is disabled/);
   assert.equal(harness.calls.notices.length, 1);
+});
+
+test('later queue runs disable auto-merge for a formerly managed pull removed from the queue', async () => {
+  const pull = makePull(10, { labels: [] });
+  const harness = makeHarness({
+    pulls: [pull],
+    managedPullNumbers: [10],
+    initialStates: { 10: { autoMergeRequest: { enabledAt: 'before', mergeMethod: 'SQUASH' } } },
+  });
+
+  await runController(harness.args);
+
+  assert.deepEqual(harness.calls.disabled, [10]);
+  assert.deepEqual(harness.calls.armed, []);
 });
 
 test('drafts and stale fork branches pause before rebase or auto-merge', async (t) => {
