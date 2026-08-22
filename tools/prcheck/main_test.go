@@ -152,6 +152,14 @@ func TestValidateIgnoresHeadingsInsideHTMLComments(t *testing.T) {
 	}
 }
 
+func TestValidateRejectsHeadingsRevealedByLeadingHTMLComments(t *testing.T) {
+	body := strings.Replace(validBody(), "## Problem", "<!-- comment -->## Problem", 1)
+	err := validate("docs: show template examples", "docs/template", body, releasePleaseIdentity{})
+	if err == nil || !strings.Contains(err.Error(), `missing required template section "Problem"`) {
+		t.Fatalf("comment-revealed heading supplied a template section: %v", err)
+	}
+}
+
 func validBody() string {
 	return `## Problem
 

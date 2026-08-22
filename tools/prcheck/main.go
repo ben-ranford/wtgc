@@ -183,7 +183,11 @@ func parseSections(body string) map[string]string {
 			parsedLine, inComment = stripLineHTMLComments(line, inComment)
 		}
 		if !fenceState.consume(parsedLine) && !fenceState.inFence {
-			if heading, ok := parseH2(parsedLine); ok {
+			if _, originalHeading := parseH2(line); originalHeading {
+				heading, ok := parseH2(parsedLine)
+				if !ok {
+					continue
+				}
 				flush()
 				current = heading
 				continue
