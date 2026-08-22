@@ -22,9 +22,15 @@ jobs:
     name: pr-metadata
     runs-on: ubuntu-latest
     permissions:
+      checks: write
       contents: read
       pull-requests: read
     steps:
+      - name: Setup Go
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version: '1.26.5'
+
       - name: Write PR body
         uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
         with:
@@ -49,9 +55,47 @@ jobs:
             core.exportVariable('PR_HEAD_REF', pullRequest.head.ref || '');
             core.exportVariable('PR_HEAD_REPO_FULL_NAME', pullRequest.head.repo?.full_name || '');
             core.exportVariable('PR_AUTHOR_LOGIN', pullRequest.user.login || '');
+            core.exportVariable('PR_BASE_SHA', pullRequest.base.sha);
             core.exportVariable('REPOSITORY_FULL_NAME', context.repo.owner + '/' + context.repo.repo);
+            core.exportVariable('IS_RELEASE_PLEASE_CANDIDATE', String(
+              /^release-please--branches--main(?:--components--[a-z0-9._-]+)?$/.test(pullRequest.head.ref || '') &&
+              /^chore: release [0-9]+\.[0-9]+\.[0-9]+$/.test(pullRequest.title || '') &&
+              pullRequest.head.repo?.full_name === context.repo.owner + '/' + context.repo.repo,
+            ));
+            const { data: check } = await github.rest.checks.create({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              name: 'pr-metadata',
+              head_sha: pullRequest.head.sha,
+              status: 'in_progress',
+              output: {
+                title: 'PR metadata validation',
+                summary: 'Trusted metadata validation is running.',
+              },
+            });
+            core.exportVariable('PR_METADATA_CHECK_RUN_ID', String(check.id));
+
+      - name: Download trusted validator
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
+        with:
+          script: |
+            const fs = require('node:fs');
+            const path = require('node:path');
+            const { data: file } = await github.rest.repos.getContent({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              path: 'tools/prcheck/main.go',
+              ref: process.env.PR_BASE_SHA,
+            });
+            if (Array.isArray(file) || file.type !== 'file' || !file.content || file.encoding !== 'base64') {
+              throw new Error('trusted metadata validator source was not found');
+            }
+            const validatorPath = path.join(process.env.RUNNER_TEMP, 'prcheck.go');
+            fs.writeFileSync(validatorPath, Buffer.from(file.content, 'base64'));
+            core.exportVariable('PRCHECK_PATH', validatorPath);
 
       - name: Read Release Please identity
+        if: env.IS_RELEASE_PLEASE_CANDIDATE == 'true'
         uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
         with:
           github-token: ${{ secrets.RELEASE_PLEASE_TOKEN }}
@@ -75,82 +119,30 @@ jobs:
             core.exportVariable('REPO_ALLOW_SQUASH_MERGE', String(firstDefined(repo.allow_squash_merge, repo.allowSquashMerge, eventRepo.allow_squash_merge, eventRepo.allowSquashMerge, '')));
             core.exportVariable('REPO_SQUASH_MERGE_COMMIT_TITLE', String(firstDefined(repo.squash_merge_commit_title, repo.squashMergeCommitTitle, eventRepo.squash_merge_commit_title, eventRepo.squashMergeCommitTitle, '')));
 
-      - name: Validate PR metadata
+      - name: Validate PR title and template
+        id: validate
+        continue-on-error: true
+        run: go run "$PRCHECK_PATH" --check-repo-policy --title "$PR_TITLE" --head-ref "$PR_HEAD_REF" --head-repo-full-name "$PR_HEAD_REPO_FULL_NAME" --repo-full-name "$REPOSITORY_FULL_NAME" --release-please-author-login "$RELEASE_PLEASE_AUTHOR_LOGIN" --pr-author-login "$PR_AUTHOR_LOGIN" --body-file "$PR_BODY_FILE"
+
+      - name: Publish PR metadata result
+        if: always()
         uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
+        env:
+          VALIDATION_OUTCOME: ${{ steps.validate.outcome }}
         with:
           script: |
-            const fs = require('node:fs');
-            const titlePattern = /^(feat|fix|perf|docs|refactor|revert|test|ci|build|chore)(\([a-z0-9][a-z0-9._/-]*\))?!?: [^\s].+$/;
-            const releaseTitlePattern = /^chore: release [0-9]+\.[0-9]+\.[0-9]+$/;
-            const releaseHeadRefPattern = /^release-please--branches--main(?:--components--[a-z0-9._-]+)?$/;
-            const requiredHeadings = ['Problem', 'Changes', 'Validation', 'Compatibility And Safety', 'Notes'];
-            const requiredSafetyFields = ['Worktree deletion behavior', 'JSON schema or output changes', 'Migration or release impact'];
-            const placeholders = [
-              'What user-visible problem or engineering risk does this address?',
-              'Commands and checks run:',
-              'Anything reviewers should pay special attention to?',
-            ];
-            const stripCodeFences = (content) => {
-              let inFence = false;
-              return content.split('\n').filter((line) => {
-                if (line.trimStart().startsWith('```')) {
-                  inFence = !inFence;
-                  return false;
-                }
-                return !inFence;
-              }).join('\n');
-            };
-            const stripHTMLComments = (content) => content.replace(/<!--[\s\S]*?-->/g, '');
-            const meaningful = (content) => stripHTMLComments(stripCodeFences(content))
-              .split('\n')
-              .map((line) => line.trim())
-              .some((line) => line !== '' && line !== '-' && !placeholders.includes(line));
-            const sections = new Map();
-            let section = '';
-            let content = [];
-            let inFence = false;
-            const flush = () => {
-              if (section) sections.set(section, content.join('\n').trim());
-              content = [];
-            };
-            for (const line of fs.readFileSync(process.env.PR_BODY_FILE, 'utf8').split('\n')) {
-              if (line.trimStart().startsWith('```')) inFence = !inFence;
-              if (!inFence && line.startsWith('## ') && !line.startsWith('### ')) {
-                flush();
-                section = line.slice(3).trim();
-              } else if (section) {
-                content.push(line);
-              }
+            const success = process.env.VALIDATION_OUTCOME === 'success';
+            await github.rest.checks.update({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              check_run_id: Number(process.env.PR_METADATA_CHECK_RUN_ID),
+              status: 'completed',
+              conclusion: success ? 'success' : 'failure',
+              output: {
+                title: 'PR metadata validation',
+                summary: success ? 'PR metadata is valid.' : 'PR metadata validation failed. See the Validate PR title and template step.',
+              },
+            });
+            if (!success) {
+              core.setFailed('PR metadata validation failed.');
             }
-            flush();
-            const failures = [];
-            if (!titlePattern.test(process.env.PR_TITLE || '')) {
-              failures.push('PR title must use the approved Conventional Commit format.');
-            }
-            const trustedReleasePlease = releaseHeadRefPattern.test(process.env.PR_HEAD_REF || '') &&
-              releaseTitlePattern.test(process.env.PR_TITLE || '') &&
-              process.env.PR_HEAD_REPO_FULL_NAME === process.env.REPOSITORY_FULL_NAME &&
-              process.env.RELEASE_PLEASE_AUTHOR_LOGIN !== '' &&
-              process.env.RELEASE_PLEASE_AUTHOR_LOGIN === process.env.PR_AUTHOR_LOGIN;
-            if (!trustedReleasePlease) {
-              for (const heading of requiredHeadings) {
-                const value = sections.get(heading);
-                if (value === undefined) failures.push(`PR body is missing required template section "${heading}".`);
-                else if (heading !== 'Notes' && !meaningful(value)) failures.push(`PR section "${heading}" must be completed.`);
-              }
-              const safety = sections.get('Compatibility And Safety') || '';
-              for (const field of requiredSafetyFields) {
-                const match = stripHTMLComments(stripCodeFences(safety)).match(new RegExp(`^\\-\\s*${field.replace(/[.*+?^${}()|[\\]\\]/g, '\\$&')}:\\s*(.+)$`, 'm'));
-                if (!match || !meaningful(match[1])) failures.push(`Compatibility And Safety field "${field}" must be filled.`);
-              }
-            }
-            const policy = [
-              [process.env.REPO_ALLOW_SQUASH_MERGE, 'true', 'Repository must allow squash merges.'],
-              [process.env.REPO_ALLOW_MERGE_COMMIT, 'false', 'Repository must disable merge commits.'],
-              [process.env.REPO_ALLOW_REBASE_MERGE, 'false', 'Repository must disable rebase merges.'],
-              [process.env.REPO_SQUASH_MERGE_COMMIT_TITLE, 'PR_TITLE', 'Repository squash merge titles must default to the PR title.'],
-            ];
-            for (const [actual, expected, message] of policy) {
-              if (actual !== expected) failures.push(`${message} Expected "${expected}", got "${actual || ''}".`);
-            }
-            if (failures.length > 0) core.setFailed(failures.join('\n'));

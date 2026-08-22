@@ -216,31 +216,32 @@ func stripHTMLComments(content string) string {
 	var kept []string
 	inComment := false
 	for _, line := range strings.Split(content, "\n") {
-		for {
-			if inComment {
-				end := strings.Index(line, "-->")
-				if end < 0 {
-					line = ""
-					break
-				}
-				line = line[end+len("-->"):]
-				inComment = false
-			}
-			start := strings.Index(line, "<!--")
-			if start < 0 {
-				break
-			}
-			end := strings.Index(line[start+len("<!--"):], "-->")
-			if end < 0 {
-				line = line[:start]
-				inComment = true
-				break
-			}
-			line = line[:start] + line[start+len("<!--")+end+len("-->"):]
-		}
+		line, inComment = stripLineHTMLComments(line, inComment)
 		kept = append(kept, line)
 	}
 	return strings.Join(kept, "\n")
+}
+
+func stripLineHTMLComments(line string, inComment bool) (string, bool) {
+	for {
+		if inComment {
+			_, afterEnd, foundEnd := strings.Cut(line, "-->")
+			if !foundEnd {
+				return "", true
+			}
+			line = afterEnd
+			inComment = false
+		}
+		beforeStart, afterStart, foundStart := strings.Cut(line, "<!--")
+		if !foundStart {
+			return line, false
+		}
+		_, afterEnd, foundEnd := strings.Cut(afterStart, "-->")
+		if !foundEnd {
+			return beforeStart, true
+		}
+		line = beforeStart + afterEnd
+	}
 }
 
 func stripCodeFences(content string) string {
