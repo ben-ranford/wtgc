@@ -522,6 +522,9 @@ func branchExists(t *testing.T, repo, branch string) bool {
 
 func gitRaceWrapper(t *testing.T, repo, raceOID string) string {
 	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip("Git race wrapper requires a Unix-like executable format")
+	}
 	realGit, err := exec.LookPath("git")
 	if err != nil {
 		t.Fatalf("find git: %v", err)
@@ -588,6 +591,9 @@ func canonicalTestPath(path string) string {
 
 func fakeGitBinary(t *testing.T, outputs map[string]string) string {
 	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip("fake Git shell scripts require a Unix-like executable format")
+	}
 	dir := t.TempDir()
 	script := filepath.Join(dir, "git")
 	content := "#!/bin/sh\n"
@@ -608,6 +614,9 @@ func fakeGitBinary(t *testing.T, outputs map[string]string) string {
 
 func hangingGitBinary(t *testing.T) string {
 	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip("fake Git shell scripts require a Unix-like executable format")
+	}
 	dir := t.TempDir()
 	script := filepath.Join(dir, "git")
 	content := "#!/bin/sh\n" +

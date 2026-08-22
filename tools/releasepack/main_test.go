@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"testing"
 )
 
@@ -138,7 +139,7 @@ func assertTarEntry(t *testing.T, path, want string) {
 		}
 		if header.Name == want {
 			wantMode := int64(0o644)
-			if filepath.Base(want) == "wtgc" {
+			if filepath.Base(want) == "wtgc" && runtime.GOOS != "windows" {
 				wantMode = 0o755
 			}
 			if header.Mode != wantMode {
@@ -163,7 +164,7 @@ func assertZipEntry(t *testing.T, path, want string) {
 		}
 		if file.Name == want {
 			wantMode := os.FileMode(0o644)
-			if filepath.Base(want) == "wtgc" {
+			if filepath.Base(want) == "wtgc" && runtime.GOOS != "windows" {
 				wantMode = 0o755
 			}
 			if file.Mode().Perm() != wantMode {
