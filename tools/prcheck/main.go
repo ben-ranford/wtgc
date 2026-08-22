@@ -157,6 +157,7 @@ func parseSections(body string) map[string]string {
 	sections := make(map[string]string)
 	var current string
 	var content strings.Builder
+	inFence := false
 	flush := func() {
 		if current != "" {
 			sections[current] = strings.TrimSpace(content.String())
@@ -164,10 +165,14 @@ func parseSections(body string) map[string]string {
 		}
 	}
 	for _, line := range strings.Split(body, "\n") {
-		if heading, ok := parseH2(line); ok {
-			flush()
-			current = heading
-			continue
+		if strings.HasPrefix(strings.TrimSpace(line), "```") {
+			inFence = !inFence
+		} else if !inFence {
+			if heading, ok := parseH2(line); ok {
+				flush()
+				current = heading
+				continue
+			}
 		}
 		if current != "" {
 			content.WriteString(line)

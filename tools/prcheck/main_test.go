@@ -96,7 +96,7 @@ func TestRunValidatesRepositoryMergePolicy(t *testing.T) {
 		"REPO_ALLOW_MERGE_COMMIT": "false", "REPO_ALLOW_REBASE_MERGE": "false", "REPO_ALLOW_SQUASH_MERGE": "true", "REPO_SQUASH_MERGE_COMMIT_TITLE": "PR_TITLE",
 	}
 	var stderr bytes.Buffer
-	if code := run([]string{"--check-repo-policy"}, mapEnv(values), &stderr); code != 0 {
+	if run([]string{"--check-repo-policy"}, mapEnv(values), &stderr) != 0 {
 		t.Fatalf("valid policy rejected: %s", stderr.String())
 	}
 	values["REPO_SQUASH_MERGE_COMMIT_TITLE"] = "COMMIT_OR_PR_TITLE"
@@ -121,6 +121,13 @@ func TestHelpers(t *testing.T) {
 	}
 	if code := writeError(&errWriter{}, "failure"); code != 1 {
 		t.Fatalf("writeError = %d", code)
+	}
+}
+
+func TestValidateIgnoresHeadingsInsideCodeFences(t *testing.T) {
+	body := validBody() + "\n```markdown\n## Changes\n\n```\n"
+	if err := validate("docs: show template examples", "docs/template", body, releasePleaseIdentity{}); err != nil {
+		t.Fatalf("fenced heading invalidated template: %v", err)
 	}
 }
 

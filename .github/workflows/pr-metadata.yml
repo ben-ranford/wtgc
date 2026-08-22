@@ -10,11 +10,16 @@ on:
       - ready_for_review
       - labeled
       - unlabeled
+  workflow_dispatch:
+    inputs:
+      pr-number:
+        description: Pull request number to validate.
+        required: true
+        type: string
 
 jobs:
   validate:
     name: pr-metadata
-    if: github.event.pull_request.user.login != 'renovate[bot]'
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -36,9 +41,21 @@ jobs:
           script: |
             const fs = require('node:fs');
             const path = require('node:path');
+            const pullRequest = context.payload.pull_request || (await github.rest.pulls.get({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              pull_number: Number(core.getInput('pr-number')),
+            })).data;
+            if (pullRequest.labels.length === 0) {
+              core.setFailed('Pull requests must have at least one label.');
+            }
             const bodyPath = path.join(process.env.RUNNER_TEMP, 'pr-body.md');
-            fs.writeFileSync(bodyPath, context.payload.pull_request?.body || '', 'utf8');
+            fs.writeFileSync(bodyPath, pullRequest.body || '', 'utf8');
             core.exportVariable('PR_BODY_FILE', bodyPath);
+            core.exportVariable('PR_TITLE', pullRequest.title || '');
+            core.exportVariable('PR_HEAD_REF', pullRequest.head.ref || '');
+            core.exportVariable('PR_HEAD_REPO_FULL_NAME', pullRequest.head.repo?.full_name || '');
+            core.exportVariable('REPOSITORY_FULL_NAME', context.repo.owner + '/' + context.repo.repo);
 
       - name: Read repository merge policy
         uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
@@ -56,9 +73,4 @@ jobs:
             core.exportVariable('REPO_SQUASH_MERGE_COMMIT_TITLE', String(firstDefined(repo.squash_merge_commit_title, repo.squashMergeCommitTitle, eventRepo.squash_merge_commit_title, eventRepo.squashMergeCommitTitle, 'PR_TITLE')));
 
       - name: Validate PR title and template
-        env:
-          PR_TITLE: ${{ github.event.pull_request.title }}
-          PR_HEAD_REF: ${{ github.event.pull_request.head.ref }}
-          PR_HEAD_REPO_FULL_NAME: ${{ github.event.pull_request.head.repo.full_name }}
-          REPOSITORY_FULL_NAME: ${{ github.repository }}
         run: go run ./tools/prcheck --check-repo-policy --title "$PR_TITLE" --head-ref "$PR_HEAD_REF" --head-repo-full-name "$PR_HEAD_REPO_FULL_NAME" --repo-full-name "$REPOSITORY_FULL_NAME" --body-file "$PR_BODY_FILE"
