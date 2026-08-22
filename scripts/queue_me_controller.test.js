@@ -254,7 +254,7 @@ test('controller creates the queue label and exits cleanly for an empty queue', 
   assert.match(harness.calls.notices[0], /No open main pull requests/);
 });
 
-test('controller disables followers and arms only the oldest numbered pull request', async () => {
+test('controller disables followers and waits for the oldest numbered pull request', async () => {
   const leader = makePull(10);
   const follower = makePull(20);
   const harness = makeHarness({
@@ -268,8 +268,7 @@ test('controller disables followers and arms only the oldest numbered pull reque
   await runController(harness.args);
 
   assert.deepEqual(harness.calls.disabled, [20]);
-  assert.deepEqual(harness.calls.armed, [10]);
-  assert.deepEqual(harness.calls.armExpectedHeads, ['head-10']);
+  assert.deepEqual(harness.calls.armed, []);
   assert.deepEqual(harness.calls.merged, []);
   assert.match(
     harness.calls.comments.find((comment) => comment.number === 20).body,
@@ -277,7 +276,7 @@ test('controller disables followers and arms only the oldest numbered pull reque
   );
   assert.match(
     harness.calls.comments.find((comment) => comment.number === 10).body,
-    /Squash auto-merge is armed/,
+    /Queue waiting/,
   );
 });
 
@@ -394,7 +393,7 @@ test('drafts and stale fork branches pause before rebase or auto-merge', async (
   }
 });
 
-test('a current fork branch can arm auto-merge without a branch update', async () => {
+test('a current fork branch waits without a branch update', async () => {
   const fork = makePull(10, {
     head: { sha: 'fork-head', repo: { full_name: 'contributor/wtgc' } },
   });
@@ -403,9 +402,8 @@ test('a current fork branch can arm auto-merge without a branch update', async (
   await runController(harness.args);
 
   assert.deepEqual(harness.calls.rebased, []);
-  assert.deepEqual(harness.calls.armed, [10]);
-  assert.deepEqual(harness.calls.armExpectedHeads, ['fork-head']);
-  assert.match(harness.calls.comments[0].body, /Squash auto-merge is armed/);
+  assert.deepEqual(harness.calls.armed, []);
+  assert.match(harness.calls.comments[0].body, /Queue waiting/);
 });
 
 test('a rebase conflict pauses the queue with a bounded status message', async () => {
@@ -437,19 +435,17 @@ test('controller pauses when the default branch moves before auto-merge is armed
   assert.match(harness.calls.comments[0].body, /Default branch main moved/);
 });
 
-test('controller never merges an unverified head after auto-merge arming races a push', async () => {
+test('controller never arms auto-merge for a non-clean leader', async () => {
   const harness = makeHarness({
     pulls: [makePull(10)],
     armError: new Error('expected head mismatch'),
     armErrorHead: 'pushed-head',
   });
 
-  await assert.rejects(runController(harness.args), /Pull request head moved/);
-
-  assert.deepEqual(harness.calls.armExpectedHeads, ['head-10']);
+  await runController(harness.args);
   assert.deepEqual(harness.calls.armed, []);
   assert.deepEqual(harness.calls.merged, []);
-  assert.match(harness.calls.comments[0].body, /Pull request head moved/);
+  assert.match(harness.calls.comments[0].body, /Queue waiting/);
 });
 
 test('controller revalidates baseRefName and baseRefOid immediately before auto-merge or merge', async (t) => {
@@ -551,7 +547,7 @@ test('a non-default-base pause comment is not replaced by a queue position', asy
   assert.equal(eventComments.length, 1);
   assert.match(eventComments[0].body, /base changed to `release`/);
   assert.doesNotMatch(eventComments[0].body, /Queued behind/);
-  assert.deepEqual(harness.calls.armed, [10]);
+  assert.deepEqual(harness.calls.armed, []);
 });
 
 test('manually enabling auto-merge on a follower restores queue ordering', async () => {
@@ -569,7 +565,7 @@ test('manually enabling auto-merge on a follower restores queue ordering', async
   await runController(harness.args);
 
   assert.deepEqual(harness.calls.disabled, [20]);
-  assert.deepEqual(harness.calls.armed, [10]);
+  assert.deepEqual(harness.calls.armed, []);
 });
 
 test("the queue App's leader auto-merge event does not trigger a disable-enable loop", async () => {

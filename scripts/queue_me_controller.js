@@ -279,26 +279,7 @@ async function armOrMerge(github, state, {
     await mergeNow(github, state.id, state.headRefOid);
     return 'merged';
   }
-  try {
-    await armAutoMerge(github, state.id, state.headRefOid);
-    return 'armed';
-  } catch (error) {
-    const refreshed = await pullStateByID(github, state.id);
-    if (refreshed.headRefOid !== state.headRefOid) {
-      throw new Error(
-        `Pull request head moved from ${shortSHA(state.headRefOid)} to ${shortSHA(refreshed.headRefOid)} while arming auto-merge.`,
-      );
-    }
-    assertExpectedBaseState(refreshed, expectedBaseRefName, expectedBaseRefOid);
-    if (!hasLabel(refreshed, queueLabel)) {
-      throw new Error(`Pull request no longer has the ${queueLabel} label while advancing the queue.`);
-    }
-    if (refreshed.mergeable === 'MERGEABLE' && refreshed.mergeStateStatus === 'CLEAN') {
-      await mergeNow(github, refreshed.id, state.headRefOid);
-      return 'merged';
-    }
-    throw error;
-  }
+  return 'waiting';
 }
 
 async function pullStateByID(github, pullRequestId) {
@@ -510,7 +491,7 @@ async function runController({
       : `Head \`${shortSHA(update.headSHA)}\` already contains current \`${defaultBranch}\`.`;
     const mergeSummary = result === 'merged'
       ? 'All repository requirements were satisfied, so GitHub squash-merged it.'
-      : 'Squash auto-merge is armed and will wait for the repository ruleset.';
+      : 'Queue waiting: requirements are not yet satisfied and a trusted completion event will retry it.';
     await syncStatusComment(
       github,
       owner,

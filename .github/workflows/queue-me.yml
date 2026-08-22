@@ -16,6 +16,10 @@ on:
       - closed
       - edited
       - auto_merge_enabled
+  check_suite:
+    types: [completed]
+  pull_request_review:
+    types: [submitted]
 
 concurrency:
   group: queue-me-${{ github.repository }}
@@ -33,6 +37,8 @@ jobs:
         github.ref == 'refs/heads/main'
       ) ||
       github.event_name == 'push' ||
+      github.event_name == 'check_suite' ||
+      github.event_name == 'pull_request_review' ||
       (
         github.event_name == 'pull_request_target' &&
         (

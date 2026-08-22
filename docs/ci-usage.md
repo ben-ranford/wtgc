@@ -143,7 +143,7 @@ The workflow creates the `queue-me` label when it first runs with credentials.
 Add that label to an open pull request targeting `main`; the oldest labeled
 pull request becomes the leader. The leader is rebased onto current `main` when
 needed, then squash-merged immediately when requirements are satisfied or
-armed for GitHub auto-merge while required checks and approvals are pending.
+retried after trusted check or review completion events while required checks and approvals are pending.
 Followers have auto-merge disabled and receive a status comment identifying
 the pull request ahead of them.
 
