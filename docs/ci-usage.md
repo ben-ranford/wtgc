@@ -34,8 +34,9 @@ Tool versions are pinned in `Makefile`:
 - `make suppressions`: rejects inline static-analysis suppressions so
   exceptions stay central and reviewable.
 - `make automation-check`: validates shell syntax, GitHub Actions pinning, and
-  workflow and Lefthook YAML parsing. Ruby is a required development tool so
-  this validation cannot be silently skipped.
+  workflow and Lefthook YAML parsing, plus the queue-me workflow/controller
+  contracts. Ruby and Node.js are required development tools so this validation
+  cannot be silently skipped.
 - `make release-check`: runs `automation-check`, builds a local release, writes
   checksums, and verifies one checksum entry per release asset.
 
@@ -113,5 +114,50 @@ runs on Ubuntu, cross-compiles the Linux, macOS, and Windows artifact matrix,
 generates an SPDX JSON SBOM for the release asset set, rebuilds
 `checksums.txt`, validates every release asset, and uploads assets with
 `gh release upload` or creates the release if it has not been published yet.
-Release packaging requires `./cmd/wtgc`. Artifact attestations are emitted for
-public releases.
+Release packaging requires `./cmd/wtgc`. Artifact attestations are skipped while
+the repository is private unless `ENABLE_PRIVATE_ATTESTATIONS=true` is
+configured, because GitHub only enables private attestations on plans that
+support them.
+
+## Pull Request Queue
+
+`.github/workflows/queue-me.yml` advances pull requests labeled `queue-me` in
+ascending pull-request-number order. It only reads trusted workflow code and
+never checks out or executes pull-request-head code. The queue is inactive,
+green, and makes no repository changes until its GitHub App credentials are
+configured.
+
+### Setup
+
+Create and install a GitHub App on this repository with these repository
+permissions: Contents (read and write), Issues (read and write), Pull requests
+(read and write), and Workflows (read and write). Then configure:
+
+- Repository variable `QUEUE_APP_CLIENT_ID`: the GitHub App client ID.
+- Repository secret `QUEUE_APP_PRIVATE_KEY`: the GitHub App private key in PEM
+  format.
+
+The workflow creates the `queue-me` label when it first runs with credentials.
+Add that label to an open pull request targeting `main`; the oldest labeled
+pull request becomes the leader. The leader is rebased onto current `main` when
+needed, then squash-merged immediately when requirements are satisfied or
+armed for GitHub auto-merge while required checks and approvals are pending.
+Followers have auto-merge disabled and receive a status comment identifying
+the pull request ahead of them.
+
+### Pause and removal behavior
+
+The leader pauses with a status comment when it is a draft, has a rebase
+conflict, its base or head changes while the controller acts, or targets a
+branch other than `main`. Current fork branches can wait in the queue, but a
+stale fork is never rebased by the repository-scoped App; its contributor must
+rebase and push it manually.
+
+Remove `queue-me` to leave the queue. The controller disables that pull
+request's auto-merge and updates its single marked status comment. Retargeting
+a labeled pull request away from `main` has the same safe pause behavior.
+
+For local validation, install Node.js and run `make queue-me-check` (or the
+full `make automation-check` / `make ci` gates). The Node suite exercises the
+controller behavior; the Go contract test checks the workflow's trusted-code,
+least-privilege, and pinning design.
