@@ -37,6 +37,8 @@ case "$source_real" in
     echo "refusing release output directory that contains artifact source: $release_dir" >&2
     exit 1
     ;;
+  *)
+    ;;
 esac
 
 ./scripts/managed-output.sh reset "$release_dir"
