@@ -136,6 +136,14 @@ func TestValidateIgnoresHeadingsInsideCodeFences(t *testing.T) {
 	}
 }
 
+func TestValidateDoesNotCloseCodeFencesWithDifferentMarkers(t *testing.T) {
+	body := strings.Replace(validBody(), "Changes made in this pull request.", "```markdown\n~~~\n## Changes\nHidden example content.\n```", 1)
+	err := validate("docs: show template examples", "docs/template", body, releasePleaseIdentity{})
+	if err == nil || !strings.Contains(err.Error(), `section "Changes" must be completed`) {
+		t.Fatalf("mixed fence markers supplied a template section: %v", err)
+	}
+}
+
 func TestValidateIgnoresHeadingsInsideHTMLComments(t *testing.T) {
 	body := strings.Replace(validBody(), "## Changes\n\nChanges made in this pull request.", "<!--\n## Changes\n\nChanges made in this pull request.\n-->", 1)
 	err := validate("docs: show template examples", "docs/template", body, releasePleaseIdentity{})
