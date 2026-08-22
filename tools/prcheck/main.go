@@ -41,6 +41,19 @@ type releasePleaseIdentity struct {
 	pullRequestAuthor      string
 }
 
+type markdownFenceState struct {
+	inFence     bool
+	fenceMarker string
+}
+
+type sectionParser struct {
+	sections   map[string]string
+	current    string
+	content    strings.Builder
+	fenceState markdownFenceState
+	inComment  bool
+}
+
 func main() {
 	os.Exit(run(os.Args[1:], os.Getenv, os.Stderr))
 }
@@ -161,33 +174,55 @@ func isTrustedReleasePleasePR(headRef, title string, identity releasePleaseIdent
 }
 
 func parseSections(body string) map[string]string {
-	sections := make(map[string]string)
-	var current string
-	var content strings.Builder
-	inFence := false
-	flush := func() {
-		if current != "" {
-			sections[current] = strings.TrimSpace(content.String())
-			content.Reset()
-		}
-	}
+	parser := sectionParser{sections: make(map[string]string)}
 	for _, line := range strings.Split(body, "\n") {
-		if strings.HasPrefix(strings.TrimSpace(line), "```") {
-			inFence = !inFence
-		} else if !inFence {
-			if heading, ok := parseH2(line); ok {
-				flush()
-				current = heading
-				continue
-			}
-		}
-		if current != "" {
-			content.WriteString(line)
-			content.WriteByte('\n')
-		}
+		parser.consume(line)
 	}
-	flush()
-	return sections
+	parser.flush()
+	return parser.sections
+}
+
+func (parser *sectionParser) consume(line string) {
+	parsedLine := parser.normalize(line)
+	if parser.startSection(line, parsedLine) {
+		return
+	}
+	if parser.current != "" {
+		parser.content.WriteString(parsedLine)
+		parser.content.WriteByte('\n')
+	}
+}
+
+func (parser *sectionParser) normalize(line string) string {
+	if !parser.fenceState.inFence {
+		line, parser.inComment = stripLineHTMLComments(line, parser.inComment)
+	}
+	parser.fenceState.consume(line)
+	return line
+}
+
+func (parser *sectionParser) startSection(originalLine, parsedLine string) bool {
+	if parser.fenceState.inFence {
+		return false
+	}
+	if _, ok := parseH2(originalLine); !ok {
+		return false
+	}
+	heading, ok := parseH2(parsedLine)
+	if !ok {
+		return false
+	}
+	parser.flush()
+	parser.current = heading
+	return true
+}
+
+func (parser *sectionParser) flush() {
+	if parser.current == "" {
+		return
+	}
+	parser.sections[parser.current] = strings.TrimSpace(parser.content.String())
+	parser.content.Reset()
 }
 
 func parseH2(line string) (string, bool) {
@@ -216,44 +251,68 @@ func stripHTMLComments(content string) string {
 	var kept []string
 	inComment := false
 	for _, line := range strings.Split(content, "\n") {
-		for {
-			if inComment {
-				end := strings.Index(line, "-->")
-				if end < 0 {
-					line = ""
-					break
-				}
-				line = line[end+len("-->"):]
-				inComment = false
-			}
-			start := strings.Index(line, "<!--")
-			if start < 0 {
-				break
-			}
-			end := strings.Index(line[start+len("<!--"):], "-->")
-			if end < 0 {
-				line = line[:start]
-				inComment = true
-				break
-			}
-			line = line[:start] + line[start+len("<!--")+end+len("-->"):]
-		}
+		line, inComment = stripLineHTMLComments(line, inComment)
 		kept = append(kept, line)
 	}
 	return strings.Join(kept, "\n")
 }
 
+func stripLineHTMLComments(line string, inComment bool) (string, bool) {
+	for {
+		if inComment {
+			_, afterEnd, foundEnd := strings.Cut(line, "-->")
+			if !foundEnd {
+				return "", true
+			}
+			line = afterEnd
+			inComment = false
+		}
+		beforeStart, afterStart, foundStart := strings.Cut(line, "<!--")
+		if !foundStart {
+			return line, false
+		}
+		_, afterEnd, foundEnd := strings.Cut(afterStart, "-->")
+		if !foundEnd {
+			return beforeStart, true
+		}
+		line = beforeStart + afterEnd
+	}
+}
+
 func stripCodeFences(content string) string {
 	var kept []string
-	inFence := false
+	fenceState := markdownFenceState{}
 	for _, line := range strings.Split(content, "\n") {
-		if strings.HasPrefix(strings.TrimSpace(line), "```") {
-			inFence = !inFence
-		} else if !inFence {
+		if !fenceState.consume(line) && !fenceState.inFence {
 			kept = append(kept, line)
 		}
 	}
 	return strings.Join(kept, "\n")
+}
+
+func (state *markdownFenceState) consume(line string) bool {
+	marker := codeFenceMarker(line)
+	if marker == "" || (state.inFence && marker != state.fenceMarker) {
+		return false
+	}
+	state.inFence = !state.inFence
+	if state.inFence {
+		state.fenceMarker = marker
+	} else {
+		state.fenceMarker = ""
+	}
+	return true
+}
+
+func codeFenceMarker(line string) string {
+	line = strings.TrimSpace(line)
+	if strings.HasPrefix(line, "```") {
+		return "```"
+	}
+	if strings.HasPrefix(line, "~~~") {
+		return "~~~"
+	}
+	return ""
 }
 
 func fieldHasValue(content, field string) bool {

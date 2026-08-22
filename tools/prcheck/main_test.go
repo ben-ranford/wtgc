@@ -128,9 +128,35 @@ func TestHelpers(t *testing.T) {
 }
 
 func TestValidateIgnoresHeadingsInsideCodeFences(t *testing.T) {
-	body := validBody() + "\n```markdown\n## Changes\n\n```\n"
-	if err := validate("docs: show template examples", "docs/template", body, releasePleaseIdentity{}); err != nil {
-		t.Fatalf("fenced heading invalidated template: %v", err)
+	for _, fence := range []string{"```", "~~~"} {
+		body := validBody() + "\n" + fence + "markdown\n## Changes\n\n" + fence + "\n"
+		if err := validate("docs: show template examples", "docs/template", body, releasePleaseIdentity{}); err != nil {
+			t.Fatalf("%s fenced heading invalidated template: %v", fence, err)
+		}
+	}
+}
+
+func TestValidateDoesNotCloseCodeFencesWithDifferentMarkers(t *testing.T) {
+	body := strings.Replace(validBody(), "Changes made in this pull request.", "```markdown\n~~~\n## Changes\nHidden example content.\n```", 1)
+	err := validate("docs: show template examples", "docs/template", body, releasePleaseIdentity{})
+	if err == nil || !strings.Contains(err.Error(), `section "Changes" must be completed`) {
+		t.Fatalf("mixed fence markers supplied a template section: %v", err)
+	}
+}
+
+func TestValidateIgnoresHeadingsInsideHTMLComments(t *testing.T) {
+	body := strings.Replace(validBody(), "## Changes\n\nChanges made in this pull request.", "<!--\n## Changes\n\nChanges made in this pull request.\n-->", 1)
+	err := validate("docs: show template examples", "docs/template", body, releasePleaseIdentity{})
+	if err == nil || !strings.Contains(err.Error(), `missing required template section "Changes"`) {
+		t.Fatalf("commented heading supplied a template section: %v", err)
+	}
+}
+
+func TestValidateRejectsHeadingsRevealedByLeadingHTMLComments(t *testing.T) {
+	body := strings.Replace(validBody(), "## Problem", "<!-- comment -->## Problem", 1)
+	err := validate("docs: show template examples", "docs/template", body, releasePleaseIdentity{})
+	if err == nil || !strings.Contains(err.Error(), `missing required template section "Problem"`) {
+		t.Fatalf("comment-revealed heading supplied a template section: %v", err)
 	}
 }
 
