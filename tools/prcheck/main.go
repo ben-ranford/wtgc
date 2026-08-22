@@ -165,6 +165,7 @@ func parseSections(body string) map[string]string {
 	var current string
 	var content strings.Builder
 	inFence := false
+	inComment := false
 	flush := func() {
 		if current != "" {
 			sections[current] = strings.TrimSpace(content.String())
@@ -172,17 +173,21 @@ func parseSections(body string) map[string]string {
 		}
 	}
 	for _, line := range strings.Split(body, "\n") {
-		if strings.HasPrefix(strings.TrimSpace(line), "```") {
+		parsedLine := line
+		if !inFence {
+			parsedLine, inComment = stripLineHTMLComments(line, inComment)
+		}
+		if isCodeFence(parsedLine) {
 			inFence = !inFence
 		} else if !inFence {
-			if heading, ok := parseH2(line); ok {
+			if heading, ok := parseH2(parsedLine); ok {
 				flush()
 				current = heading
 				continue
 			}
 		}
 		if current != "" {
-			content.WriteString(line)
+			content.WriteString(parsedLine)
 			content.WriteByte('\n')
 		}
 	}
@@ -248,13 +253,18 @@ func stripCodeFences(content string) string {
 	var kept []string
 	inFence := false
 	for _, line := range strings.Split(content, "\n") {
-		if strings.HasPrefix(strings.TrimSpace(line), "```") {
+		if isCodeFence(line) {
 			inFence = !inFence
 		} else if !inFence {
 			kept = append(kept, line)
 		}
 	}
 	return strings.Join(kept, "\n")
+}
+
+func isCodeFence(line string) bool {
+	line = strings.TrimSpace(line)
+	return strings.HasPrefix(line, "```") || strings.HasPrefix(line, "~~~")
 }
 
 func fieldHasValue(content, field string) bool {
