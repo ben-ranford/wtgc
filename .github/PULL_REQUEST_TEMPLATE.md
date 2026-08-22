@@ -1,3 +1,5 @@
+<!-- PR titles must use Conventional Commits, for example `fix(scope): concise summary`. Squash merges publish that title to `main`, so do not rewrite it into a non-conventional subject. -->
+
 ## Problem
 
 What user-visible problem or engineering risk does this address?
@@ -8,14 +10,15 @@ What user-visible problem or engineering risk does this address?
 
 ## Validation
 
-- [ ] `make ci`
-- [ ] Release packaging touched and `make release-check VERSION=ci-check PLATFORMS="linux/amd64"` was run.
+Commands and checks run:
+
+-
 
 ## Compatibility And Safety
 
-- [ ] No worktree deletion behavior changed.
-- [ ] Worktree deletion behavior changed and refusal/removal tests were updated.
-- [ ] JSON schema or output changed and docs were updated.
+- Worktree deletion behavior:
+- JSON schema or output changes:
+- Migration or release impact:
 
 ## Notes
 
