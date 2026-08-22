@@ -20,6 +20,7 @@ const processLifecycleTimeout = 10 * time.Second
 
 func TestRunCancellationKillsGitProcessGroup(t *testing.T) {
 	t.Parallel()
+	lockGitScriptTest(t)
 	dir := t.TempDir()
 	parentFile := filepath.Join(dir, "parent.pid")
 	childFile := filepath.Join(dir, "child.pid")
