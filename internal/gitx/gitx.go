@@ -332,10 +332,16 @@ func DiskUsage(path string) (int64, error) {
 	var total int64
 	err := filepath.WalkDir(path, func(p string, d fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
+			if isTransientWalkNotExist(path, p, walkErr) {
+				return nil
+			}
 			return fmt.Errorf("walk %q: %w", p, walkErr)
 		}
 		info, err := d.Info()
 		if err != nil {
+			if isTransientWalkNotExist(path, p, err) {
+				return nil
+			}
 			return fmt.Errorf("stat %q: %w", p, err)
 		}
 		total += info.Size()
@@ -345,6 +351,14 @@ func DiskUsage(path string) (int64, error) {
 		return 0, err
 	}
 	return total, nil
+}
+
+// isTransientWalkNotExist ignores files that disappear after WalkDir reads a
+// directory entry. Git frequently creates and removes index locks while a
+// worktree scan is in progress; a missing descendant cannot affect cleanup
+// safety. A missing root remains an error.
+func isTransientWalkNotExist(root, path string, err error) bool {
+	return path != root && errors.Is(err, fs.ErrNotExist)
 }
 
 // DiskUsage returns a recursive size in bytes for path.

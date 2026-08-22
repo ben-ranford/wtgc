@@ -3,6 +3,7 @@ package gitx
 import (
 	"context"
 	"errors"
+	"io/fs"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -227,6 +228,22 @@ func TestDiskUsageMethodSurfacesWalkErrors(t *testing.T) {
 	_, err := New("git").DiskUsage(filepath.Join(t.TempDir(), "missing"))
 	if err == nil {
 		t.Fatal("DiskUsage error = nil, want missing path error")
+	}
+}
+
+func TestTransientWalkNotExist(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	child := filepath.Join(root, ".git", "worktrees", "feature", "index.lock")
+
+	if !isTransientWalkNotExist(root, child, fs.ErrNotExist) {
+		t.Fatal("missing descendant should be treated as transient")
+	}
+	if isTransientWalkNotExist(root, root, fs.ErrNotExist) {
+		t.Fatal("missing root must remain an error")
+	}
+	if isTransientWalkNotExist(root, child, fs.ErrPermission) {
+		t.Fatal("non-missing errors must remain errors")
 	}
 }
 
