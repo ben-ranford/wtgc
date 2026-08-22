@@ -19,6 +19,8 @@ import (
 	"github.com/ben-ranford/wtgc/internal/model"
 )
 
+const localBranchRefPrefix = "refs/heads/"
+
 // Client executes Git commands for repository discovery and cleanup.
 type Client struct {
 	gitBinary      string
@@ -291,7 +293,7 @@ func (c *Client) IsAncestor(ctx context.Context, repo model.Repository, ancestor
 		return false, errors.New("ancestor and descendant refs are required")
 	}
 	if !strings.HasPrefix(descendant, "refs/") && !isFullObjectID(descendant) {
-		descendant = "refs/heads/" + descendant
+		descendant = localBranchRefPrefix + descendant
 	}
 	_, err := c.run(ctx, repo.PrimaryPath, "merge-base", "--is-ancestor", ancestor, descendant)
 	if err == nil {
@@ -330,10 +332,16 @@ func DiskUsage(path string) (int64, error) {
 	var total int64
 	err := filepath.WalkDir(path, func(p string, d fs.DirEntry, walkErr error) error {
 		if walkErr != nil {
+			if isTransientWalkNotExist(path, p, walkErr) {
+				return nil
+			}
 			return fmt.Errorf("walk %q: %w", p, walkErr)
 		}
 		info, err := d.Info()
 		if err != nil {
+			if isTransientWalkNotExist(path, p, err) {
+				return nil
+			}
 			return fmt.Errorf("stat %q: %w", p, err)
 		}
 		total += info.Size()
@@ -343,6 +351,14 @@ func DiskUsage(path string) (int64, error) {
 		return 0, err
 	}
 	return total, nil
+}
+
+// isTransientWalkNotExist ignores files that disappear after WalkDir reads a
+// directory entry. Git frequently creates and removes index locks while a
+// worktree scan is in progress; a missing descendant cannot affect cleanup
+// safety. A missing root remains an error.
+func isTransientWalkNotExist(root, path string, err error) bool {
+	return path != root && errors.Is(err, fs.ErrNotExist)
 }
 
 // DiskUsage returns a recursive size in bytes for path.
@@ -387,8 +403,8 @@ func (c *Client) DeleteBranch(ctx context.Context, repo model.Repository, shortB
 		return fmt.Errorf("refusing to delete default branch %q", defaultBranch)
 	}
 
-	branchRef := "refs/heads/" + shortBranch
-	defaultRef := "refs/heads/" + defaultBranch
+	branchRef := localBranchRefPrefix + shortBranch
+	defaultRef := localBranchRefPrefix + defaultBranch
 	out, err := c.run(ctx, repo.PrimaryPath, "rev-parse", "--verify", branchRef+"^{commit}")
 	if err != nil {
 		return fmt.Errorf("resolve branch %s: %w", branchRef, err)
@@ -471,7 +487,7 @@ func validateRepository(repo model.Repository) error {
 }
 
 func shortBranch(ref string) string {
-	return strings.TrimPrefix(ref, "refs/heads/")
+	return strings.TrimPrefix(ref, localBranchRefPrefix)
 }
 
 func validateShortBranchName(label, branch string) error {
