@@ -103,6 +103,14 @@ type classificationJob struct {
 }
 
 func (a *App) scanRepositories(ctx context.Context, repositories []model.Repository, protectedPath string, inv *model.Inventory) {
+	jobs := a.collectClassificationJobs(ctx, repositories, protectedPath, inv)
+	if len(jobs) == 0 {
+		return
+	}
+	a.classifyJobs(ctx, jobs, inv)
+}
+
+func (a *App) collectClassificationJobs(ctx context.Context, repositories []model.Repository, protectedPath string, inv *model.Inventory) []classificationJob {
 	var jobs []classificationJob
 	for _, repo := range repositories {
 		records, err := a.git.List(ctx, repo)
@@ -131,10 +139,10 @@ func (a *App) scanRepositories(ctx context.Context, repositories []model.Reposit
 			})
 		}
 	}
-	if len(jobs) == 0 {
-		return
-	}
+	return jobs
+}
 
+func (a *App) classifyJobs(ctx context.Context, jobs []classificationJob, inv *model.Inventory) {
 	jobCh := make(chan classificationJob)
 	resultCh := make(chan model.Worktree, len(jobs))
 	workerCount := 8
