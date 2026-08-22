@@ -35,7 +35,7 @@ func TestQueueMeWorkflowContract(t *testing.T) {
 		"github.event_name == 'workflow_dispatch' &&",
 		"github.ref == 'refs/heads/main'",
 		"permissions:\n  contents: read",
-		"actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v2",
+		"actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3",
 		"app-id: ${{ vars.QUEUE_APP_ID }}",
 		"private-key: ${{ secrets.QUEUE_APP_PRIVATE_KEY }}",
 		"permission-contents: write",
