@@ -11,8 +11,44 @@ permissions:
   contents: read
 
 jobs:
+  native-tests:
+    name: native tests (${{ matrix.name }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: linux
+            runner: ubuntu-latest
+          - name: macos
+            runner: macos-latest
+          - name: windows
+            runner: windows-latest
+    env:
+      CGO_ENABLED: 1
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Checkout
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          fetch-depth: 0
+
+      - name: Setup Go
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version-file: go.mod
+
+      - name: Run native tests
+        run: go test ./...
+
+      - name: Run native race-detector tests
+        run: go test -race ./...
+
   verify:
-    runs-on: wtgc-arc
+    name: full quality gate (linux)
+    runs-on: ubuntu-latest
     env:
       CGO_ENABLED: 1
     steps:
@@ -26,10 +62,7 @@ jobs:
         with:
           go-version-file: go.mod
 
-      - name: Bootstrap ARC runner tools
-        run: ./scripts/bootstrap-runner-tools.sh gcc make ruby tar
-
-      - name: Run CI target
+      - name: Run full CI target
         run: make ci
 
       - name: Run automation checks

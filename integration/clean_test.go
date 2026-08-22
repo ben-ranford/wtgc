@@ -670,7 +670,11 @@ func wtgcBinary(t *testing.T) string {
 			wtgcBuildErr = err
 			return
 		}
-		wtgcBuildPath = filepath.Join(buildDir, "wtgc")
+		binaryName := "wtgc"
+		if runtime.GOOS == "windows" {
+			binaryName += ".exe"
+		}
+		wtgcBuildPath = filepath.Join(buildDir, binaryName)
 		cmd := exec.Command("go", "build", "-o", wtgcBuildPath, "./cmd/wtgc")
 		cmd.Dir = projectRoot
 		out, err := cmd.CombinedOutput()

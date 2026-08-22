@@ -16,12 +16,10 @@
 - `make build`
 - `make perf-check`
 
-GitHub Actions jobs run on the `wtgc-arc` self-hosted scale set. Each job
-bootstraps only the missing Debian packages it needs; production runner images
-should preinstall those tools to avoid package installation on every cold start.
-When the repository is made public, the runner policy is expected to move to
-GitHub-hosted Linux, macOS, and Windows runners so native OS verification can
-replace the current private ARC-only workflow.
+GitHub Actions jobs run on GitHub-hosted runners. Pull-request and
+default-branch CI includes native Linux, macOS, and Windows test verification.
+The full automation gate and release packaging smoke check run on Ubuntu with
+the tools supplied by the hosted image.
 
 Tool versions are pinned in `Makefile`:
 
@@ -101,20 +99,19 @@ and error paths before loading the job; launchd does not create it.
 
 ## GitHub Actions
 
-`.github/workflows/ci.yml` runs pull-request and default-branch checks on the
-private `wtgc-arc` scale set. It mirrors `make ci`, then runs a Linux release
-packaging smoke check through `make release-check`.
+`.github/workflows/ci.yml` runs pull-request and default-branch checks on
+GitHub-hosted runners. It verifies the test suite natively on Linux, macOS, and
+Windows, then runs the full automation gate and release packaging smoke check on
+Ubuntu through `make ci` and `make release-check`.
 
 `.github/workflows/release-please.yml` runs on default-branch pushes. It opens
 or updates Release Please PRs and, when a release is created, calls the reusable
 release workflow with the tag produced by Release Please.
 
 `.github/workflows/release.yml` is the reusable and manual release workflow. It
-builds the same Linux, macOS, and Windows artifact matrix as the release path,
+runs on Ubuntu, cross-compiles the Linux, macOS, and Windows artifact matrix,
 generates an SPDX JSON SBOM for the release asset set, rebuilds
 `checksums.txt`, validates every release asset, and uploads assets with
 `gh release upload` or creates the release if it has not been published yet.
-Release packaging requires `./cmd/wtgc`. Artifact attestations are skipped while
-the repository is private unless `ENABLE_PRIVATE_ATTESTATIONS=true` is
-configured, because GitHub only enables private attestations on plans that
-support them.
+Release packaging requires `./cmd/wtgc`. Artifact attestations are emitted for
+public releases.

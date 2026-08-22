@@ -14,9 +14,9 @@ The v1 CLI is implemented as a single, dependency-free Go binary. It is safe by
 default: every invocation is a dry-run unless `--yes` or `--interactive` is
 provided. V1 has no application UI or TUI.
 
-Release artifacts target Linux, macOS, and Windows on amd64 and arm64. CI
-currently cross-compiles those targets from the private `wtgc-arc` Linux runner
-scale set; native hosted-runner verification is planned for the public cutover.
+Release artifacts target Linux, macOS, and Windows on amd64 and arm64. CI uses
+GitHub-hosted Linux, macOS, and Windows runners for native test verification,
+then cross-compiles the release artifact matrix from Ubuntu.
 
 ## Install
 

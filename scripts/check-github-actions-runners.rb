@@ -3,7 +3,7 @@
 
 require "yaml"
 
-expected_runner = "wtgc-arc"
+github_hosted_runners = %w[ubuntu-latest macos-latest windows-latest].freeze
 failed = false
 
 Dir.glob(".github/workflows/*.{yml,yaml}").sort.each do |workflow|
@@ -14,9 +14,16 @@ Dir.glob(".github/workflows/*.{yml,yaml}").sort.each do |workflow|
     next if job.key?("uses")
 
     runs_on = job["runs-on"]
-    next if runs_on == expected_runner
+    valid_runner = github_hosted_runners.include?(runs_on)
 
-    warn "#{workflow}: job #{job_name.inspect} must use runs-on: #{expected_runner.inspect}; found #{runs_on.inspect}"
+    if runs_on == "${{ matrix.runner }}"
+      matrix_runners = (job.dig("strategy", "matrix", "include") || []).map { |entry| entry["runner"] }.compact
+      valid_runner = matrix_runners.sort == github_hosted_runners.sort
+    end
+
+    next if valid_runner
+
+    warn "#{workflow}: job #{job_name.inspect} must use a GitHub-hosted runner; found #{runs_on.inspect}"
     failed = true
   end
 end
