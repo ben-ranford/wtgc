@@ -20,6 +20,14 @@ function isBranchCurrent(comparisonStatus) {
   return comparisonStatus === 'ahead' || comparisonStatus === 'identical';
 }
 
+function isRebaseConflict(error) {
+  const messages = [
+    error?.message,
+    ...(Array.isArray(error?.errors) ? error.errors.map((entry) => entry?.message) : []),
+  ];
+  return messages.some((message) => /rebase.?conflict|conflict/i.test(message || ''));
+}
+
 function shortSHA(sha) {
   return typeof sha === 'string' ? sha.slice(0, 10) : 'unknown';
 }
@@ -393,13 +401,71 @@ async function runController({
     return;
   }
 
-  const leader = queued[0];
-  if (isQueueAppLeaderAutoMergeEvent({ context, eventPull, leader, queueAppSlug })) {
-    core.notice(`Ignoring the queue App's auto-merge event for leader #${leader.number}.`);
+  const oldestQueued = queued[0];
+  if (isQueueAppLeaderAutoMergeEvent({ context, eventPull, leader: oldestQueued, queueAppSlug })) {
+    core.notice(`Ignoring the queue App's auto-merge event for leader #${oldestQueued.number}.`);
     return;
   }
+  const { data: branch } = await github.rest.repos.getBranch({
+    owner,
+    repo,
+    branch: defaultBranch,
+  });
+  const conflictedPullNumbers = new Set();
+  let leader;
+  let update;
+  for (const candidate of queued) {
+    await disableAutoMerge(github, owner, repo, candidate.number);
+    if (candidate.draft) {
+      await syncStatusComment(
+        github,
+        owner,
+        repo,
+        candidate.number,
+        `## Queue status\n\nQueue paused: the next queued pull request is still a draft.`,
+      );
+      return;
+    }
+    try {
+      update = await rebaseOntoDefault(github, candidate, branch.commit.sha, {
+        canUpdateBranch: candidate.head.repo?.full_name === repository.full_name,
+      });
+    } catch (error) {
+      await syncStatusComment(
+        github,
+        owner,
+        repo,
+        candidate.number,
+        `## Queue status\n\nQueue paused: GitHub could not rebase this pull request onto \`${defaultBranch}\`. Resolve the conflict and push the branch to retry.\n\n\`${safeError(error)}\``,
+      );
+      if (!isRebaseConflict(error)) {
+        throw error;
+      }
+      conflictedPullNumbers.add(candidate.number);
+      continue;
+    }
+    if (update.needsManualRebase) {
+      await syncStatusComment(
+        github,
+        owner,
+        repo,
+        candidate.number,
+        `## Queue status\n\nQueue paused: this fork branch does not contain current \`${defaultBranch}\`, and the repository-scoped queue App cannot update it. Rebase the fork branch manually; the queue will retry after the push.`,
+      );
+      return;
+    }
+    leader = candidate;
+    break;
+  }
+  if (!leader) {
+    return;
+  }
+
   const eventQueueEntry = eventPull && queued.find((pull) => pull.number === eventPull.number);
-  for (const follower of queued.slice(1)) {
+  for (const follower of queued) {
+    if (follower.number === leader.number || conflictedPullNumbers.has(follower.number)) {
+      continue;
+    }
     await disableAutoMerge(github, owner, repo, follower.number);
     await syncStatusComment(
       github,
@@ -412,47 +478,6 @@ async function runController({
           eventQueueEntry?.number === follower.number && context.payload.action === 'labeled',
       },
     );
-  }
-  await disableAutoMerge(github, owner, repo, leader.number);
-  if (leader.draft) {
-    await syncStatusComment(
-      github,
-      owner,
-      repo,
-      leader.number,
-      `## Queue status\n\nQueue paused: the oldest queued pull request is still a draft.`,
-    );
-    return;
-  }
-  const { data: branch } = await github.rest.repos.getBranch({
-    owner,
-    repo,
-    branch: defaultBranch,
-  });
-  let update;
-  try {
-    update = await rebaseOntoDefault(github, leader, branch.commit.sha, {
-      canUpdateBranch: leader.head.repo?.full_name === repository.full_name,
-    });
-  } catch (error) {
-    await syncStatusComment(
-      github,
-      owner,
-      repo,
-      leader.number,
-      `## Queue status\n\nQueue paused: GitHub could not rebase this pull request onto \`${defaultBranch}\`. Resolve the conflict and push the branch to retry.\n\n\`${safeError(error)}\``,
-    );
-    return;
-  }
-  if (update.needsManualRebase) {
-    await syncStatusComment(
-      github,
-      owner,
-      repo,
-      leader.number,
-      `## Queue status\n\nQueue paused: this fork branch does not contain current \`${defaultBranch}\`, and the repository-scoped queue App cannot update it. Rebase the fork branch manually; the queue will retry after the push.`,
-    );
-    return;
   }
 
   try {
@@ -477,7 +502,7 @@ async function runController({
     });
     const latestLeader = sortQueuedPulls(latestPulls.filter(
       (pull) => hasLabel(pull, queueLabel) && pull.base?.ref === defaultBranch,
-    ))[0];
+    )).find((pull) => !conflictedPullNumbers.has(pull.number));
     if (latestLeader?.number !== leader.number) {
       throw new Error(`Queue leader changed to #${latestLeader?.number || 'none'} while advancing the queue.`);
     }
@@ -515,6 +540,7 @@ module.exports = runController;
 module.exports.testables = {
   hasLabel,
   isBranchCurrent,
+  isRebaseConflict,
   labelName,
   safeError,
   shortSHA,

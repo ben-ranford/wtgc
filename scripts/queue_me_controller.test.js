@@ -154,8 +154,9 @@ function makeHarness(options = {}) {
         return { disablePullRequestAutoMerge: { pullRequest: { number: state.number } } };
       }
       if (query.includes('RebaseQueuedPull')) {
-        if (options.rebaseError) {
-          throw options.rebaseError;
+        const rebaseError = options.rebaseErrors?.[variables.pullRequestId] || options.rebaseError;
+        if (rebaseError) {
+          throw rebaseError;
         }
         const state = [...states.values()].find((value) => value.id === variables.pullRequestId);
         state.headRefOid = options.rebasedHead || `rebased-${state.number}`;
@@ -234,6 +235,12 @@ test('isBranchCurrent accepts only ancestor-preserving compare states', () => {
   assert.equal(testables.isBranchCurrent('identical'), true);
   assert.equal(testables.isBranchCurrent('behind'), false);
   assert.equal(testables.isBranchCurrent('diverged'), false);
+});
+
+test('isRebaseConflict recognizes GitHub rebase conflicts without hiding unrelated errors', () => {
+  assert.equal(testables.isRebaseConflict(new Error('PullRequest::RebaseConflictError')), true);
+  assert.equal(testables.isRebaseConflict({ errors: [{ message: 'conflict' }] }), true);
+  assert.equal(testables.isRebaseConflict(new Error('GitHub API unavailable')), false);
 });
 
 test('status helpers bound untrusted API text', () => {
@@ -406,19 +413,24 @@ test('a current fork branch waits without a branch update', async () => {
   assert.match(harness.calls.comments[0].body, /Queue waiting/);
 });
 
-test('a rebase conflict pauses the queue with a bounded status message', async () => {
+test('a rebase conflict pauses that pull request and advances the next queued pull request', async () => {
   const leader = makePull(10);
+  const next = makePull(20);
   const harness = makeHarness({
-    pulls: [leader],
+    pulls: [leader, next],
     comparisonStatus: 'behind',
-    rebaseError: new Error('conflict in `workflow`'),
+    rebaseErrors: { PR_10: new Error('conflict in `workflow`') },
+    initialStates: { 20: { mergeStateStatus: 'CLEAN' } },
   });
 
   await runController(harness.args);
 
   assert.deepEqual(harness.calls.armed, []);
-  assert.match(harness.calls.comments[0].body, /could not rebase/);
-  assert.match(harness.calls.comments[0].body, /conflict in 'workflow'/);
+  assert.deepEqual(harness.calls.rebased, [20]);
+  assert.deepEqual(harness.calls.merged, [20]);
+  assert.match(commentsFor(harness, 10), /could not rebase/);
+  assert.match(commentsFor(harness, 10), /conflict in 'workflow'/);
+  assert.match(commentsFor(harness, 20), /GitHub squash-merged it/);
 });
 
 test('controller pauses when the default branch moves before auto-merge is armed', async () => {
