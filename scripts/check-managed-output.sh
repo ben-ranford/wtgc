@@ -3,6 +3,7 @@ set -eu
 
 test_root=".codex-artifacts/managed-output-check.$$"
 helper="./scripts/managed-output.sh"
+keep_content='keep\n'
 
 cleanup() {
   if [ -d "$test_root" ]; then
@@ -35,25 +36,25 @@ printf 'old\n' > "$test_root/managed/old.txt"
 [ ! -e "$test_root/managed" ] || fail "managed remove left directory behind"
 
 mkdir -p "$test_root/foreign"
-printf 'keep\n' > "$test_root/foreign/keep.txt"
+printf "$keep_content" > "$test_root/foreign/keep.txt"
 expect_failure "$helper" reset "$test_root/foreign"
 expect_failure "$helper" remove "$test_root/foreign"
 [ -f "$test_root/foreign/keep.txt" ] || fail "foreign directory was mutated"
 
 mkdir -p "$test_root/forged-marker"
 printf 'not owned\n' > "$test_root/forged-marker/.wtgc-managed-output"
-printf 'keep\n' > "$test_root/forged-marker/keep.txt"
+printf "$keep_content" > "$test_root/forged-marker/keep.txt"
 expect_failure "$helper" reset "$test_root/forged-marker"
 expect_failure "$helper" remove "$test_root/forged-marker"
 [ -f "$test_root/forged-marker/keep.txt" ] || fail "invalid marker authorized deletion"
 
 mkdir -p "$test_root/foreign-release"
-printf 'keep\n' > "$test_root/foreign-release/keep.txt"
+printf "$keep_content" > "$test_root/foreign-release/keep.txt"
 expect_failure "${MAKE:-make}" --no-print-directory release VERSION=managed-check PLATFORMS="$(go env GOOS)/$(go env GOARCH)" DIST_DIR="$test_root/foreign-release"
 [ -f "$test_root/foreign-release/keep.txt" ] || fail "foreign release directory was mutated"
 
 mkdir -p "$test_root/sentinel"
-printf 'keep\n' > "$test_root/sentinel/keep.txt"
+printf "$keep_content" > "$test_root/sentinel/keep.txt"
 expect_failure "$helper" reset "$test_root/ok/../../sentinel"
 [ -f "$test_root/sentinel/keep.txt" ] || fail "traversal target was mutated"
 
