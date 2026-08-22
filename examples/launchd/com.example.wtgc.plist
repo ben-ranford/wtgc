@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "https://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.example.wtgc</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/usr/local/bin/wtgc</string>
+    <string>clean</string>
+    <string>--json</string>
+    <string>--scan-root</string>
+    <string>/Users/example/Projects</string>
+  </array>
+  <key>StandardOutPath</key>
+  <string>/Users/example/.local/state/wtgc/launchd-latest.json</string>
+  <key>StandardErrorPath</key>
+  <string>/Users/example/.local/state/wtgc/launchd.log</string>
+  <key>StartCalendarInterval</key>
+  <dict>
+    <key>Hour</key>
+    <integer>9</integer>
+    <key>Minute</key>
+    <integer>15</integer>
+  </dict>
+</dict>
+</plist>

@@ -1,0 +1,16 @@
+{
+  "$schema": "https://raw.githubusercontent.com/googleapis/release-please/main/schemas/config.json",
+  "include-v-in-tag": true,
+  "draft": true,
+  "force-tag-creation": true,
+  "bootstrap-sha": "5bf8750cee784f19bce8120a3d1929ec60a9219b",
+  "pull-request-title-pattern": "chore: release ${version}",
+  "packages": {
+    ".": {
+      "release-type": "go",
+      "package-name": "wtgc",
+      "initial-version": "1.0.0",
+      "changelog-path": "CHANGELOG.md"
+    }
+  }
+}

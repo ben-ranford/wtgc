@@ -1,0 +1,36 @@
+name: ci
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: wtgc-arc
+    env:
+      CGO_ENABLED: 1
+    steps:
+      - name: Checkout
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          fetch-depth: 0
+
+      - name: Setup Go
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version-file: go.mod
+
+      - name: Bootstrap ARC runner tools
+        run: ./scripts/bootstrap-runner-tools.sh gcc make ruby tar
+
+      - name: Run CI target
+        run: make ci
+
+      - name: Run automation checks
+        run: make release-check VERSION=ci-check PLATFORMS="linux/amd64"

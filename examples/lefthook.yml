@@ -1,0 +1,15 @@
+post-merge:
+  commands:
+    wtgc-dry-run:
+      run: sh -c 'WTGC_SCAN_ROOT="${WTGC_SCAN_ROOT:-$PWD}"; WTGC_STATE_DIR="${WTGC_STATE_DIR:-$HOME/.local/state/wtgc}"; mkdir -p "$WTGC_STATE_DIR"; wtgc clean --json --scan-root "$WTGC_SCAN_ROOT" > "$WTGC_STATE_DIR/lefthook-post-merge.json"'
+
+post-checkout:
+  commands:
+    wtgc-dry-run:
+      run: sh -c 'WTGC_SCAN_ROOT="${WTGC_SCAN_ROOT:-$PWD}"; WTGC_STATE_DIR="${WTGC_STATE_DIR:-$HOME/.local/state/wtgc}"; mkdir -p "$WTGC_STATE_DIR"; wtgc clean --json --scan-root "$WTGC_SCAN_ROOT" > "$WTGC_STATE_DIR/lefthook-post-checkout.json"'
+
+jobs:
+  wtgc-dry-run:
+    run: sh -c 'WTGC_SCAN_ROOT="${WTGC_SCAN_ROOT:-$PWD}"; WTGC_STATE_DIR="${WTGC_STATE_DIR:-$HOME/.local/state/wtgc}"; mkdir -p "$WTGC_STATE_DIR"; wtgc clean --json --scan-root "$WTGC_SCAN_ROOT" > "$WTGC_STATE_DIR/lefthook-manual.json"'
+  wtgc-cleanup:
+    run: sh -c 'if [ "${WTGC_MUTATE:-0}" != "1" ]; then exit 0; fi; WTGC_SCAN_ROOT="${WTGC_SCAN_ROOT:-$PWD}"; WTGC_STATE_DIR="${WTGC_STATE_DIR:-$HOME/.local/state/wtgc}"; mkdir -p "$WTGC_STATE_DIR"; wtgc clean --yes --json --scan-root "$WTGC_SCAN_ROOT" > "$WTGC_STATE_DIR/lefthook-cleanup.json"'

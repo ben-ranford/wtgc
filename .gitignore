@@ -1,0 +1,8 @@
+.documents/
+.codex-artifacts/
+.omx/
+.artifacts/
+bin/
+dist/
+coverage.out
+*.test
