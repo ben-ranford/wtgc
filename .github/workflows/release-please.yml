@@ -8,7 +8,6 @@ on:
 
 permissions:
   contents: write
-  issues: write
   pull-requests: write
 
 concurrency:
@@ -18,6 +17,10 @@ concurrency:
 jobs:
   release-please:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      issues: write
+      pull-requests: write
     outputs:
       pr: ${{ steps.release.outputs.pr }}
       prs_created: ${{ steps.release.outputs.prs_created }}
