@@ -186,33 +186,38 @@ func ParseWorktreeListPorcelainZ(data []byte) ([]model.RegisteredWorktree, error
 			errs = append(errs, fmt.Errorf("field before worktree: %q", line))
 			continue
 		}
-		switch key {
-		case "HEAD":
-			if !hasValue || value == "" {
-				errs = append(errs, fmt.Errorf("malformed HEAD field for %q", current.Path))
-			} else {
-				current.Head = value
-			}
-		case "branch":
-			if !hasValue || value == "" {
-				errs = append(errs, fmt.Errorf("malformed branch field for %q", current.Path))
-			} else {
-				current.Branch = shortBranch(value)
-			}
-		case "bare":
-			current.Bare = true
-		case "detached":
-			current.Detached = true
-		case "locked":
-			current.Locked = true
-		case "prunable":
-			current.Prunable = true
-		default:
-			errs = append(errs, fmt.Errorf("unknown worktree field %q for %q", key, current.Path))
+		if err := applyWorktreeField(current, key, value, hasValue); err != nil {
+			errs = append(errs, err)
 		}
 	}
 	finish()
 	return records, errors.Join(errs...)
+}
+
+func applyWorktreeField(record *model.RegisteredWorktree, key, value string, hasValue bool) error {
+	switch key {
+	case "HEAD":
+		if !hasValue || value == "" {
+			return fmt.Errorf("malformed HEAD field for %q", record.Path)
+		}
+		record.Head = value
+	case "branch":
+		if !hasValue || value == "" {
+			return fmt.Errorf("malformed branch field for %q", record.Path)
+		}
+		record.Branch = shortBranch(value)
+	case "bare":
+		record.Bare = true
+	case "detached":
+		record.Detached = true
+	case "locked":
+		record.Locked = true
+	case "prunable":
+		record.Prunable = true
+	default:
+		return fmt.Errorf("unknown worktree field %q for %q", key, record.Path)
+	}
+	return nil
 }
 
 // DefaultBranch detects a single unambiguous local remote HEAD and returns its
