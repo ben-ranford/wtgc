@@ -45,16 +45,26 @@ jobs:
             if (context.eventName === 'workflow_dispatch' && (pullRequest.head.sha !== process.env.GITHUB_SHA || pullRequest.head.ref !== process.env.GITHUB_REF_NAME)) {
               throw new Error('dispatched PR must match the workflow ref and SHA');
             }
-            if (pullRequest.labels.length === 0) {
-              core.setFailed('Pull requests must have at least one label.');
-            }
+            const renovatePullRequest = pullRequest.user.login === 'renovate[bot]';
+            const validationTitle = pullRequest.title || '';
+            const validationBody = renovatePullRequest ? [
+              '## Problem', 'N/A',
+              '## Changes', 'N/A',
+              '## Validation', 'N/A',
+              '## Compatibility And Safety',
+              '- Worktree deletion behavior: N/A',
+              '- JSON schema or output changes: N/A',
+              '- Migration or release impact: N/A',
+              '## Notes', 'N/A',
+            ].join('\n') : pullRequest.body || '';
             const bodyPath = path.join(process.env.RUNNER_TEMP, 'pr-body.md');
-            fs.writeFileSync(bodyPath, pullRequest.body || '', 'utf8');
+            fs.writeFileSync(bodyPath, validationBody, 'utf8');
             core.exportVariable('PR_BODY_FILE', bodyPath);
-            core.exportVariable('PR_TITLE', pullRequest.title || '');
+            core.exportVariable('PR_TITLE', validationTitle);
             core.exportVariable('PR_HEAD_REF', pullRequest.head.ref || '');
             core.exportVariable('PR_HEAD_REPO_FULL_NAME', pullRequest.head.repo?.full_name || '');
             core.exportVariable('PR_AUTHOR_LOGIN', pullRequest.user.login || '');
+            core.exportVariable('PR_LABEL_COUNT', String(pullRequest.labels.length));
             core.exportVariable('PR_BASE_SHA', pullRequest.base.sha);
             core.exportVariable('REPOSITORY_FULL_NAME', context.repo.owner + '/' + context.repo.repo);
             core.exportVariable('IS_RELEASE_PLEASE_CANDIDATE', String(
@@ -102,6 +112,19 @@ jobs:
           script: |
             const { data: user } = await github.rest.users.getAuthenticated();
             core.exportVariable('RELEASE_PLEASE_AUTHOR_LOGIN', user.login);
+
+      - name: Validate PR labels
+        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
+        with:
+          script: |
+            const releasePleaseAuthor = process.env.RELEASE_PLEASE_AUTHOR_LOGIN || '';
+            const trustedReleasePlease = process.env.IS_RELEASE_PLEASE_CANDIDATE === 'true' &&
+              releasePleaseAuthor !== '' &&
+              releasePleaseAuthor === process.env.PR_AUTHOR_LOGIN;
+            const automatedMetadataPullRequest = process.env.PR_AUTHOR_LOGIN === 'renovate[bot]' || trustedReleasePlease;
+            if (Number(process.env.PR_LABEL_COUNT) === 0 && !automatedMetadataPullRequest) {
+              core.setFailed('Pull requests must have at least one label.');
+            }
 
       - name: Read repository merge policy
         uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
