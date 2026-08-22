@@ -31,9 +31,7 @@ func TestRunCancellationKillsGitProcessGroup(t *testing.T) {
 		"child=$!\n" +
 		"printf '%s' \"$child\" > " + quoteShell(childFile) + "\n" +
 		"wait \"$child\"\n"
-	if err := os.WriteFile(script, []byte(content), 0o755); err != nil {
-		t.Fatalf("write fake git: %v", err)
-	}
+	writeTestExecutable(t, script, content)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)

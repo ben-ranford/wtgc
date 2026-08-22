@@ -1,4 +1,4 @@
-.PHONY: format fmt format-check lint security vuln suppressions test perf-check race cov build ci release release-check automation-check clean toolchain-check tools-install setup hooks-install hooks-uninstall
+.PHONY: format fmt format-check lint security vuln suppressions test perf-check race cov build ci release release-check automation-check queue-me-check clean toolchain-check tools-install setup hooks-install hooks-uninstall
 
 PACKAGE_PATTERN ?= ./...
 BINARY_NAME ?= wtgc
@@ -84,6 +84,11 @@ automation-check:
 	./scripts/check-managed-output.sh
 	ruby -e 'require "yaml"; ARGV.each { |path| YAML.load_file(path) }' .github/workflows/*.yml examples/lefthook.yml
 	ruby -rjson -e 'ARGV.each { |path| JSON.parse(File.read(path)) }' release-please-config.json .release-please-manifest.json
+	$(MAKE) queue-me-check
+
+queue-me-check:
+	@command -v node >/dev/null 2>&1 || (echo "node is required to test the queue-me controller"; exit 1)
+	$(GO_CMD) test ./scripts
 
 release:
 	@test -d "$(CMD_PATH)" || (echo "$(CMD_PATH) does not exist; release packaging requires the CLI entrypoint."; exit 1)

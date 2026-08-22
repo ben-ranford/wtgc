@@ -54,7 +54,6 @@ func TestNewDefaultsToGitBinary(t *testing.T) {
 }
 
 func TestRunTimesOutHungGitCommand(t *testing.T) {
-	t.Parallel()
 	client := NewWithTimeout(hangingGitBinary(t), 25*time.Millisecond)
 
 	_, err := client.List(context.Background(), model.Repository{PrimaryPath: t.TempDir(), CommonDir: "/repo/.git"})
@@ -258,6 +257,16 @@ func TestRealGitClient(t *testing.T) {
 	run(t, repo, "git", "worktree", "add", wt, "feature")
 
 	client := New("git")
+	repoRecord := discoverRealGitRepository(t, client, ctx, root, repo)
+	assertRealGitWorktrees(t, client, ctx, repoRecord, repo)
+	assertRealGitDefaultBranch(t, client, ctx, repoRecord)
+	assertRealGitWorktreeState(t, client, ctx, wt)
+	assertRealGitAncestry(t, client, ctx, repoRecord)
+	removeRealGitWorktree(t, client, ctx, repoRecord, wt)
+}
+
+func discoverRealGitRepository(t *testing.T, client *Client, ctx context.Context, root, repo string) model.Repository {
+	t.Helper()
 	repos, errs := client.Discover(ctx, []string{root})
 	if len(errs) > 0 {
 		t.Fatalf("Discover errors: %v", errs)
@@ -269,7 +278,11 @@ func TestRealGitClient(t *testing.T) {
 	if repoRecord.PrimaryPath == "" {
 		t.Fatalf("did not discover clone repository: %#v", repos)
 	}
+	return repoRecord
+}
 
+func assertRealGitWorktrees(t *testing.T, client *Client, ctx context.Context, repoRecord model.Repository, repo string) {
+	t.Helper()
 	worktrees, err := client.List(ctx, repoRecord)
 	if err != nil {
 		t.Fatalf("List: %v", err)
@@ -280,7 +293,10 @@ func TestRealGitClient(t *testing.T) {
 	if !hasPrimary(worktrees, repo) {
 		t.Fatalf("primary worktree not marked: %#v", worktrees)
 	}
+}
 
+func assertRealGitDefaultBranch(t *testing.T, client *Client, ctx context.Context, repoRecord model.Repository) {
+	t.Helper()
 	defaultBranch, err := client.DefaultBranch(ctx, repoRecord)
 	if err != nil {
 		t.Fatalf("DefaultBranch: %v", err)
@@ -288,26 +304,32 @@ func TestRealGitClient(t *testing.T) {
 	if defaultBranch != "main" {
 		t.Fatalf("DefaultBranch = %q, want main", defaultBranch)
 	}
+}
 
-	clean, err := client.IsClean(ctx, wt)
+func assertRealGitWorktreeState(t *testing.T, client *Client, ctx context.Context, worktree string) {
+	t.Helper()
+	clean, err := client.IsClean(ctx, worktree)
 	if err != nil {
 		t.Fatalf("IsClean clean: %v", err)
 	}
 	if !clean {
 		t.Fatal("worktree should be clean")
 	}
-	writeFile(t, filepath.Join(wt, "untracked.txt"), "untracked\n")
-	clean, err = client.IsClean(ctx, wt)
+	writeFile(t, filepath.Join(worktree, "untracked.txt"), "untracked\n")
+	clean, err = client.IsClean(ctx, worktree)
 	if err != nil {
 		t.Fatalf("IsClean dirty: %v", err)
 	}
 	if clean {
 		t.Fatal("worktree with untracked file should be dirty")
 	}
-	if _, err := DiskUsage(wt); err != nil {
+	if _, err := DiskUsage(worktree); err != nil {
 		t.Fatalf("DiskUsage: %v", err)
 	}
+}
 
+func assertRealGitAncestry(t *testing.T, client *Client, ctx context.Context, repoRecord model.Repository) {
+	t.Helper()
 	ancestor, err := client.IsAncestor(ctx, repoRecord, "main", "feature")
 	if err != nil {
 		t.Fatalf("IsAncestor: %v", err)
@@ -322,14 +344,17 @@ func TestRealGitClient(t *testing.T) {
 	if !contains {
 		t.Fatal("remote should contain feature tip")
 	}
+}
 
-	if err := os.Remove(filepath.Join(wt, "untracked.txt")); err != nil {
+func removeRealGitWorktree(t *testing.T, client *Client, ctx context.Context, repoRecord model.Repository, worktree string) {
+	t.Helper()
+	if err := os.Remove(filepath.Join(worktree, "untracked.txt")); err != nil {
 		t.Fatalf("remove untracked: %v", err)
 	}
-	if err := client.Remove(ctx, repoRecord, wt); err != nil {
+	if err := client.Remove(ctx, repoRecord, worktree); err != nil {
 		t.Fatalf("Remove: %v", err)
 	}
-	if _, err := os.Stat(wt); !errors.Is(err, os.ErrNotExist) {
+	if _, err := os.Stat(worktree); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("worktree still exists or stat failed unexpectedly: %v", err)
 	}
 	if err := client.DeleteBranch(ctx, repoRecord, "feature", "main"); err != nil {
@@ -525,6 +550,7 @@ func branchExists(t *testing.T, repo, branch string) bool {
 
 func gitRaceWrapper(t *testing.T, repo, raceOID string) string {
 	t.Helper()
+	lockGitScriptTest(t)
 	if runtime.GOOS == "windows" {
 		t.Skip("Git race wrapper requires a Unix-like executable format")
 	}
@@ -547,9 +573,7 @@ func gitRaceWrapper(t *testing.T, repo, raceOID string) string {
 		"  exit $status\n" +
 		"fi\n" +
 		"exec \"$real_git\" \"$@\"\n"
-	if err := os.WriteFile(script, []byte(content), 0o755); err != nil {
-		t.Fatalf("write git wrapper: %v", err)
-	}
+	writeTestExecutable(t, script, content)
 	return script
 }
 
@@ -610,9 +634,7 @@ func fakeGitBinary(t *testing.T, outputs map[string]string) string {
 	content += "printf '%s' \"unexpected git args: $*\" >&2\n" +
 		"exit 1\n" +
 		"\n"
-	if err := os.WriteFile(script, []byte(content), 0o755); err != nil {
-		t.Fatalf("write fake git: %v", err)
-	}
+	writeTestExecutable(t, script, content)
 	return script
 }
 
@@ -626,15 +648,34 @@ func hangingGitBinary(t *testing.T) string {
 	script := filepath.Join(dir, "git")
 	content := "#!/bin/sh\n" +
 		"sleep 60\n"
-	if err := os.WriteFile(script, []byte(content), 0o755); err != nil {
-		t.Fatalf("write hanging git: %v", err)
-	}
+	writeTestExecutable(t, script, content)
 	return script
 }
 
-// lockGitScriptTest prevents concurrent execution of test-created shell scripts.
-// Linux can intermittently reject an executable while another parallel test is
-// creating a similar fixture with ETXTBSY.
+func writeTestExecutable(t *testing.T, path, content string) {
+	t.Helper()
+	temporary, err := os.CreateTemp(filepath.Dir(path), ".git-test-*")
+	if err != nil {
+		t.Fatalf("create executable %s: %v", path, err)
+	}
+	temporaryPath := temporary.Name()
+	defer func() { _ = os.Remove(temporaryPath) }()
+	if _, err := temporary.WriteString(content); err != nil {
+		_ = temporary.Close()
+		t.Fatalf("write executable %s: %v", path, err)
+	}
+	if err := temporary.Chmod(0o755); err != nil {
+		_ = temporary.Close()
+		t.Fatalf("chmod executable %s: %v", path, err)
+	}
+	if err := temporary.Close(); err != nil {
+		t.Fatalf("close executable %s: %v", path, err)
+	}
+	if err := os.Rename(temporaryPath, path); err != nil {
+		t.Fatalf("install executable %s: %v", path, err)
+	}
+}
+
 func lockGitScriptTest(t *testing.T) {
 	t.Helper()
 	gitScriptTestMu.Lock()
