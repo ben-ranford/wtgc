@@ -257,6 +257,16 @@ func TestRealGitClient(t *testing.T) {
 	run(t, repo, "git", "worktree", "add", wt, "feature")
 
 	client := New("git")
+	repoRecord := discoverRealGitRepository(t, client, ctx, root, repo)
+	assertRealGitWorktrees(t, client, ctx, repoRecord, repo)
+	assertRealGitDefaultBranch(t, client, ctx, repoRecord)
+	assertRealGitWorktreeState(t, client, ctx, wt)
+	assertRealGitAncestry(t, client, ctx, repoRecord)
+	removeRealGitWorktree(t, client, ctx, repoRecord, wt)
+}
+
+func discoverRealGitRepository(t *testing.T, client *Client, ctx context.Context, root, repo string) model.Repository {
+	t.Helper()
 	repos, errs := client.Discover(ctx, []string{root})
 	if len(errs) > 0 {
 		t.Fatalf("Discover errors: %v", errs)
@@ -268,7 +278,11 @@ func TestRealGitClient(t *testing.T) {
 	if repoRecord.PrimaryPath == "" {
 		t.Fatalf("did not discover clone repository: %#v", repos)
 	}
+	return repoRecord
+}
 
+func assertRealGitWorktrees(t *testing.T, client *Client, ctx context.Context, repoRecord model.Repository, repo string) {
+	t.Helper()
 	worktrees, err := client.List(ctx, repoRecord)
 	if err != nil {
 		t.Fatalf("List: %v", err)
@@ -279,7 +293,10 @@ func TestRealGitClient(t *testing.T) {
 	if !hasPrimary(worktrees, repo) {
 		t.Fatalf("primary worktree not marked: %#v", worktrees)
 	}
+}
 
+func assertRealGitDefaultBranch(t *testing.T, client *Client, ctx context.Context, repoRecord model.Repository) {
+	t.Helper()
 	defaultBranch, err := client.DefaultBranch(ctx, repoRecord)
 	if err != nil {
 		t.Fatalf("DefaultBranch: %v", err)
@@ -287,26 +304,32 @@ func TestRealGitClient(t *testing.T) {
 	if defaultBranch != "main" {
 		t.Fatalf("DefaultBranch = %q, want main", defaultBranch)
 	}
+}
 
-	clean, err := client.IsClean(ctx, wt)
+func assertRealGitWorktreeState(t *testing.T, client *Client, ctx context.Context, worktree string) {
+	t.Helper()
+	clean, err := client.IsClean(ctx, worktree)
 	if err != nil {
 		t.Fatalf("IsClean clean: %v", err)
 	}
 	if !clean {
 		t.Fatal("worktree should be clean")
 	}
-	writeFile(t, filepath.Join(wt, "untracked.txt"), "untracked\n")
-	clean, err = client.IsClean(ctx, wt)
+	writeFile(t, filepath.Join(worktree, "untracked.txt"), "untracked\n")
+	clean, err = client.IsClean(ctx, worktree)
 	if err != nil {
 		t.Fatalf("IsClean dirty: %v", err)
 	}
 	if clean {
 		t.Fatal("worktree with untracked file should be dirty")
 	}
-	if _, err := DiskUsage(wt); err != nil {
+	if _, err := DiskUsage(worktree); err != nil {
 		t.Fatalf("DiskUsage: %v", err)
 	}
+}
 
+func assertRealGitAncestry(t *testing.T, client *Client, ctx context.Context, repoRecord model.Repository) {
+	t.Helper()
 	ancestor, err := client.IsAncestor(ctx, repoRecord, "main", "feature")
 	if err != nil {
 		t.Fatalf("IsAncestor: %v", err)
@@ -321,14 +344,17 @@ func TestRealGitClient(t *testing.T) {
 	if !contains {
 		t.Fatal("remote should contain feature tip")
 	}
+}
 
-	if err := os.Remove(filepath.Join(wt, "untracked.txt")); err != nil {
+func removeRealGitWorktree(t *testing.T, client *Client, ctx context.Context, repoRecord model.Repository, worktree string) {
+	t.Helper()
+	if err := os.Remove(filepath.Join(worktree, "untracked.txt")); err != nil {
 		t.Fatalf("remove untracked: %v", err)
 	}
-	if err := client.Remove(ctx, repoRecord, wt); err != nil {
+	if err := client.Remove(ctx, repoRecord, worktree); err != nil {
 		t.Fatalf("Remove: %v", err)
 	}
-	if _, err := os.Stat(wt); !errors.Is(err, os.ErrNotExist) {
+	if _, err := os.Stat(worktree); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("worktree still exists or stat failed unexpectedly: %v", err)
 	}
 	if err := client.DeleteBranch(ctx, repoRecord, "feature", "main"); err != nil {
