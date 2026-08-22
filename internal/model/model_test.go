@@ -8,6 +8,10 @@ import (
 	"testing"
 )
 
+type publishedSchemaVersion struct {
+	Const string `json:"const"`
+}
+
 func TestPublishedSchemaMatchesModelContract(t *testing.T) {
 	t.Parallel()
 	_, sourceFile, _, ok := runtime.Caller(0)
@@ -21,9 +25,7 @@ func TestPublishedSchemaMatchesModelContract(t *testing.T) {
 	}
 	var schema struct {
 		Properties struct {
-			SchemaVersion struct {
-				Const string `json:"const"`
-			} `json:"schema_version"`
+			SchemaVersion publishedSchemaVersion `json:"schema_version"`
 		} `json:"properties"`
 		Definitions struct {
 			Classification struct {
