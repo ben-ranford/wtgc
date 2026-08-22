@@ -319,32 +319,44 @@ func (a *App) cleanRepository(ctx context.Context, repo model.Repository, opts O
 			continue
 		}
 
-		fresh, ok := a.revalidate(ctx, repo, opts.ProtectedPath, *item)
-		if !ok {
-			*item = fresh
-			continue
-		}
-		if err := a.git.Remove(ctx, repo, fresh.Path); err != nil {
-			item.Classification = model.Error
-			item.Reason = "remove failed; worktree kept"
-			item.Error = err.Error()
-			item.Action = model.ActionKept
-			inv.Errors = append(inv.Errors, fmt.Sprintf("%s: remove %s: %v", repo.PrimaryPath, fresh.Path, err))
-			continue
-		}
-		item.Removed = true
-		item.ReclaimedBytes = item.DiskBytes
-		item.Action = model.ActionRemoved
-		if opts.DeleteBranch {
-			if err := a.git.DeleteBranch(ctx, repo, fresh.Branch, fresh.DefaultBranch); err != nil {
-				item.Error = fmt.Sprintf("worktree removed; branch retained: %v", err)
-				inv.Errors = append(inv.Errors, fmt.Sprintf("%s: delete branch %s: %v", repo.PrimaryPath, fresh.Branch, err))
-			} else {
-				item.BranchDeleted = true
-				item.Action = model.ActionRemovedBranchDeleted
-			}
-		}
+		a.removeWorktree(ctx, repo, opts, item, inv)
 	}
+	a.pruneAcceptedWorktrees(ctx, repo, inv, acceptedPrunable, pruneBlocked)
+}
+
+func (a *App) removeWorktree(ctx context.Context, repo model.Repository, opts Options, item *model.Worktree, inv *model.Inventory) {
+	fresh, ok := a.revalidate(ctx, repo, opts.ProtectedPath, *item)
+	if !ok {
+		*item = fresh
+		return
+	}
+	if err := a.git.Remove(ctx, repo, fresh.Path); err != nil {
+		item.Classification = model.Error
+		item.Reason = "remove failed; worktree kept"
+		item.Error = err.Error()
+		item.Action = model.ActionKept
+		inv.Errors = append(inv.Errors, fmt.Sprintf("%s: remove %s: %v", repo.PrimaryPath, fresh.Path, err))
+		return
+	}
+	item.Removed = true
+	item.ReclaimedBytes = item.DiskBytes
+	item.Action = model.ActionRemoved
+	if opts.DeleteBranch {
+		a.deleteWorktreeBranch(ctx, repo, fresh, item, inv)
+	}
+}
+
+func (a *App) deleteWorktreeBranch(ctx context.Context, repo model.Repository, fresh model.Worktree, item *model.Worktree, inv *model.Inventory) {
+	if err := a.git.DeleteBranch(ctx, repo, fresh.Branch, fresh.DefaultBranch); err != nil {
+		item.Error = fmt.Sprintf("worktree removed; branch retained: %v", err)
+		inv.Errors = append(inv.Errors, fmt.Sprintf("%s: delete branch %s: %v", repo.PrimaryPath, fresh.Branch, err))
+		return
+	}
+	item.BranchDeleted = true
+	item.Action = model.ActionRemovedBranchDeleted
+}
+
+func (a *App) pruneAcceptedWorktrees(ctx context.Context, repo model.Repository, inv *model.Inventory, acceptedPrunable []int, pruneBlocked bool) {
 	if pruneBlocked || len(acceptedPrunable) == 0 {
 		return
 	}
