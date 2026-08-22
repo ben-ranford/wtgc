@@ -97,10 +97,11 @@ jobs:
       - name: Build artifact
         env:
           RELEASE_TAG: ${{ inputs.tag_name }}
+          RELEASE_SHA: ${{ inputs.sha }}
         run: |
           make release \
             VERSION="$RELEASE_TAG" \
-            COMMIT='${{ inputs.sha }}' \
+            COMMIT="$RELEASE_SHA" \
             BUILD_DATE='${{ steps.metadata.outputs.date }}' \
             PLATFORMS='${{ matrix.goos }}/${{ matrix.goarch }}'
       - name: Upload artifact
