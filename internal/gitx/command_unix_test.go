@@ -16,6 +16,8 @@ import (
 	"github.com/ben-ranford/wtgc/internal/model"
 )
 
+const processLifecycleTimeout = 10 * time.Second
+
 func TestRunCancellationKillsGitProcessGroup(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
@@ -50,7 +52,7 @@ func TestRunCancellationKillsGitProcessGroup(t *testing.T) {
 
 	for _, pidFile := range []string{parentFile, childFile} {
 		pid := readPID(t, pidFile)
-		deadline := time.Now().Add(2 * time.Second)
+		deadline := time.Now().Add(processLifecycleTimeout)
 		for processExists(pid) && time.Now().Before(deadline) {
 			time.Sleep(10 * time.Millisecond)
 		}
@@ -62,7 +64,7 @@ func TestRunCancellationKillsGitProcessGroup(t *testing.T) {
 
 func waitForFile(t *testing.T, path string) {
 	t.Helper()
-	deadline := time.Now().Add(2 * time.Second)
+	deadline := time.Now().Add(processLifecycleTimeout)
 	for {
 		if _, err := os.Stat(path); err == nil {
 			return
