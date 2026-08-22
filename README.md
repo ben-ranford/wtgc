@@ -31,10 +31,14 @@ working-tree state before calling anything removable.
 clean + merged locally + reachable remotely + not protected = eligible
 ```
 
-If any proof is missing, the worktree stays. False negatives waste disk; false
-positives destroy work. Given that choice, `wtgc` leaves the worktree alone.
-Live worktrees are removed through `git worktree remove`, never raw `rm -rf`,
-and local branch deletion is a separate opt-in action. The complete
+For a live worktree, missing proof means it stays. False negatives waste disk;
+false positives destroy work. Given that choice, `wtgc` leaves the worktree
+alone. Live worktrees are removed through `git worktree remove`, never raw
+`rm -rf`, and local branch deletion is a separate opt-in action.
+
+Stale records are handled separately. If Git marks a missing worktree path as
+prunable, `wtgc` may remove its registration with `git worktree prune
+--expire=now`; it does not delete a directory. The complete
 [safety contract](docs/safety.md) documents every refusal and revalidation rule.
 
 ## 🚀 Usage
@@ -77,6 +81,10 @@ wtgc clean --scan-root "$HOME/Projects" --json
 
 Worktree removal keeps the local branch. Add `--delete-branch` only when you
 also intend to delete branches after their worktrees are safely removed.
+
+Git commands have no deadline by default. For hooks and scheduled jobs, set
+`WTGC_GIT_TIMEOUT=2m` (or another positive Go duration) to apply a deadline to
+each Git command.
 
 ## ⬇️ Installation
 
