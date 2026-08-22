@@ -41,6 +41,11 @@ type releasePleaseIdentity struct {
 	pullRequestAuthor      string
 }
 
+type markdownFenceState struct {
+	inFence     bool
+	fenceMarker string
+}
+
 func main() {
 	os.Exit(run(os.Args[1:], os.Getenv, os.Stderr))
 }
@@ -164,8 +169,7 @@ func parseSections(body string) map[string]string {
 	sections := make(map[string]string)
 	var current string
 	var content strings.Builder
-	inFence := false
-	fenceMarker := ""
+	fenceState := markdownFenceState{}
 	inComment := false
 	flush := func() {
 		if current != "" {
@@ -175,17 +179,10 @@ func parseSections(body string) map[string]string {
 	}
 	for _, line := range strings.Split(body, "\n") {
 		parsedLine := line
-		if !inFence {
+		if !fenceState.inFence {
 			parsedLine, inComment = stripLineHTMLComments(line, inComment)
 		}
-		if marker := codeFenceMarker(parsedLine); marker != "" && (!inFence || marker == fenceMarker) {
-			inFence = !inFence
-			if inFence {
-				fenceMarker = marker
-			} else {
-				fenceMarker = ""
-			}
-		} else if !inFence {
+		if !fenceState.consume(parsedLine) && !fenceState.inFence {
 			if heading, ok := parseH2(parsedLine); ok {
 				flush()
 				current = heading
@@ -257,22 +254,27 @@ func stripLineHTMLComments(line string, inComment bool) (string, bool) {
 
 func stripCodeFences(content string) string {
 	var kept []string
-	inFence := false
-	fenceMarker := ""
+	fenceState := markdownFenceState{}
 	for _, line := range strings.Split(content, "\n") {
-		marker := codeFenceMarker(line)
-		if marker != "" && (!inFence || marker == fenceMarker) {
-			inFence = !inFence
-			if inFence {
-				fenceMarker = marker
-			} else {
-				fenceMarker = ""
-			}
-		} else if !inFence {
+		if !fenceState.consume(line) && !fenceState.inFence {
 			kept = append(kept, line)
 		}
 	}
 	return strings.Join(kept, "\n")
+}
+
+func (state *markdownFenceState) consume(line string) bool {
+	marker := codeFenceMarker(line)
+	if marker == "" || (state.inFence && marker != state.fenceMarker) {
+		return false
+	}
+	state.inFence = !state.inFence
+	if state.inFence {
+		state.fenceMarker = marker
+	} else {
+		state.fenceMarker = ""
+	}
+	return true
 }
 
 func codeFenceMarker(line string) string {
