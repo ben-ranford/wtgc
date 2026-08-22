@@ -64,6 +64,7 @@ function makeHarness(options = {}) {
     comments: [],
     createdLabels: [],
     disabled: [],
+    deletedComments: [],
     merged: [],
     notices: [],
     rebased: [],
@@ -99,6 +100,13 @@ function makeHarness(options = {}) {
             }
           }
           throw new Error(`unknown comment ${input.comment_id}`);
+        },
+        deleteComment: async (input) => {
+          calls.deletedComments.push(input.comment_id);
+          for (const [number, issueComments] of comments) {
+            const index = issueComments.findIndex((comment) => comment.id === input.comment_id);
+            if (index >= 0) issueComments.splice(index, 1);
+          }
         },
       },
       pulls: {
@@ -359,6 +367,7 @@ test('later queue runs disable auto-merge for a formerly managed pull removed fr
 
   assert.deepEqual(harness.calls.disabled, [10]);
   assert.deepEqual(harness.calls.armed, []);
+  assert.deepEqual(harness.calls.deletedComments, [10]);
 });
 
 test('drafts and stale fork branches pause before rebase or auto-merge', async (t) => {

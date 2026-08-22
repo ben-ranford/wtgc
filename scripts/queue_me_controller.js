@@ -141,6 +141,18 @@ async function hasQueueStatusComment(github, owner, repo, number) {
   );
 }
 
+async function clearQueueStatusComment(github, owner, repo, number) {
+  const comments = await github.paginate(github.rest.issues.listComments, {
+    owner, repo, issue_number: number, per_page: 100,
+  });
+  const managed = comments.find(
+    (comment) => comment.user?.type === 'Bot' && comment.body?.includes(COMMENT_MARKER),
+  );
+  if (managed) {
+    await github.rest.issues.deleteComment({ owner, repo, comment_id: managed.id });
+  }
+}
+
 async function reconcileIneligibleQueuePulls(github, owner, repo, pulls, queueLabel, defaultBranch) {
   for (const pull of pulls) {
     if (hasLabel(pull, queueLabel) && pull.base?.ref === defaultBranch) {
@@ -150,6 +162,7 @@ async function reconcileIneligibleQueuePulls(github, owner, repo, pulls, queueLa
       continue;
     }
     await disableAutoMerge(github, owner, repo, pull.number);
+    await clearQueueStatusComment(github, owner, repo, pull.number);
   }
 }
 
@@ -477,6 +490,15 @@ async function runController({
       throw new Error(
         `Pull request head moved from ${shortSHA(update.headSHA)} to ${shortSHA(state.headRefOid)} while advancing the queue.`,
       );
+    }
+    const latestPulls = await github.paginate(github.rest.pulls.list, {
+      owner, repo, state: 'open', sort: 'created', direction: 'asc', per_page: 100,
+    });
+    const latestLeader = sortQueuedPulls(latestPulls.filter(
+      (pull) => hasLabel(pull, queueLabel) && pull.base?.ref === defaultBranch,
+    ))[0];
+    if (latestLeader?.number !== leader.number) {
+      throw new Error(`Queue leader changed to #${latestLeader?.number || 'none'} while advancing the queue.`);
     }
     const result = await armOrMerge(github, state, {
       expectedBaseRefName: defaultBranch,

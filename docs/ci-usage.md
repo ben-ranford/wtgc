@@ -133,6 +133,8 @@ Create and install a GitHub App on this repository with these repository
 permissions: Contents (read and write), Issues (read and write), Pull requests
 (read and write), and Workflows (read and write). Then configure:
 
+Enable **Allow auto-merge** in the repository's pull-request settings.
+
 - Repository variable `QUEUE_APP_ID`: the GitHub App's numeric App ID.
 - Repository secret `QUEUE_APP_PRIVATE_KEY`: the GitHub App private key in PEM
   format.
