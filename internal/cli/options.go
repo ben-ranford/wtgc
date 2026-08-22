@@ -118,10 +118,23 @@ func Parse(args []string) (Options, error) {
 		roots = append(roots, root)
 	}
 
+	if err := validateExecutionMode(&opts, dryRun); err != nil {
+		return Options{}, err
+	}
+
+	if len(roots) == 0 {
+		roots = append(roots, ".")
+	}
+	opts.Roots = append([]string(nil), roots...)
+
+	return opts, nil
+}
+
+func validateExecutionMode(opts *Options, dryRun boolOption) error {
 	modes := 0
 	opts.DryRun = dryRun.value
 	if dryRun.set && !opts.DryRun {
-		return Options{}, &UsageError{Message: "use --yes or --interactive to execute cleanup"}
+		return &UsageError{Message: "use --yes or --interactive to execute cleanup"}
 	}
 	if dryRun.set && opts.DryRun {
 		modes++
@@ -133,18 +146,12 @@ func Parse(args []string) (Options, error) {
 		modes++
 	}
 	if modes > 1 {
-		return Options{}, &UsageError{Message: "--dry-run, --yes, and --interactive are mutually exclusive"}
+		return &UsageError{Message: "--dry-run, --yes, and --interactive are mutually exclusive"}
 	}
 	if opts.Yes || opts.Interactive {
 		opts.DryRun = false
 	}
-
-	if len(roots) == 0 {
-		roots = append(roots, ".")
-	}
-	opts.Roots = append([]string(nil), roots...)
-
-	return opts, nil
+	return nil
 }
 
 type boolOption struct {
