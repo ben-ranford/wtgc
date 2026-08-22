@@ -19,6 +19,8 @@ import (
 	"github.com/ben-ranford/wtgc/internal/model"
 )
 
+const localBranchRefPrefix = "refs/heads/"
+
 // Client executes Git commands for repository discovery and cleanup.
 type Client struct {
 	gitBinary      string
@@ -291,7 +293,7 @@ func (c *Client) IsAncestor(ctx context.Context, repo model.Repository, ancestor
 		return false, errors.New("ancestor and descendant refs are required")
 	}
 	if !strings.HasPrefix(descendant, "refs/") && !isFullObjectID(descendant) {
-		descendant = "refs/heads/" + descendant
+		descendant = localBranchRefPrefix + descendant
 	}
 	_, err := c.run(ctx, repo.PrimaryPath, "merge-base", "--is-ancestor", ancestor, descendant)
 	if err == nil {
@@ -387,8 +389,8 @@ func (c *Client) DeleteBranch(ctx context.Context, repo model.Repository, shortB
 		return fmt.Errorf("refusing to delete default branch %q", defaultBranch)
 	}
 
-	branchRef := "refs/heads/" + shortBranch
-	defaultRef := "refs/heads/" + defaultBranch
+	branchRef := localBranchRefPrefix + shortBranch
+	defaultRef := localBranchRefPrefix + defaultBranch
 	out, err := c.run(ctx, repo.PrimaryPath, "rev-parse", "--verify", branchRef+"^{commit}")
 	if err != nil {
 		return fmt.Errorf("resolve branch %s: %w", branchRef, err)
@@ -471,7 +473,7 @@ func validateRepository(repo model.Repository) error {
 }
 
 func shortBranch(ref string) string {
-	return strings.TrimPrefix(ref, "refs/heads/")
+	return strings.TrimPrefix(ref, localBranchRefPrefix)
 }
 
 func validateShortBranchName(label, branch string) error {
