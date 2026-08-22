@@ -442,7 +442,7 @@ async function runController({
       leader.number,
       `## Queue status\n\nQueue paused: GitHub could not rebase this pull request onto \`${defaultBranch}\`. Resolve the conflict and push the branch to retry.\n\n\`${safeError(error)}\``,
     );
-    throw error;
+    return;
   }
   if (update.needsManualRebase) {
     await syncStatusComment(

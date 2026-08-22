@@ -414,7 +414,7 @@ test('a rebase conflict pauses the queue with a bounded status message', async (
     rebaseError: new Error('conflict in `workflow`'),
   });
 
-  await assert.rejects(runController(harness.args), /conflict/);
+  await runController(harness.args);
 
   assert.deepEqual(harness.calls.armed, []);
   assert.match(harness.calls.comments[0].body, /could not rebase/);
