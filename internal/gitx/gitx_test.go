@@ -8,11 +8,14 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/ben-ranford/wtgc/internal/model"
 )
+
+var gitScriptTestMu sync.Mutex
 
 func TestParseWorktreeListPorcelainZ(t *testing.T) {
 	input := []byte("worktree /repo\x00HEAD abc123\x00branch refs/heads/main\x00\x00worktree /repo-wt\x00HEAD def456\x00detached\x00locked maintenance\x00prunable gitdir file points to non-existent location\x00")
@@ -591,6 +594,7 @@ func canonicalTestPath(path string) string {
 
 func fakeGitBinary(t *testing.T, outputs map[string]string) string {
 	t.Helper()
+	lockGitScriptTest(t)
 	if runtime.GOOS == "windows" {
 		t.Skip("fake Git shell scripts require a Unix-like executable format")
 	}
@@ -614,6 +618,7 @@ func fakeGitBinary(t *testing.T, outputs map[string]string) string {
 
 func hangingGitBinary(t *testing.T) string {
 	t.Helper()
+	lockGitScriptTest(t)
 	if runtime.GOOS == "windows" {
 		t.Skip("fake Git shell scripts require a Unix-like executable format")
 	}
@@ -625,6 +630,15 @@ func hangingGitBinary(t *testing.T) string {
 		t.Fatalf("write hanging git: %v", err)
 	}
 	return script
+}
+
+// lockGitScriptTest prevents concurrent execution of test-created shell scripts.
+// Linux can intermittently reject an executable while another parallel test is
+// creating a similar fixture with ETXTBSY.
+func lockGitScriptTest(t *testing.T) {
+	t.Helper()
+	gitScriptTestMu.Lock()
+	t.Cleanup(gitScriptTestMu.Unlock)
 }
 
 func quoteShell(value string) string {
