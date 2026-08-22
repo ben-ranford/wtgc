@@ -200,25 +200,8 @@ func (a *App) classify(ctx context.Context, repo model.Repository, defaultBranch
 		return classificationError(item, fmt.Sprintf("inspect working tree: %v", err))
 	}
 	item.Dirty = boolPtr(!clean)
-	if record.Primary || record.Bare {
-		item.Classification, item.Reason = model.Kept, "primary or bare worktree is never removable"
-		return item
-	}
-	if protectedPath != "" && pathsOverlap(record.Path, protectedPath) {
-		item.Classification, item.Reason = model.Kept, "worktree containing the running process is never removable"
-		return item
-	}
-	if record.Locked {
-		item.Classification, item.Reason = model.Kept, "worktree is locked"
-		return item
-	}
-	if record.Detached || record.Branch == "" {
-		item.Classification, item.Reason = model.Kept, "detached worktree has no local branch to prove merged"
-		return item
-	}
-	if record.Branch == defaultBranch {
-		item.Classification, item.Reason = model.Kept, "default-branch worktree is never removable"
-		return item
+	if classified, kept := keepProtectedWorktree(item, record, defaultBranch, protectedPath); kept {
+		return classified
 	}
 	merged, err := a.git.IsAncestor(ctx, repo, record.Head, defaultBranch)
 	if err != nil {
@@ -246,6 +229,30 @@ func (a *App) classify(ctx context.Context, repo model.Repository, defaultBranch
 	}
 	item.Classification, item.Reason = model.SafeToRemove, "clean branch tip is reachable from both the default branch and a remote-tracking ref"
 	return item
+}
+
+func keepProtectedWorktree(item model.Worktree, record model.RegisteredWorktree, defaultBranch, protectedPath string) (model.Worktree, bool) {
+	if record.Primary || record.Bare {
+		item.Classification, item.Reason = model.Kept, "primary or bare worktree is never removable"
+		return item, true
+	}
+	if protectedPath != "" && pathsOverlap(record.Path, protectedPath) {
+		item.Classification, item.Reason = model.Kept, "worktree containing the running process is never removable"
+		return item, true
+	}
+	if record.Locked {
+		item.Classification, item.Reason = model.Kept, "worktree is locked"
+		return item, true
+	}
+	if record.Detached || record.Branch == "" {
+		item.Classification, item.Reason = model.Kept, "detached worktree has no local branch to prove merged"
+		return item, true
+	}
+	if record.Branch == defaultBranch {
+		item.Classification, item.Reason = model.Kept, "default-branch worktree is never removable"
+		return item, true
+	}
+	return item, false
 }
 
 func (a *App) classifyDefaultBranchError(ctx context.Context, repo model.Repository, record model.RegisteredWorktree, message string) model.Worktree {
