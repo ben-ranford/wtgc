@@ -32,6 +32,68 @@ expect_ref_failure() {
   fi
 }
 
+expect_contains() {
+  subject="$1"
+  expected="$2"
+  message="$3"
+  printf '%s\n' "$subject" | grep -F -- "$expected" >/dev/null || fail "$message"
+}
+
+expect_matches() {
+  subject="$1"
+  pattern="$2"
+  message="$3"
+  printf '%s\n' "$subject" | grep -E -- "$pattern" >/dev/null || fail "$message"
+}
+
+workflow_job() {
+  job="$1"
+  awk -v job="$job" '
+    $0 == "  " job ":" { found = 1 }
+    found && $0 ~ /^  [[:alnum:]_-]+:$/ && $0 != "  " job ":" { exit }
+    found { print }
+  ' .github/workflows/release.yml
+}
+
+tap_gate="$(workflow_job homebrew-tap-token-gate)"
+tap_validation="$(workflow_job validate-homebrew-tap)"
+tap_publish="$(workflow_job update-homebrew-tap)"
+
+[ -n "$tap_gate" ] || fail "release workflow is missing the Homebrew token gate job"
+[ -n "$tap_validation" ] || fail "release workflow is missing the tokenless Homebrew validation job"
+[ -n "$tap_publish" ] || fail "release workflow is missing the Homebrew tap publication job"
+
+expect_contains "$tap_gate" "HOMEBREW_TAP_TOKEN" "Homebrew token gate must inspect HOMEBREW_TAP_TOKEN"
+expect_contains "$tap_gate" "outputs:" "Homebrew token gate must expose token availability to downstream jobs"
+
+expect_contains "$tap_validation" "needs:" "Homebrew validation must wait for release publication"
+expect_contains "$tap_validation" "publish" "Homebrew validation must run after release publication"
+expect_contains "$tap_validation" "brew audit" "Homebrew validation must audit the generated formula"
+expect_contains "$tap_validation" "brew install --build-from-source" "Homebrew validation must source-build the formula"
+expect_contains "$tap_validation" "brew test" "Homebrew validation must test the installed formula"
+expect_contains "$tap_validation" "SOURCE_SHA" "Homebrew validation must bind its formula to the release SHA"
+expect_contains "$tap_validation" "archive/\${SOURCE_SHA}.tar.gz" "Homebrew validation must use an immutable source archive"
+expect_contains "$tap_validation" "sha256" "Homebrew validation must checksum the source archive"
+case "$tap_validation" in
+  *HOMEBREW_TAP_TOKEN*)
+    fail "Homebrew validation must not receive the tap token"
+    ;;
+  *)
+    ;;
+esac
+
+expect_contains "$tap_publish" "needs:" "Homebrew tap publication must wait for validation"
+expect_contains "$tap_publish" "validate-homebrew-tap" "Homebrew tap publication must depend on validation"
+expect_contains "$tap_publish" "HOMEBREW_TAP_TOKEN" "Homebrew tap publication must receive the tap token"
+expect_contains "$tap_publish" "homebrew-tap-main" "Homebrew tap publication must serialize writes to tap main"
+expect_matches "$tap_publish" "diff( --cached)? --quiet" "Homebrew tap publication must skip no-op updates"
+expect_contains "$tap_publish" "rebase origin/main" "Homebrew tap publication must rebase before pushing"
+expect_matches "$tap_publish" "(for attempt in 1 2 3|seq 1 3)" "Homebrew tap publication must retry conflicting pushes"
+expect_contains "$tap_publish" "unset HOMEBREW_TAP_TOKEN" "Homebrew tap publication must clear the token after authentication"
+expect_contains "$tap_publish" "Gem::Version" "Homebrew tap publication must refuse stale formula versions"
+expect_contains "$tap_publish" "SOURCE_SHA" "Homebrew tap publication must bind its formula to the release SHA"
+expect_contains "$tap_publish" "archive/\${SOURCE_SHA}.tar.gz" "Homebrew tap publication must use an immutable source archive"
+
 mkdir -p "$test_root/repo"
 git -C "$test_root/repo" init -q
 git -C "$test_root/repo" config user.name "wtgc release test"

@@ -114,10 +114,23 @@ runs on Ubuntu, cross-compiles the Linux, macOS, and Windows artifact matrix,
 generates an SPDX JSON SBOM for the release asset set, rebuilds
 `checksums.txt`, validates every release asset, and uploads assets with
 `gh release upload` or creates the release if it has not been published yet.
+For stable releases, it also generates, audits, source-builds, and tests the
+`wtgc` Homebrew formula before updating
+[`ben-ranford/homebrew-tap`](https://github.com/ben-ranford/homebrew-tap).
 Release packaging requires `./cmd/wtgc`. Artifact attestations are skipped while
 the repository is private unless `ENABLE_PRIVATE_ATTESTATIONS=true` is
 configured, because GitHub only enables private attestations on plans that
 support them.
+
+### Homebrew tap publishing
+
+Homebrew formula publication requires the `HOMEBREW_TAP_TOKEN` repository
+secret. Configure it as a fine-grained personal access token or GitHub App
+installation token that can write **Contents** only to
+`ben-ranford/homebrew-tap`; do not grant it access to this repository or other
+repositories. The workflow uses the token only to fetch and push the tap after
+the tokenless formula validation succeeds. When the secret is absent, releases
+still publish normally and skip the tap update.
 
 ## Pull Request Queue
 

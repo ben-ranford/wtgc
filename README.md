@@ -92,7 +92,18 @@ each Git command.
 
 ## ⬇️ Installation
 
-Install from source with Go:
+### Homebrew (recommended)
+
+Install the latest stable release from the `wtgc` formula:
+
+```bash
+brew tap ben-ranford/tap
+brew install wtgc
+```
+
+### Optional: install from source
+
+For development or an unreleased build, install directly with Go:
 
 ```bash
 go install github.com/ben-ranford/wtgc/cmd/wtgc@latest
@@ -101,6 +112,8 @@ go install github.com/ben-ranford/wtgc/cmd/wtgc@latest
 Release automation is configured to publish prebuilt archives for Linux, macOS,
 and Windows on amd64 and arm64. Checksums and an SPDX SBOM will be published
 beside them on [GitHub Releases](https://github.com/ben-ranford/wtgc/releases).
+Stable releases also update the `wtgc` formula in
+[`ben-ranford/tap`](https://github.com/ben-ranford/homebrew-tap).
 GitHub records provenance as an artifact attestation. Verify a downloaded
 archive with:
 

@@ -22,9 +22,6 @@ on:
         required: true
         type: string
 
-permissions:
-  contents: read
-
 concurrency:
   group: release-${{ inputs.tag_name }}
   cancel-in-progress: false
@@ -33,6 +30,8 @@ jobs:
   test:
     name: release checks
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     env:
       CGO_ENABLED: 1
     steps:
@@ -57,6 +56,8 @@ jobs:
     needs: test
     name: build (${{ matrix.goos }}-${{ matrix.goarch }})
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
     strategy:
       fail-fast: false
       matrix:
@@ -171,3 +172,290 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: sh ./scripts/publish-release-assets.sh "${{ inputs.tag_name }}" dist/release
+
+  homebrew-tap-token-gate:
+    needs: publish
+    runs-on: ubuntu-latest
+    permissions: {}
+    outputs:
+      configured: ${{ steps.gate.outputs.configured }}
+    steps:
+      - name: Detect tap token
+        id: gate
+        env:
+          HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+        run: |
+          if [ -n "${HOMEBREW_TAP_TOKEN:-}" ]; then
+            echo "configured=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "configured=false" >> "$GITHUB_OUTPUT"
+          fi
+
+  validate-homebrew-tap:
+    needs:
+      - publish
+      - homebrew-tap-token-gate
+    if: ${{ needs.homebrew-tap-token-gate.outputs.configured == 'true' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    env:
+      RELEASE_TAG: ${{ inputs.tag_name }}
+      SOURCE_SHA: ${{ inputs.sha }}
+      SOURCE_REPO: ${{ github.repository }}
+    steps:
+      - name: Set up Homebrew
+        uses: Homebrew/actions/setup-homebrew@8f3d1ec8a696b3b9d9a6c3696b6c73033cab69e4 # v2026.08.14.1
+
+      - name: Clone tap repository anonymously
+        shell: /usr/bin/env -u BASH_ENV -u ENV -u PROMPT_COMMAND -u PS4 -u SHELLOPTS -u BASHOPTS /bin/bash --noprofile --norc -euo pipefail {0}
+        run: |
+          git_bin=/usr/bin/git
+          mktemp_bin=/usr/bin/mktemp
+          if [ ! -x "${git_bin}" ] || [ ! -x "${mktemp_bin}" ]; then
+            echo "::error::Trusted binaries are not available for Homebrew validation" >&2
+            exit 1
+          fi
+          export PATH=/usr/bin:/bin
+
+          git_home="$("${mktemp_bin}" -d)"
+          trap 'rm -rf "${git_home}"' EXIT
+          env -i \
+            HOME="${git_home}" \
+            PATH="${PATH}" \
+            GIT_TERMINAL_PROMPT=0 \
+            GIT_CONFIG_NOSYSTEM=1 \
+            "${git_bin}" \
+            -c core.hooksPath=/dev/null \
+            -c protocol.file.allow=never \
+            -c protocol.ext.allow=never \
+            clone --origin origin --branch main --single-branch \
+            https://github.com/ben-ranford/homebrew-tap.git homebrew-tap
+
+      - name: Regenerate wtgc formula
+        working-directory: homebrew-tap
+        run: |
+          set -euo pipefail
+          formula_version="${RELEASE_TAG#wtgc-v}"
+          if [ "${formula_version}" = "${RELEASE_TAG}" ]; then
+            echo "release tag must start with wtgc-v: ${RELEASE_TAG}" >&2
+            exit 1
+          fi
+          source_url="https://github.com/${SOURCE_REPO}/archive/${SOURCE_SHA}.tar.gz"
+          curl --fail --show-error --silent --location \
+            --proto '=https' --proto-redir '=https' \
+            --retry 5 --retry-all-errors --retry-delay 2 \
+            --connect-timeout 20 --max-time 180 \
+            "${source_url}" -o /tmp/wtgc-source.tar.gz
+          read -r source_sha _ < <(sha256sum /tmp/wtgc-source.tar.gz)
+
+          mkdir -p Formula
+          cat > Formula/wtgc.rb <<RUBY
+          class Wtgc < Formula
+            desc "Conservative Git worktree cleanup CLI"
+            homepage "https://github.com/ben-ranford/wtgc"
+            url "${source_url}"
+            version "${formula_version}"
+            sha256 "${source_sha}"
+            license "MIT"
+
+            depends_on "go" => :build
+
+            def install
+              ldflags = %W[
+                -s
+                -w
+                -buildid=
+                -X main.version=v#{version}
+                -X main.commit=homebrew
+                -X main.date=homebrew
+              ]
+              system "go", "build", *std_go_args(output: bin/"wtgc", ldflags: ldflags.join(" ")), "./cmd/wtgc"
+            end
+
+            test do
+              assert_match "wtgc v#{version}", shell_output("#{bin}/wtgc --version")
+            end
+          end
+          RUBY
+
+      - name: Validate formula
+        working-directory: homebrew-tap
+        run: |
+          set -euo pipefail
+          if brew tap | grep -Fx 'ben-ranford/tap' >/dev/null; then
+            brew untap ben-ranford/tap
+          fi
+          brew tap --custom-remote ben-ranford/tap "file://${PWD}"
+          brew trust ben-ranford/tap
+          brew audit --strict --online ben-ranford/tap/wtgc
+          export HOMEBREW_NO_SANDBOX_LINUX=1
+          brew install --build-from-source ben-ranford/tap/wtgc
+          brew test ben-ranford/tap/wtgc
+
+  update-homebrew-tap:
+    needs:
+      - publish
+      - homebrew-tap-token-gate
+      - validate-homebrew-tap
+    if: ${{ needs.homebrew-tap-token-gate.outputs.configured == 'true' }}
+    runs-on: ubuntu-latest
+    concurrency:
+      group: homebrew-tap-main
+      cancel-in-progress: false
+    permissions:
+      contents: read
+    env:
+      RELEASE_TAG: ${{ inputs.tag_name }}
+      SOURCE_SHA: ${{ inputs.sha }}
+      SOURCE_REPO: ${{ github.repository }}
+    steps:
+      - name: Regenerate and push formula changes
+        env:
+          HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+        shell: /usr/bin/env -u BASH_ENV -u ENV -u PROMPT_COMMAND -u PS4 -u SHELLOPTS -u BASHOPTS /bin/bash --noprofile --norc -euo pipefail {0}
+        run: |
+          git_bin=/usr/bin/git
+          curl_bin=/usr/bin/curl
+          sha256sum_bin=/usr/bin/sha256sum
+          base64_bin=/usr/bin/base64
+          tr_bin=/usr/bin/tr
+          mktemp_bin=/usr/bin/mktemp
+          ruby_bin=/usr/bin/ruby
+          if [ ! -x "${git_bin}" ] || [ ! -x "${curl_bin}" ] || [ ! -x "${sha256sum_bin}" ] || [ ! -x "${base64_bin}" ] || [ ! -x "${tr_bin}" ] || [ ! -x "${mktemp_bin}" ] || [ ! -x "${ruby_bin}" ]; then
+            echo "::error::Trusted binaries are not available for Homebrew publication" >&2
+            exit 1
+          fi
+          export PATH=/usr/bin:/bin
+
+          git_home="$("${mktemp_bin}" -d)"
+          work_root="$("${mktemp_bin}" -d)"
+          tap_repo="${work_root}/homebrew-tap"
+          source_archive="${work_root}/wtgc-source.tar.gz"
+          trap 'rm -rf "${git_home}" "${work_root}"' EXIT
+
+          git_safe() {
+            env -i \
+              HOME="${git_home}" \
+              PATH="${PATH}" \
+              GIT_TERMINAL_PROMPT=0 \
+              GIT_CONFIG_NOSYSTEM=1 \
+              "${git_bin}" \
+              -c core.hooksPath=/dev/null \
+              -c credential.helper= \
+              -c protocol.file.allow=never \
+              -c protocol.ext.allow=never \
+              "$@"
+          }
+
+          git_network() {
+            env -i \
+              HOME="${git_home}" \
+              PATH="${PATH}" \
+              GIT_TERMINAL_PROMPT=0 \
+              GIT_CONFIG_NOSYSTEM=1 \
+              GIT_CONFIG_COUNT=5 \
+              GIT_CONFIG_KEY_0=core.hooksPath \
+              GIT_CONFIG_VALUE_0=/dev/null \
+              GIT_CONFIG_KEY_1=credential.helper \
+              GIT_CONFIG_VALUE_1= \
+              GIT_CONFIG_KEY_2=protocol.file.allow \
+              GIT_CONFIG_VALUE_2=never \
+              GIT_CONFIG_KEY_3=protocol.ext.allow \
+              GIT_CONFIG_VALUE_3=never \
+              GIT_CONFIG_KEY_4=http.https://github.com/.extraheader \
+              GIT_CONFIG_VALUE_4="AUTHORIZATION: basic ${auth_header}" \
+              "${git_bin}" \
+              "$@"
+          }
+
+          git_safe clone --origin origin --branch main --single-branch https://github.com/ben-ranford/homebrew-tap.git "${tap_repo}"
+
+          formula_version="${RELEASE_TAG#wtgc-v}"
+          if [ "${formula_version}" = "${RELEASE_TAG}" ]; then
+            echo "release tag must start with wtgc-v: ${RELEASE_TAG}" >&2
+            exit 1
+          fi
+          existing_formula="${tap_repo}/Formula/wtgc.rb"
+          if [ -f "${existing_formula}" ]; then
+            existing_version="$("${ruby_bin}" -ne 'puts $1 if /^  version "([^"]+)"$/' "${existing_formula}")"
+            if [ -n "${existing_version}" ] && "${ruby_bin}" -e 'exit Gem::Version.new(ARGV[0]) >= Gem::Version.new(ARGV[1]) ? 0 : 1' "${existing_version}" "${formula_version}"; then
+              echo "Homebrew formula ${existing_version} is newer than or equal to ${formula_version}; skipping stale update"
+              exit 0
+            fi
+          fi
+          source_url="https://github.com/${SOURCE_REPO}/archive/${SOURCE_SHA}.tar.gz"
+          "${curl_bin}" --fail --show-error --silent --location \
+            --proto '=https' --proto-redir '=https' \
+            --retry 5 --retry-all-errors --retry-delay 2 \
+            --connect-timeout 20 --max-time 180 \
+            "${source_url}" -o "${source_archive}"
+          read -r source_sha _ < <("${sha256sum_bin}" "${source_archive}")
+
+          mkdir -p "${tap_repo}/Formula"
+          cat > "${tap_repo}/Formula/wtgc.rb" <<RUBY
+          class Wtgc < Formula
+            desc "Conservative Git worktree cleanup CLI"
+            homepage "https://github.com/ben-ranford/wtgc"
+            url "${source_url}"
+            version "${formula_version}"
+            sha256 "${source_sha}"
+            license "MIT"
+
+            depends_on "go" => :build
+
+            def install
+              ldflags = %W[
+                -s
+                -w
+                -buildid=
+                -X main.version=v#{version}
+                -X main.commit=homebrew
+                -X main.date=homebrew
+              ]
+              system "go", "build", *std_go_args(output: bin/"wtgc", ldflags: ldflags.join(" ")), "./cmd/wtgc"
+            end
+
+            test do
+              assert_match "wtgc v#{version}", shell_output("#{bin}/wtgc --version")
+            end
+          end
+          RUBY
+
+          git_safe -C "${tap_repo}" config user.name "github-actions[bot]"
+          git_safe -C "${tap_repo}" config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git_safe -C "${tap_repo}" add Formula/wtgc.rb
+          if git_safe -C "${tap_repo}" diff --cached --quiet; then
+            echo "No formula changes to commit"
+            exit 0
+          fi
+          git_safe -C "${tap_repo}" commit --no-verify -m "wtgc ${RELEASE_TAG}"
+
+          if [ -z "${HOMEBREW_TAP_TOKEN:-}" ]; then
+            echo "::error::HOMEBREW_TAP_TOKEN is not configured" >&2
+            exit 1
+          fi
+          auth_header="$(printf 'x-access-token:%s' "${HOMEBREW_TAP_TOKEN}" | "${base64_bin}" | "${tr_bin}" -d '\n')"
+          unset HOMEBREW_TAP_TOKEN
+
+          for attempt in 1 2 3; do
+            echo "Push attempt ${attempt} for Homebrew formula"
+            if ! git_network -C "${tap_repo}" fetch origin main:refs/remotes/origin/main; then
+              echo "git fetch failed on attempt ${attempt}" >&2
+              /bin/sleep 2
+              continue
+            fi
+            if ! git_safe -C "${tap_repo}" rebase origin/main; then
+              echo "git rebase failed on attempt ${attempt}; aborting rebase and retrying" >&2
+              git_safe -C "${tap_repo}" rebase --abort || true
+              /bin/sleep 2
+              continue
+            fi
+            if git_network -C "${tap_repo}" push origin HEAD:main; then
+              exit 0
+            fi
+            /bin/sleep 2
+          done
+
+          echo "Failed to push Homebrew formula after retries" >&2
+          exit 1
