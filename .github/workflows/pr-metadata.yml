@@ -32,7 +32,7 @@ jobs:
           go-version: '1.27.0'
 
       - name: Write PR body
-        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9
         with:
           script: |
             const fs = require('node:fs');
@@ -86,7 +86,7 @@ jobs:
             core.exportVariable('PR_METADATA_CHECK_RUN_ID', String(check.id));
 
       - name: Download trusted validator
-        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9
         with:
           script: |
             const fs = require('node:fs');
@@ -106,7 +106,7 @@ jobs:
 
       - name: Read Release Please identity
         if: env.IS_RELEASE_PLEASE_CANDIDATE == 'true'
-        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9
         with:
           github-token: ${{ secrets.RELEASE_PLEASE_TOKEN }}
           script: |
@@ -114,7 +114,7 @@ jobs:
             core.exportVariable('RELEASE_PLEASE_AUTHOR_LOGIN', user.login);
 
       - name: Validate PR labels
-        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9
         with:
           script: |
             const releasePleaseAuthor = process.env.RELEASE_PLEASE_AUTHOR_LOGIN || '';
@@ -127,7 +127,7 @@ jobs:
             }
 
       - name: Read repository merge policy
-        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9
         with:
           github-token: ${{ secrets.RELEASE_PLEASE_TOKEN }}
           script: |
@@ -149,7 +149,7 @@ jobs:
 
       - name: Publish PR metadata result
         if: always()
-        uses: actions/github-script@ed597411d8f924073f98dfc5c65a23a2325f34cd # v8
+        uses: actions/github-script@3a2844b7e9c422d3c10d287c895573f7108da1b3 # v9
         env:
           VALIDATION_OUTCOME: ${{ steps.validate.outcome }}
         with:
