@@ -90,15 +90,18 @@ jobs:
         run: sh ./scripts/verify-release-ref.sh "$RELEASE_TAG" "$RELEASE_SHA"
       - name: Resolve release metadata
         id: metadata
+        env:
+          RELEASE_SHA: ${{ inputs.sha }}
         run: |
-          echo "date=$(git show -s --format=%cI '${{ inputs.sha }}')" >> "$GITHUB_OUTPUT"
+          echo "date=$(git show -s --format=%cI "$RELEASE_SHA")" >> "$GITHUB_OUTPUT"
       - name: Build artifact
         env:
           RELEASE_TAG: ${{ inputs.tag_name }}
+          RELEASE_SHA: ${{ inputs.sha }}
         run: |
           make release \
             VERSION="$RELEASE_TAG" \
-            COMMIT='${{ inputs.sha }}' \
+            COMMIT="$RELEASE_SHA" \
             BUILD_DATE='${{ steps.metadata.outputs.date }}' \
             PLATFORMS='${{ matrix.goos }}/${{ matrix.goarch }}'
       - name: Upload artifact

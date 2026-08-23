@@ -6,10 +6,6 @@ on:
       - main
   workflow_dispatch:
 
-permissions:
-  contents: write
-  pull-requests: write
-
 concurrency:
   group: release-please-main
   cancel-in-progress: false

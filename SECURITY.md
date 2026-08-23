@@ -2,8 +2,12 @@
 
 ## Supported Versions
 
-Security fixes target the default branch until the first tagged release. After
-tagged releases begin, supported versions will be listed here.
+Security fixes are supported on the current release line and the default branch.
+
+| Version | Supported |
+| --- | --- |
+| 1.0.x | :white_check_mark: |
+| main | :white_check_mark: |
 
 ## Reporting a Vulnerability
 

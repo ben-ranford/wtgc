@@ -20,6 +20,7 @@ import (
 )
 
 const localBranchRefPrefix = "refs/heads/"
+const revParseCommand = "rev-parse"
 
 // Client executes Git commands for repository discovery and cleanup.
 type Client struct {
@@ -405,7 +406,7 @@ func (c *Client) DeleteBranch(ctx context.Context, repo model.Repository, shortB
 
 	branchRef := localBranchRefPrefix + shortBranch
 	defaultRef := localBranchRefPrefix + defaultBranch
-	out, err := c.run(ctx, repo.PrimaryPath, "rev-parse", "--verify", branchRef+"^{commit}")
+	out, err := c.run(ctx, repo.PrimaryPath, revParseCommand, "--verify", branchRef+"^{commit}")
 	if err != nil {
 		return fmt.Errorf("resolve branch %s: %w", branchRef, err)
 	}
@@ -413,7 +414,7 @@ func (c *Client) DeleteBranch(ctx context.Context, repo model.Repository, shortB
 	if !isFullObjectID(branchOID) {
 		return fmt.Errorf("resolve branch %s: unexpected object id %q", branchRef, branchOID)
 	}
-	if _, err := c.run(ctx, repo.PrimaryPath, "rev-parse", "--verify", defaultRef+"^{commit}"); err != nil {
+	if _, err := c.run(ctx, repo.PrimaryPath, revParseCommand, "--verify", defaultRef+"^{commit}"); err != nil {
 		return fmt.Errorf("resolve default branch %s: %w", defaultRef, err)
 	}
 	merged, err := c.IsAncestor(ctx, repo, branchOID, defaultRef)
@@ -428,7 +429,7 @@ func (c *Client) DeleteBranch(ctx context.Context, repo model.Repository, shortB
 }
 
 func (c *Client) commonGitDir(ctx context.Context, repoPath string) (string, error) {
-	out, err := c.run(ctx, repoPath, "rev-parse", "--git-common-dir")
+	out, err := c.run(ctx, repoPath, revParseCommand, "--git-common-dir")
 	if err != nil {
 		return "", err
 	}
