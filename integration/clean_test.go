@@ -2,6 +2,7 @@ package integration_test
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"os"
@@ -11,6 +12,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/ben-ranford/wtgc/internal/model"
 	"github.com/ben-ranford/wtgc/internal/testgit"
@@ -21,6 +23,30 @@ var (
 	wtgcBuildPath string
 	wtgcBuildErr  error
 )
+
+func TestNoArgsPrintsUsageAndExits(t *testing.T) {
+	binary := wtgcBinary(t)
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	cmd := exec.CommandContext(ctx, binary)
+	cmd.Dir = t.TempDir()
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	stdout, err := cmd.Output()
+	if err != nil {
+		if ctx.Err() != nil {
+			t.Fatalf("wtgc with no args did not exit within timeout: %v", ctx.Err())
+		}
+		t.Fatalf("wtgc with no args failed: %v\nstderr:\n%s", err, stderr.String())
+	}
+	if !strings.Contains(string(stdout), "Usage:") {
+		t.Fatalf("stdout = %q, want usage", stdout)
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("stderr = %q, want empty", stderr.String())
+	}
+}
 
 func TestCleanDryRunDoesNotRemoveSafeMergedWorktree(t *testing.T) {
 	repo := newRepository(t)

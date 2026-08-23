@@ -53,6 +53,11 @@ Point `wtgc` at the directory containing your repositories:
 wtgc clean --scan-root "$HOME/Projects"
 ```
 
+Running `wtgc` without arguments prints this usage and exits. Use the explicit
+`clean` command when you want to start a scan; flags may also be supplied
+without the command token for compatibility. The bare invocation never
+recursively scans the directory where the shell happens to be running.
+
 Every run is a dry-run unless you request a removal mode. It explains each
 decision without changing the filesystem. Abridged output:
 

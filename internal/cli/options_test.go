@@ -5,7 +5,7 @@ import (
 	"testing"
 )
 
-func TestParseDefaultsToDryRunCurrentDirectory(t *testing.T) {
+func TestParseNoArgsShowsUsage(t *testing.T) {
 	opts, err := Parse(nil)
 	if err != nil {
 		t.Fatalf("Parse() error = %v", err)
@@ -14,6 +14,20 @@ func TestParseDefaultsToDryRunCurrentDirectory(t *testing.T) {
 	if opts.Command != CommandClean {
 		t.Fatalf("Command = %q, want %q", opts.Command, CommandClean)
 	}
+	if !opts.Help {
+		t.Fatal("Help = false, want true")
+	}
+	if len(opts.Roots) != 0 {
+		t.Fatalf("Roots = %v, want no roots", opts.Roots)
+	}
+}
+
+func TestParseCleanDefaultsToDryRunCurrentDirectory(t *testing.T) {
+	opts, err := Parse([]string{"clean"})
+	if err != nil {
+		t.Fatalf("Parse(clean) error = %v", err)
+	}
+
 	if !opts.DryRun {
 		t.Fatal("DryRun = false, want true")
 	}
@@ -48,6 +62,45 @@ func TestParseExecuteModes(t *testing.T) {
 	}
 	if opts.DryRun || !opts.Interactive {
 		t.Fatalf("Parse(--interactive) = DryRun %v Interactive %v, want interactive execute", opts.DryRun, opts.Interactive)
+	}
+}
+
+func TestParseFlagContracts(t *testing.T) {
+	tests := []struct {
+		name             string
+		args             []string
+		wantRoots        string
+		wantDryRun       bool
+		wantYes          bool
+		wantInteractive  bool
+		wantDeleteBranch bool
+		wantJSON         bool
+	}{
+		{name: "scan root", args: []string{"--scan-root", "/tmp/scan"}, wantRoots: "/tmp/scan", wantDryRun: true},
+		{name: "flag-only positional root", args: []string{"--json", "/tmp/scan"}, wantRoots: "/tmp/scan", wantDryRun: true, wantJSON: true},
+		{name: "dry run", args: []string{"--dry-run"}, wantRoots: ".", wantDryRun: true},
+		{name: "yes", args: []string{"--yes"}, wantRoots: ".", wantYes: true},
+		{name: "short yes", args: []string{"-y"}, wantRoots: ".", wantYes: true},
+		{name: "interactive", args: []string{"--interactive"}, wantRoots: ".", wantInteractive: true},
+		{name: "delete branch", args: []string{"--delete-branch"}, wantRoots: ".", wantDryRun: true, wantDeleteBranch: true},
+		{name: "json", args: []string{"--json"}, wantRoots: ".", wantDryRun: true, wantJSON: true},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			opts, err := Parse(test.args)
+			if err != nil {
+				t.Fatalf("Parse(%v) error = %v", test.args, err)
+			}
+			if opts.Command != CommandClean {
+				t.Fatalf("Command = %q, want %q", opts.Command, CommandClean)
+			}
+			if got := strings.Join(opts.Roots, ","); got != test.wantRoots {
+				t.Fatalf("Roots = %q, want %q", got, test.wantRoots)
+			}
+			if opts.DryRun != test.wantDryRun || opts.Yes != test.wantYes || opts.Interactive != test.wantInteractive || opts.DeleteBranch != test.wantDeleteBranch || opts.JSON != test.wantJSON {
+				t.Fatalf("options = %+v, want dry-run=%t yes=%t interactive=%t delete-branch=%t json=%t", opts, test.wantDryRun, test.wantYes, test.wantInteractive, test.wantDeleteBranch, test.wantJSON)
+			}
+		})
 	}
 }
 
@@ -91,6 +144,7 @@ func TestParseHelpAndVersion(t *testing.T) {
 func TestParseRejectsUnknownCommandAndFlag(t *testing.T) {
 	for _, args := range [][]string{
 		{"status"},
+		{"/tmp/scan"},
 		{"--bogus"},
 	} {
 		_, err := Parse(args)
@@ -108,7 +162,7 @@ func TestUsageMentionsCoreFlags(t *testing.T) {
 	WriteUsage(&b, "wtgc")
 	out := b.String()
 
-	for _, want := range []string{"Usage:", "clean", "--scan-root", "--dry-run", "--yes", "--interactive", "--delete-branch", "--json", "--version"} {
+	for _, want := range []string{"Usage:", "show help", "clean [flags] [roots...]", "scan when a flag is supplied", "--scan-root", "--dry-run", "--yes", "--interactive", "--delete-branch", "--json", "--version"} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("usage missing %q:\n%s", want, out)
 		}

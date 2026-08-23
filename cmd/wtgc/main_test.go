@@ -3,12 +3,14 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/ben-ranford/wtgc/internal/app"
 	"github.com/ben-ranford/wtgc/internal/model"
 )
 
@@ -19,8 +21,12 @@ func TestRunHelpAndVersion(t *testing.T) {
 		args []string
 		want string
 	}{
+		{name: "no args", want: "Usage:"},
 		{name: "help", args: []string{"--help"}, want: "Usage:"},
+		{name: "short help", args: []string{"-h"}, want: "Usage:"},
+		{name: "clean help", args: []string{"clean", "--help"}, want: "Usage:"},
 		{name: "version", args: []string{"--version"}, want: "wtgc dev"},
+		{name: "clean version", args: []string{"clean", "--version"}, want: "wtgc dev"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			var stdout, stderr bytes.Buffer
@@ -30,6 +36,103 @@ func TestRunHelpAndVersion(t *testing.T) {
 			}
 			if !strings.Contains(stdout.String(), test.want) {
 				t.Fatalf("stdout = %q, want %q", stdout.String(), test.want)
+			}
+		})
+	}
+}
+
+func TestRunNoArgsDoesNotResolveWorkingDirectory(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	code := run(context.Background(), nil, strings.NewReader(""), &stdout, &stderr, nil, func() (string, error) {
+		return "", errors.New("getwd must not be called")
+	})
+	if code != 0 {
+		t.Fatalf("exit = %d, stderr = %q", code, stderr.String())
+	}
+	if !strings.Contains(stdout.String(), "Usage:") {
+		t.Fatalf("stdout = %q, want usage", stdout.String())
+	}
+}
+
+func TestRunFlagOutputContracts(t *testing.T) {
+	t.Parallel()
+	tests := []struct {
+		name              string
+		args              []string
+		stdin             string
+		wantUsage         bool
+		wantJSON          bool
+		wantDryRun        bool
+		wantRoot          string
+		wantClass         model.Classification
+		wantAction        model.Action
+		wantRemoved       bool
+		wantBranchDeleted bool
+		wantStderr        string
+	}{
+		{name: "no args", wantUsage: true},
+		{name: "dry run", args: []string{"clean", "--dry-run", "--json"}, wantJSON: true, wantDryRun: true, wantRoot: ".", wantClass: model.SafeToRemove, wantAction: model.ActionWouldRemove},
+		{name: "yes", args: []string{"clean", "--yes", "--json"}, wantJSON: true, wantRoot: ".", wantClass: model.SafeToRemove, wantAction: model.ActionRemoved, wantRemoved: true},
+		{name: "short yes", args: []string{"clean", "-y", "--json"}, wantJSON: true, wantRoot: ".", wantClass: model.SafeToRemove, wantAction: model.ActionRemoved, wantRemoved: true},
+		{name: "interactive", args: []string{"clean", "--interactive", "--json"}, stdin: "n\n", wantJSON: true, wantRoot: ".", wantClass: model.Kept, wantAction: model.ActionKept, wantStderr: "remove /worktree? [y/N]"},
+		{name: "delete branch", args: []string{"clean", "--yes", "--delete-branch", "--json"}, wantJSON: true, wantRoot: ".", wantClass: model.SafeToRemove, wantAction: model.ActionRemovedBranchDeleted, wantRemoved: true, wantBranchDeleted: true},
+		{name: "scan root", args: []string{"clean", "--scan-root", "/repo", "--json"}, wantJSON: true, wantDryRun: true, wantRoot: "/repo", wantClass: model.SafeToRemove, wantAction: model.ActionWouldRemove},
+		{name: "json", args: []string{"clean", "--json"}, wantJSON: true, wantDryRun: true, wantRoot: ".", wantClass: model.SafeToRemove, wantAction: model.ActionWouldRemove},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			var stdout, stderr bytes.Buffer
+			var backend app.Git
+			if len(test.args) > 0 {
+				backend = newMainFakeGit(mainRecord("main"), mainRemovableRecord("feature"))
+			}
+
+			code := run(context.Background(), test.args, strings.NewReader(test.stdin), &stdout, &stderr, backend, func() (string, error) { return "/repo", nil })
+			if code != 0 {
+				t.Fatalf("exit = %d, stderr = %q", code, stderr.String())
+			}
+			if test.wantUsage {
+				if !strings.Contains(stdout.String(), "Usage:") {
+					t.Fatalf("stdout = %q, want usage", stdout.String())
+				}
+			} else if test.wantJSON {
+				var inventory struct {
+					SchemaVersion string           `json:"schema_version"`
+					DryRun        bool             `json:"dry_run"`
+					Roots         []string         `json:"roots"`
+					Worktrees     []model.Worktree `json:"worktrees"`
+				}
+				if err := json.Unmarshal(stdout.Bytes(), &inventory); err != nil {
+					t.Fatalf("JSON output: %v\n%s", err, stdout.String())
+				}
+				if inventory.SchemaVersion == "" {
+					t.Fatal("schema_version is empty")
+				}
+				if inventory.DryRun != test.wantDryRun {
+					t.Fatalf("dry_run = %t, want %t", inventory.DryRun, test.wantDryRun)
+				}
+				if len(inventory.Roots) != 1 || inventory.Roots[0] != test.wantRoot {
+					t.Fatalf("roots = %v, want [%q]", inventory.Roots, test.wantRoot)
+				}
+				var item model.Worktree
+				for _, candidate := range inventory.Worktrees {
+					if candidate.Path == "/worktree" {
+						item = candidate
+						break
+					}
+				}
+				if item.Path == "" {
+					t.Fatalf("JSON output omitted removable worktree: %s", stdout.String())
+				}
+				if item.Classification != test.wantClass || item.Action != test.wantAction || item.Removed != test.wantRemoved || item.BranchDeleted != test.wantBranchDeleted {
+					t.Fatalf("worktree = %+v, want classification=%q action=%q removed=%t branch-deleted=%t", item, test.wantClass, test.wantAction, test.wantRemoved, test.wantBranchDeleted)
+				}
+			}
+			if test.wantStderr == "" && stderr.Len() != 0 {
+				t.Fatalf("stderr = %q, want empty", stderr.String())
+			}
+			if test.wantStderr != "" && !strings.Contains(stderr.String(), test.wantStderr) {
+				t.Fatalf("stderr = %q, want %q", stderr.String(), test.wantStderr)
 			}
 		})
 	}
@@ -65,7 +168,7 @@ func TestRunReturnsOneWhenGetwdFails(t *testing.T) {
 	t.Parallel()
 	var stdout, stderr bytes.Buffer
 
-	code := run(context.Background(), nil, strings.NewReader(""), &stdout, &stderr, newMainFakeGit(mainRecord("main")), func() (string, error) {
+	code := run(context.Background(), []string{"clean"}, strings.NewReader(""), &stdout, &stderr, newMainFakeGit(mainRecord("main")), func() (string, error) {
 		return "", errors.New("cwd unavailable")
 	})
 	if code != 1 {
@@ -82,7 +185,7 @@ func TestRunReturnsOneAfterWritingReportForAppError(t *testing.T) {
 	backend := newMainFakeGit()
 	backend.repositories = nil
 
-	code := run(context.Background(), nil, strings.NewReader(""), &stdout, &stderr, backend, func() (string, error) { return "/repo", nil })
+	code := run(context.Background(), []string{"clean"}, strings.NewReader(""), &stdout, &stderr, backend, func() (string, error) { return "/repo", nil })
 	if code != 1 {
 		t.Fatalf("exit = %d, want 1", code)
 	}
@@ -98,7 +201,7 @@ func TestRunReturnsOneWhenReportWriteFails(t *testing.T) {
 	t.Parallel()
 	var stderr bytes.Buffer
 
-	code := run(context.Background(), nil, strings.NewReader(""), failingWriter{}, &stderr, newMainFakeGit(mainRecord("main")), func() (string, error) { return "/repo", nil })
+	code := run(context.Background(), []string{"clean"}, strings.NewReader(""), failingWriter{}, &stderr, newMainFakeGit(mainRecord("main")), func() (string, error) { return "/repo", nil })
 	if code != 1 {
 		t.Fatalf("exit = %d, want 1", code)
 	}
@@ -149,6 +252,7 @@ func TestStaticInfoRequest(t *testing.T) {
 		{name: "help", args: []string{"--help"}, want: true},
 		{name: "clean help", args: []string{"clean", "--help"}, want: true},
 		{name: "version", args: []string{"--version"}, want: true},
+		{name: "no args", want: true},
 		{name: "normal command", args: []string{"clean"}},
 		{name: "invalid command", args: []string{"unknown"}},
 	} {
@@ -236,6 +340,10 @@ func (*mainFakeGit) DeleteBranch(context.Context, model.Repository, string, stri
 
 func mainRecord(branch string) model.RegisteredWorktree {
 	return model.RegisteredWorktree{Path: "/repo", Branch: branch, Head: "abc123", Primary: true}
+}
+
+func mainRemovableRecord(branch string) model.RegisteredWorktree {
+	return model.RegisteredWorktree{Path: "/worktree", Branch: branch, Head: "def456"}
 }
 
 type failingWriter struct{}
