@@ -70,6 +70,13 @@ func Parse(args []string) (Options, error) {
 		Command: CommandClean,
 		DryRun:  true,
 	}
+	if len(args) == 0 {
+		// An implicit scan of the current directory can recurse through an
+		// unexpectedly large tree. Require an explicit command before doing
+		// filesystem work so `wtgc` is always a fast, informational invocation.
+		opts.Help = true
+		return opts, nil
+	}
 
 	if len(args) > 0 && args[0] == CommandClean {
 		args = args[1:]
@@ -197,7 +204,9 @@ func WriteUsage(w io.Writer, name string) {
 		name = "wtgc"
 	}
 	fmt.Fprintf(w, `Usage:
-  %[1]s [clean] [flags] [roots...]
+  %[1]s                         show help
+  %[1]s clean [flags] [roots...]
+  %[1]s [flags] [roots...]      scan when a flag is supplied
 
 Commands:
   clean              scan registered git worktrees and clean safe candidates
