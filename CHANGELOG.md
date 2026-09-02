@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.1.0](https://github.com/ben-ranford/wtgc/compare/wtgc-v1.0.0...wtgc-v1.1.0) (2026-09-02)
+
+
+### Features
+
+* **release:** publish Homebrew tap formula ([#87](https://github.com/ben-ranford/wtgc/issues/87)) ([d07a5d0](https://github.com/ben-ranford/wtgc/commit/d07a5d039eb83590440ddc125e164cae18e29c00))
+
+
+### Bug Fixes
+
+* **cli:** make no-argument invocation show usage ([#88](https://github.com/ben-ranford/wtgc/issues/88)) ([9cfb914](https://github.com/ben-ranford/wtgc/commit/9cfb9141c11526c6d4dcf7d7a70bf13e3504c139))
+
 ## 1.0.0 (2026-08-22)
 
 
