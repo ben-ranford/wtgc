@@ -1,5 +1,20 @@
 # Changelog
 
+## [1.1.0](https://github.com/ben-ranford/wtgc/compare/wtgc-v1.0.0...wtgc-v1.1.0) (2026-09-09)
+
+
+### Features
+
+* **cleanup:** complete v1.1 delivery ([#96](https://github.com/ben-ranford/wtgc/issues/96)) ([e140258](https://github.com/ben-ranford/wtgc/commit/e14025880c3927c8a1738c091ca37137c8654c84))
+* **release:** publish Homebrew tap formula ([#87](https://github.com/ben-ranford/wtgc/issues/87)) ([d07a5d0](https://github.com/ben-ranford/wtgc/commit/d07a5d039eb83590440ddc125e164cae18e29c00))
+
+
+### Bug Fixes
+
+* **cli:** make no-argument invocation show usage ([#88](https://github.com/ben-ranford/wtgc/issues/88)) ([9cfb914](https://github.com/ben-ranford/wtgc/commit/9cfb9141c11526c6d4dcf7d7a70bf13e3504c139))
+* **release:** harden release automation reliability ([#99](https://github.com/ben-ranford/wtgc/issues/99)) ([a54c29b](https://github.com/ben-ranford/wtgc/commit/a54c29b3d5e277661d00fd6fea50a1cc0af0d332))
+* **release:** update support policy and ShellCheck runtime ([#100](https://github.com/ben-ranford/wtgc/issues/100)) ([046764c](https://github.com/ben-ranford/wtgc/commit/046764ce2fca5984620d6aae4fdcbdae101880dc))
+
 ## 1.0.0 (2026-08-22)
 
 
