@@ -83,7 +83,7 @@ cat > "$tmp/bin/go" <<'EOF'
 set -eu
 
 [ "$1" = run ]
-[ "$2" = github.com/wasilibs/go-shellcheck/cmd/shellcheck@v0.10.0 ]
+[ "$2" = github.com/wasilibs/go-shellcheck/cmd/shellcheck@v0.11.1 ]
 [ "$3" = --shell=sh ]
 [ "$#" = 4 ]
 printf '%s\n' "$4" >> "${WTGC_SHELLCHECK_CALL_LOG:?}"
