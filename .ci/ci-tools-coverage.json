@@ -1,0 +1,9 @@
+{
+  "total_min": 75.0,
+  "package_min": 70.0,
+  "packages": {
+    "github.com/ben-ranford/wtgc/tools/benchdelta": 75.0,
+    "github.com/ben-ranford/wtgc/tools/coveragegate": 75.0,
+    "github.com/ben-ranford/wtgc/tools/featureflag": 70.0
+  }
+}

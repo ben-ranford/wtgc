@@ -15,6 +15,7 @@ import (
 	"github.com/ben-ranford/wtgc/internal/cli"
 	"github.com/ben-ranford/wtgc/internal/gitx"
 	"github.com/ben-ranford/wtgc/internal/model"
+	"github.com/ben-ranford/wtgc/internal/provider"
 	"github.com/ben-ranford/wtgc/internal/report"
 )
 
@@ -73,11 +74,17 @@ func run(
 		return 1
 	}
 	appOptions := app.Options{
-		Roots:         opts.Roots,
-		Execute:       !opts.DryRun,
-		Interactive:   opts.Interactive,
-		DeleteBranch:  opts.DeleteBranch,
-		ProtectedPath: workingDirectory,
+		Roots:          opts.Roots,
+		Execute:        !opts.DryRun,
+		Interactive:    opts.Interactive,
+		DeleteBranch:   opts.DeleteBranch,
+		ProtectedPath:  workingDirectory,
+		Retention:      opts.Retention,
+		CacheThreshold: opts.CacheThreshold,
+		ProviderRemote: opts.ProviderRemote,
+	}
+	if opts.Provider == "github" {
+		appOptions.Provider = provider.NewGitHub(nil)
 	}
 	if opts.Interactive {
 		appOptions.Confirm = confirmer(stdin, stderr, opts.DeleteBranch)
@@ -108,7 +115,11 @@ func confirmer(input io.Reader, output io.Writer, deleteBranch bool) func(model.
 		}
 		suffix := ""
 		if deleteBranch && worktree.Branch != "" && !worktree.Prunable {
-			suffix = " and delete its local branch"
+			if worktree.WorktreeDetails != nil && worktree.ProviderProof.HeadSHA != "" {
+				suffix = " and retain its local branch (provider squash proof)"
+			} else {
+				suffix = " and delete its local branch"
+			}
 		}
 		fmt.Fprintf(output, "%s %s%s? [y/N] ", action, report.SafeHumanText(worktree.Path), suffix)
 		answer, err := reader.ReadString('\n')

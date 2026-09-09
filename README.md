@@ -31,9 +31,8 @@ working-tree state before calling anything removable.
 clean + merged locally + reachable remotely + not protected = eligible
 ```
 
-Squash merges are a known conservative miss. The original branch tip is usually
-not an ancestor of the default branch, so v1 reports it as `unmerged` even when
-the pull request landed.
+Squash merges can be proven with explicit `--provider github` confirmation,
+which binds the pull request to the exact branch SHA and mapped upstream.
 
 For a live worktree, missing proof means it stays. False negatives waste disk;
 false positives destroy work. Given that choice, `wtgc` leaves the worktree
@@ -44,6 +43,7 @@ Stale records are handled separately. If Git marks a missing worktree path as
 prunable, `wtgc` may remove its registration with `git worktree prune
 --expire=now`; it does not delete a directory. The complete
 [safety contract](docs/safety.md) documents every refusal and revalidation rule.
+For unattended dry-run guidance, see the [harness documentation](docs/harness.md).
 
 ## 🚀 Usage
 
@@ -90,6 +90,8 @@ wtgc clean --scan-root "$HOME/Projects" --json
 
 Worktree removal keeps the local branch. Add `--delete-branch` only when you
 also intend to delete branches after their worktrees are safely removed.
+Provider-confirmed squash candidates always retain their local branch, so an
+interactive prompt states that outcome before removing the worktree.
 
 Git commands have no deadline by default. For hooks and scheduled jobs, set
 `WTGC_GIT_TIMEOUT=2m` (or another positive Go duration) to apply a deadline to

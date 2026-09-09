@@ -11,6 +11,7 @@ if grep -REn -- '--json.*(^|[^0-9])>>[[:space:]]*[^[:space:]]*\.json' README.md 
   exit 1
 fi
 
+# shellcheck disable=SC2016 # searched literal
 guard='if [ "${WTGC_MUTATE:-0}" != "1" ]; then exit 0; fi;'
 if ! grep -F "$guard" examples/lefthook.yml >/dev/null 2>&1; then
   echo "Lefthook cleanup must exit before mutation unless WTGC_MUTATE=1" >&2

@@ -7,9 +7,6 @@ on:
       - main
   workflow_dispatch:
 
-permissions:
-  contents: read
-
 jobs:
   native-tests:
     name: native tests (${{ matrix.name }})
@@ -26,6 +23,8 @@ jobs:
             runner: windows-latest
     env:
       CGO_ENABLED: 1
+    permissions:
+      contents: read
     defaults:
       run:
         shell: bash
@@ -40,6 +39,11 @@ jobs:
         with:
           go-version-file: go.mod
 
+      - name: Setup Node
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v7
+        with:
+          node-version: '24.0.0'
+
       - name: Run native tests
         run: go test ./...
 
@@ -51,6 +55,9 @@ jobs:
     runs-on: ubuntu-latest
     env:
       CGO_ENABLED: 1
+    permissions:
+      contents: read
+      issues: read
     steps:
       - name: Checkout
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
@@ -62,8 +69,35 @@ jobs:
         with:
           go-version-file: go.mod
 
+      - name: Setup Node
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v7
+        with:
+          node-version: '24.0.0'
+
+      - name: Install pinned uv
+        run: |
+          uv_venv="$RUNNER_TEMP/wtgc-uv"
+          python3 -m venv "$uv_venv"
+          "$uv_venv/bin/pip" install --no-deps 'https://files.pythonhosted.org/packages/05/20/0e9f74079ba34f12c5d5d01289dc8f8da94c11f855020bdfd7c5ddb412e1/uv-0.12.11-py3-none-manylinux_2_17_x86_64.manylinux2014_x86_64.whl#sha256=2c0d529c347eccaebaeec1be0e2a7a0a7d814128595b2549649060d2f75d0df6'
+          "$uv_venv/bin/uv" --version
+          echo "$uv_venv/bin" >> "$GITHUB_PATH"
+
       - name: Run full CI target
+        env:
+          DUPLICATION_BASE: ${{ github.event.pull_request.base.sha || github.sha }}
+          SUPPRESSION_BASE: ${{ github.event.pull_request.base.sha || github.sha }}
+          SUPPRESSION_VERIFY_ISSUES: '1'
+          GH_TOKEN: ${{ github.token }}
         run: make ci
+
+      - name: Upload quality-gate artifacts
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: quality-gate-artifacts
+          path: .artifacts/
+          include-hidden-files: true
+          if-no-files-found: error
 
       - name: Run automation checks
         run: make release-check VERSION=ci-check PLATFORMS="linux/amd64"

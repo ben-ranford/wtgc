@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 )
 
@@ -38,8 +39,8 @@ func TestPublishedSchemaMatchesModelContract(t *testing.T) {
 	if err := json.Unmarshal(data, &schema); err != nil {
 		t.Fatalf("parse inventory schema: %v", err)
 	}
-	if schema.Properties.SchemaVersion.Const != "1.0.0" {
-		t.Fatalf("schema version = %q, want 1.0.0", schema.Properties.SchemaVersion.Const)
+	if schema.Properties.SchemaVersion.Const != "1.1.0" {
+		t.Fatalf("schema version = %q, want 1.1.0", schema.Properties.SchemaVersion.Const)
 	}
 	want := map[Classification]bool{
 		SafeToRemove: true, MergedButDirty: true, Unmerged: true,
@@ -65,5 +66,25 @@ func TestInventoryJSONSerializesEmptyWorktreesAsArray(t *testing.T) {
 	}
 	if string(got["worktrees"]) != "[]" {
 		t.Fatalf("worktrees JSON = %s, want [] in %s", got["worktrees"], data)
+	}
+}
+
+func TestOptionalWorktreeDetailsRemainFlatAndAbsentWhenUnused(t *testing.T) {
+	plain, err := json.Marshal(Worktree{Path: "p", Repository: "r"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(plain), "WorktreeDetails") || strings.Contains(string(plain), "cache_warnings") {
+		t.Fatalf("plain=%s", plain)
+	}
+	item := Worktree{Path: "p", Repository: "r"}
+	item.Details().Provider = "github"
+	item.ProviderPR = 1
+	data, err := json.Marshal(item)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), `"provider":"github"`) || strings.Contains(string(data), "worktree_details") {
+		t.Fatalf("details JSON=%s", data)
 	}
 }

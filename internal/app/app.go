@@ -5,16 +5,21 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/url"
+	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/ben-ranford/wtgc/internal/cache"
 	"github.com/ben-ranford/wtgc/internal/model"
+	"github.com/ben-ranford/wtgc/internal/provider"
 )
 
-const schemaVersion = "1.0.0"
+const schemaVersion = "1.1.0"
 
 // Git is the safety boundary around repository inspection and mutation.
 type Git interface {
@@ -28,17 +33,24 @@ type Git interface {
 	Remove(context.Context, model.Repository, string) error
 	Prune(context.Context, model.Repository) error
 	DeleteBranch(context.Context, model.Repository, string, string) error
+	ProviderUpstream(context.Context, model.Repository, string) (remote, branch, remoteURL string, err error)
+	ProviderDefaultTracking(context.Context, model.Repository, string, string) (remote, branch, remoteURL string, err error)
 }
 
 // Options controls one scan and optional cleanup pass.
 type Options struct {
-	Roots         []string
-	Execute       bool
-	Interactive   bool
-	DeleteBranch  bool
-	Confirm       func(model.Worktree) bool
-	ProtectedPath string
-	Now           func() time.Time
+	Roots          []string
+	Execute        bool
+	Interactive    bool
+	DeleteBranch   bool
+	Confirm        func(model.Worktree) bool
+	ProtectedPath  string
+	Now            func() time.Time
+	Retention      time.Duration
+	CacheThreshold int64
+	Provider       provider.MergeFinder
+	ProviderRemote string
+	CacheScanner   func(context.Context, string, int64) []cache.Warning
 }
 
 // App coordinates Git inspection without weakening Git's own safety checks.
@@ -55,9 +67,11 @@ func (a *App) Run(ctx context.Context, opts Options) (model.Inventory, error) {
 	if opts.Now == nil {
 		opts.Now = time.Now
 	}
+	now := opts.Now().UTC()
+	opts.Now = func() time.Time { return now }
 	inv := model.Inventory{
 		SchemaVersion: schemaVersion,
-		GeneratedAt:   opts.Now().UTC(),
+		GeneratedAt:   now,
 		DryRun:        !opts.Execute,
 		Roots:         append([]string(nil), opts.Roots...),
 		Worktrees:     []model.Worktree{},
@@ -73,7 +87,9 @@ func (a *App) Run(ctx context.Context, opts Options) (model.Inventory, error) {
 		return inv, errors.New("no Git repositories with registered worktrees found")
 	}
 
-	a.scanRepositories(ctx, repositories, opts.ProtectedPath, &inv)
+	a.scanRepositories(ctx, repositories, opts.ProtectedPath, opts.Provider, opts.ProviderRemote, now, &inv)
+	a.addCacheWarnings(ctx, opts.CacheThreshold, opts.CacheScanner, &inv)
+	a.applyRetention(now, opts.Retention, &inv)
 	sort.Slice(inv.Worktrees, func(i, j int) bool {
 		if inv.Worktrees[i].Repository == inv.Worktrees[j].Repository {
 			return inv.Worktrees[i].Path < inv.Worktrees[j].Path
@@ -95,6 +111,74 @@ func (a *App) Run(ctx context.Context, opts Options) (model.Inventory, error) {
 	return inv, nil
 }
 
+func (a *App) addCacheWarnings(ctx context.Context, threshold int64, scanner func(context.Context, string, int64) []cache.Warning, inv *model.Inventory) {
+	if scanner == nil {
+		scanner = cache.Scan
+	}
+	for i := range inv.Worktrees {
+		item := &inv.Worktrees[i]
+		if item.Prunable || item.Path == "" {
+			continue
+		}
+		for _, warning := range scanner(ctx, item.Path, threshold) {
+			details := item.Details()
+			details.CacheWarnings = append(details.CacheWarnings, model.CacheWarning{Path: warning.Path, Bytes: warning.Bytes, Kind: warning.Kind, Reason: warning.Reason, Error: warning.Error})
+		}
+	}
+}
+
+func (a *App) applyRetention(now time.Time, retention time.Duration, inv *model.Inventory) {
+	if retention == 0 {
+		return
+	}
+	for i := range inv.Worktrees {
+		item := &inv.Worktrees[i]
+		if item.Classification != model.SafeToRemove {
+			continue
+		}
+		observed, basis, err := retentionObservedAt(item)
+		if err != nil || observed.IsZero() || observed.After(now) {
+			item.Classification, item.Reason = model.Kept, "kept because retention timestamp could not be proven"
+			if err != nil {
+				item.Error = fmt.Sprintf("retention timestamp: %v", err)
+			}
+			continue
+		}
+		eligible := observed.Add(retention)
+		details := item.Details()
+		details.RetentionBasis, details.ObservedAt, details.EligibleAt = basis, &observed, &eligible
+		details.Remaining = eligible.Sub(now)
+		if now.Before(eligible) {
+			item.Classification, item.Reason = model.Kept, "kept until retention window elapses"
+		}
+	}
+}
+
+func retentionObservedAt(item *model.Worktree) (time.Time, string, error) {
+	if item.WorktreeDetails != nil && item.MergedAt != nil {
+		return item.MergedAt.UTC(), "provider_merged_at", nil
+	}
+	value, err := latestModTime(item.Path)
+	return value, "worktree_mtime", err
+}
+
+func latestModTime(root string) (time.Time, error) {
+	var latest time.Time
+	err := filepath.Walk(root, func(_ string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		if info.ModTime().After(latest) {
+			latest = info.ModTime().UTC()
+		}
+		return nil
+	})
+	if err != nil {
+		return time.Time{}, err
+	}
+	return latest, nil
+}
+
 type classificationJob struct {
 	repo          model.Repository
 	defaultBranch string
@@ -102,12 +186,18 @@ type classificationJob struct {
 	record        model.RegisteredWorktree
 }
 
-func (a *App) scanRepositories(ctx context.Context, repositories []model.Repository, protectedPath string, inv *model.Inventory) {
+type classifyOptions struct {
+	provider       provider.MergeFinder
+	providerRemote string
+	now            time.Time
+}
+
+func (a *App) scanRepositories(ctx context.Context, repositories []model.Repository, protectedPath string, p provider.MergeFinder, providerRemote string, now time.Time, inv *model.Inventory) {
 	jobs := a.collectClassificationJobs(ctx, repositories, protectedPath, inv)
 	if len(jobs) == 0 {
 		return
 	}
-	a.classifyJobs(ctx, jobs, inv)
+	a.classifyJobs(ctx, jobs, p, providerRemote, now, inv)
 }
 
 func (a *App) collectClassificationJobs(ctx context.Context, repositories []model.Repository, protectedPath string, inv *model.Inventory) []classificationJob {
@@ -142,7 +232,8 @@ func (a *App) collectClassificationJobs(ctx context.Context, repositories []mode
 	return jobs
 }
 
-func (a *App) classifyJobs(ctx context.Context, jobs []classificationJob, inv *model.Inventory) {
+func (a *App) classifyJobs(ctx context.Context, jobs []classificationJob, p provider.MergeFinder, providerRemote string, now time.Time, inv *model.Inventory) {
+	inv.Worktrees = slices.Grow(inv.Worktrees, len(jobs))
 	jobCh := make(chan classificationJob)
 	resultCh := make(chan model.Worktree, len(jobs))
 	workerCount := 8
@@ -155,7 +246,7 @@ func (a *App) classifyJobs(ctx context.Context, jobs []classificationJob, inv *m
 		go func() {
 			defer group.Done()
 			for job := range jobCh {
-				resultCh <- a.classify(ctx, job.repo, job.defaultBranch, job.protectedPath, job.record)
+				resultCh <- a.classify(ctx, job, classifyOptions{provider: p, providerRemote: providerRemote, now: now})
 			}
 		}()
 	}
@@ -174,7 +265,8 @@ func (a *App) classifyJobs(ctx context.Context, jobs []classificationJob, inv *m
 	}
 }
 
-func (a *App) classify(ctx context.Context, repo model.Repository, defaultBranch, protectedPath string, record model.RegisteredWorktree) model.Worktree {
+func (a *App) classify(ctx context.Context, job classificationJob, options classifyOptions) model.Worktree {
+	repo, defaultBranch, protectedPath, record := job.repo, job.defaultBranch, job.protectedPath, job.record
 	item := model.Worktree{
 		Path:          record.Path,
 		Branch:        record.Branch,
@@ -212,6 +304,18 @@ func (a *App) classify(ctx context.Context, repo model.Repository, defaultBranch
 			item.Classification, item.Reason = model.Kept, "dirty worktree branch tip is not reachable from the local default branch"
 			return item
 		}
+		if options.provider != nil {
+			proof, ok, category := a.providerProof(ctx, repo, record, defaultBranch, options.provider, options.providerRemote, options.now)
+			if ok {
+				item.Classification, item.Reason = model.SafeToRemove, "clean squash-merged pull request has exact provider and selected-default reachability proof"
+				details := item.Details()
+				details.Provider, details.ProviderPR, details.ProviderURL, details.MergedAt = "github", proof.Number, proof.URL, &proof.MergedAt
+				details.ProviderProof = providerProofIdentity(proof)
+				return item
+			}
+			item.Classification, item.Reason = model.Unmerged, "provider confirmation "+category+"; clean worktree retained because branch tip is not reachable from the local default branch"
+			return item
+		}
 		item.Classification, item.Reason = model.Unmerged, "branch tip is not reachable from the local default branch"
 		return item
 	}
@@ -229,6 +333,89 @@ func (a *App) classify(ctx context.Context, repo model.Repository, defaultBranch
 	}
 	item.Classification, item.Reason = model.SafeToRemove, "clean branch tip is reachable from both the default branch and a remote-tracking ref"
 	return item
+}
+
+func providerProofIdentity(proof provider.PullRequest) model.ProviderProof {
+	return model.ProviderProof{Kind: "github", HeadRemote: proof.HeadRemote, BaseRemote: proof.BaseRemote, Number: proof.Number, MergedAt: proof.MergedAt, MergeCommitSHA: proof.MergeCommitSHA, HeadSHA: proof.HeadSHA, HeadOwner: proof.HeadOwner, HeadRepo: proof.HeadRepo, HeadRef: proof.HeadRef, BaseOwner: proof.BaseOwner, BaseRepo: proof.BaseRepo, BaseRef: proof.BaseRef}
+}
+
+func (a *App) providerProof(ctx context.Context, repo model.Repository, record model.RegisteredWorktree, defaultBranch string, p provider.MergeFinder, selectedRemote string, now time.Time) (provider.PullRequest, bool, string) {
+	headRemote, headRef, headURL, err := a.git.ProviderUpstream(ctx, repo, record.Branch)
+	if err != nil {
+		return provider.PullRequest{}, false, "mapping unavailable or ambiguous"
+	}
+	trackingRemote, baseRef, baseURL, err := a.git.ProviderDefaultTracking(ctx, repo, defaultBranch, selectedRemote)
+	if err != nil {
+		return provider.PullRequest{}, false, "mapping unavailable or ambiguous"
+	}
+	ho, hr, ok := githubRepo(headURL)
+	if !ok || headRef == "" {
+		return provider.PullRequest{}, false, "mapping identity is invalid"
+	}
+	bo, br, ok := githubRepo(baseURL)
+	if !ok || baseRef != defaultBranch {
+		return provider.PullRequest{}, false, "mapping identity is invalid"
+	}
+	proof, err := p.FindMerged(ctx, provider.Query{HeadOwner: ho, HeadRepo: hr, HeadRef: headRef, HeadSHA: record.Head, BaseOwner: bo, BaseRepo: br, BaseRef: baseRef})
+	if err != nil {
+		return provider.PullRequest{}, false, providerFailureCategory(err)
+	}
+	if proof.Number <= 0 || proof.MergedAt.IsZero() || proof.MergedAt.After(now) || proof.HeadSHA != record.Head || !sameGitHubRepository(proof.HeadOwner, proof.HeadRepo, ho, hr) || proof.HeadRef != headRef || !sameGitHubRepository(proof.BaseOwner, proof.BaseRepo, bo, br) || proof.BaseRef != baseRef || !fullOID(proof.MergeCommitSHA) {
+		return provider.PullRequest{}, false, "proof identity is invalid"
+	}
+	proof.HeadRemote, proof.BaseRemote = headRemote, trackingRemote
+	local, err := a.git.IsAncestor(ctx, repo, proof.MergeCommitSHA, defaultBranch)
+	if err != nil || !local {
+		return provider.PullRequest{}, false, "local default reachability failed"
+	}
+	remote, err := a.git.IsAncestor(ctx, repo, proof.MergeCommitSHA, "refs/remotes/"+trackingRemote+"/"+defaultBranch)
+	if err != nil || !remote {
+		return provider.PullRequest{}, false, "selected default reachability failed"
+	}
+	return proof, true, ""
+}
+func providerFailureCategory(err error) string {
+	value := strings.ToLower(err.Error())
+	switch {
+	case strings.Contains(value, "http 401") || strings.Contains(value, "http 403"):
+		return "authentication failed"
+	case strings.Contains(value, "http 429"):
+		return "rate limit failed"
+	case strings.Contains(value, "deadline") || strings.Contains(value, "canceled") || strings.Contains(value, "query failed"):
+		return "timeout, cancellation, or offline failure"
+	case strings.Contains(value, "exceeds size") || strings.Contains(value, "decode"):
+		return "malformed or oversized response"
+	case strings.Contains(value, "no exact"):
+		return "no exact merged pull request"
+	default:
+		return "provider response rejected"
+	}
+}
+func fullOID(value string) bool {
+	if len(value) != 40 && len(value) != 64 {
+		return false
+	}
+	for _, r := range value {
+		if !(r >= '0' && r <= '9' || r >= 'a' && r <= 'f' || r >= 'A' && r <= 'F') {
+			return false
+		}
+	}
+	return true
+}
+func githubRepo(raw string) (string, string, bool) {
+	raw = strings.TrimSuffix(raw, ".git")
+	if strings.HasPrefix(raw, "git@github.com:") {
+		raw = "https://github.com/" + strings.TrimPrefix(raw, "git@github.com:")
+	}
+	u, err := url.Parse(raw)
+	if err != nil || !strings.EqualFold(u.Host, "github.com") {
+		return "", "", false
+	}
+	parts := strings.Split(strings.Trim(u.Path, "/"), "/")
+	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+		return "", "", false
+	}
+	return parts[0], parts[1], true
 }
 
 func keepProtectedWorktree(item model.Worktree, record model.RegisteredWorktree, defaultBranch, protectedPath string) (model.Worktree, bool) {
@@ -325,7 +512,7 @@ func (a *App) cleanRepository(ctx context.Context, repo model.Repository, opts O
 }
 
 func (a *App) removeWorktree(ctx context.Context, repo model.Repository, opts Options, item *model.Worktree, inv *model.Inventory) {
-	fresh, ok := a.revalidate(ctx, repo, opts.ProtectedPath, *item)
+	fresh, ok := a.revalidate(ctx, repo, opts, *item)
 	if !ok {
 		*item = fresh
 		return
@@ -347,6 +534,10 @@ func (a *App) removeWorktree(ctx context.Context, repo model.Repository, opts Op
 }
 
 func (a *App) deleteWorktreeBranch(ctx context.Context, repo model.Repository, fresh model.Worktree, item *model.Worktree, inv *model.Inventory) {
+	if fresh.WorktreeDetails != nil && fresh.ProviderProof.HeadSHA != "" {
+		item.Error = "worktree removed; branch retained because provider squash proof does not authorize branch deletion"
+		return
+	}
 	if err := a.git.DeleteBranch(ctx, repo, fresh.Branch, fresh.DefaultBranch); err != nil {
 		item.Error = fmt.Sprintf("worktree removed; branch retained: %v", err)
 		inv.Errors = append(inv.Errors, fmt.Sprintf("%s: delete branch %s: %v", repo.PrimaryPath, fresh.Branch, err))
@@ -407,7 +598,7 @@ func (a *App) requireAcceptedPrunableSet(ctx context.Context, repo model.Reposit
 	return nil
 }
 
-func (a *App) revalidate(ctx context.Context, repo model.Repository, protectedPath string, previous model.Worktree) (model.Worktree, bool) {
+func (a *App) revalidate(ctx context.Context, repo model.Repository, opts Options, previous model.Worktree) (model.Worktree, bool) {
 	defaultBranch, err := a.git.DefaultBranch(ctx, repo)
 	if err != nil {
 		return classificationError(previous, fmt.Sprintf("revalidate default branch: %v", err)), false
@@ -416,25 +607,81 @@ func (a *App) revalidate(ctx context.Context, repo model.Repository, protectedPa
 	if err != nil {
 		return classificationError(previous, fmt.Sprintf("revalidate worktree list: %v", err)), false
 	}
-	for _, record := range records {
-		if record.Path != previous.Path {
-			continue
-		}
-		if record.Head != previous.Head || record.Branch != previous.Branch {
-			previous.Classification = model.Kept
-			previous.Reason = "worktree HEAD or branch changed after scan"
-			return previous, false
-		}
-		fresh := a.classify(ctx, repo, defaultBranch, protectedPath, record)
-		if fresh.Classification != model.SafeToRemove {
-			fresh.Reason = "revalidation blocked removal: " + fresh.Reason
-			return fresh, false
-		}
-		return fresh, true
+	record, found := registeredRecord(records, previous.Path)
+	if !found {
+		previous.Classification, previous.Reason = model.Kept, "worktree registration changed after scan"
+		return previous, false
 	}
-	previous.Classification = model.Kept
-	previous.Reason = "worktree registration changed after scan"
-	return previous, false
+	if record.Head != previous.Head || record.Branch != previous.Branch {
+		previous.Classification, previous.Reason = model.Kept, "worktree HEAD or branch changed after scan"
+		return previous, false
+	}
+	fresh := a.classify(ctx, classificationJob{repo: repo, defaultBranch: defaultBranch, protectedPath: opts.ProtectedPath, record: record}, classifyOptions{provider: opts.Provider, providerRemote: opts.ProviderRemote, now: opts.Now().UTC()})
+	return revalidationDecision(previous, fresh, opts.Now().UTC())
+}
+
+func registeredRecord(records []model.RegisteredWorktree, path string) (model.RegisteredWorktree, bool) {
+	for _, record := range records {
+		if record.Path == path {
+			return record, true
+		}
+	}
+	return model.RegisteredWorktree{}, false
+}
+
+func revalidationDecision(previous, fresh model.Worktree, now time.Time) (model.Worktree, bool) {
+	if fresh.DefaultBranch != previous.DefaultBranch {
+		fresh.Classification, fresh.Reason = model.Kept, "revalidation blocked removal: default branch changed after scan"
+		return fresh, false
+	}
+	if providerProofChanged(previous, fresh) {
+		fresh.Classification, fresh.Reason = model.Kept, "revalidation blocked removal: provider proof changed after scan"
+		return fresh, false
+	}
+	if reason := retentionRevalidationFailure(previous, fresh, now); reason != "" {
+		fresh.Classification, fresh.Reason = model.Kept, reason
+		return fresh, false
+	}
+	if fresh.Classification != model.SafeToRemove {
+		fresh.Reason = "revalidation blocked removal: " + fresh.Reason
+		return fresh, false
+	}
+	return fresh, true
+}
+
+func providerProofChanged(previous, fresh model.Worktree) bool {
+	old := previous.WorktreeDetails != nil && previous.ProviderProof.HeadSHA != ""
+	current := fresh.WorktreeDetails != nil && fresh.ProviderProof.HeadSHA != ""
+	return old != current || (old && !sameProviderProof(previous.ProviderProof, fresh.ProviderProof))
+}
+
+func sameProviderProof(previous, fresh model.ProviderProof) bool {
+	return previous.Kind == fresh.Kind &&
+		previous.HeadRemote == fresh.HeadRemote && previous.BaseRemote == fresh.BaseRemote &&
+		previous.Number == fresh.Number && previous.MergedAt == fresh.MergedAt &&
+		previous.MergeCommitSHA == fresh.MergeCommitSHA && previous.HeadSHA == fresh.HeadSHA &&
+		sameGitHubRepository(previous.HeadOwner, previous.HeadRepo, fresh.HeadOwner, fresh.HeadRepo) && previous.HeadRef == fresh.HeadRef &&
+		sameGitHubRepository(previous.BaseOwner, previous.BaseRepo, fresh.BaseOwner, fresh.BaseRepo) && previous.BaseRef == fresh.BaseRef
+}
+
+// GitHub canonicalizes repository owner and name casing, but refs and object
+// IDs remain exact proof components.
+func sameGitHubRepository(owner, repo, wantOwner, wantRepo string) bool {
+	return strings.EqualFold(owner, wantOwner) && strings.EqualFold(repo, wantRepo)
+}
+
+func retentionRevalidationFailure(previous, fresh model.Worktree, now time.Time) string {
+	if previous.WorktreeDetails == nil || previous.RetentionBasis == "" {
+		return ""
+	}
+	if previous.ObservedAt == nil || previous.EligibleAt == nil {
+		return "revalidation blocked removal: retention evidence is incomplete"
+	}
+	observed, basis, err := retentionObservedAt(&fresh)
+	if err != nil || basis != previous.RetentionBasis || !observed.Equal(*previous.ObservedAt) || observed.IsZero() || observed.After(now) || now.Before(observed.Add(previous.EligibleAt.Sub(*previous.ObservedAt))) {
+		return "revalidation blocked removal: retention window has not elapsed or timestamp changed"
+	}
+	return ""
 }
 
 func repoDefaultBranchFailed(inv *model.Inventory, repo model.Repository) bool {
@@ -494,6 +741,12 @@ func (a *App) summarize(inv *model.Inventory) {
 			inv.Summary.Skipped++
 		}
 		inv.Summary.ReclaimedBytes += item.ReclaimedBytes
+		if item.WorktreeDetails != nil {
+			for _, warning := range item.CacheWarnings {
+				inv.Summary.CacheWarningCount++
+				inv.Summary.CacheWarningBytes += warning.Bytes
+			}
+		}
 	}
 	inv.Errors = uniqueStrings(inv.Errors)
 }

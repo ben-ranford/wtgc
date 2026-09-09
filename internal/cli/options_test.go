@@ -168,3 +168,18 @@ func TestUsageMentionsCoreFlags(t *testing.T) {
 		}
 	}
 }
+
+func TestProviderRetentionAndCacheFlags(t *testing.T) {
+	opts, err := Parse([]string{"clean", "--provider", "github", "--provider-remote", "origin", "--retention", "72h", "--cache-threshold", "42"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if opts.Provider != "github" || opts.ProviderRemote != "origin" || opts.Retention.Hours() != 72 || opts.CacheThreshold != 42 {
+		t.Fatalf("opts=%+v", opts)
+	}
+	for _, args := range [][]string{{"clean", "--provider", "gitlab"}, {"clean", "--provider-remote", "origin"}, {"clean", "--retention", "-1h"}, {"clean", "--cache-threshold", "-1"}} {
+		if _, err := Parse(args); err == nil || !IsUsageError(err) {
+			t.Fatalf("Parse(%v) err=%v, want usage", args, err)
+		}
+	}
+}

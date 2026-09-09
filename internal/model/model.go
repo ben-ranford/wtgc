@@ -53,37 +53,80 @@ const (
 
 // Worktree is one registered Git worktree and its cleanup decision.
 type Worktree struct {
-	Path           string         `json:"path"`
-	Branch         string         `json:"branch,omitempty"`
-	Head           string         `json:"head,omitempty"`
-	Repository     string         `json:"repository"`
-	DefaultBranch  string         `json:"default_branch,omitempty"`
-	DiskBytes      int64          `json:"disk_bytes"`
-	Classification Classification `json:"classification"`
-	Reason         string         `json:"reason"`
-	Primary        bool           `json:"primary,omitempty"`
-	Detached       bool           `json:"detached,omitempty"`
-	Locked         bool           `json:"locked,omitempty"`
-	Prunable       bool           `json:"prunable,omitempty"`
-	Dirty          *bool          `json:"dirty,omitempty"`
-	Action         Action         `json:"action"`
-	ReclaimedBytes int64          `json:"reclaimed_bytes"`
-	Removed        bool           `json:"removed,omitempty"`
-	BranchDeleted  bool           `json:"branch_deleted,omitempty"`
-	Error          string         `json:"error,omitempty"`
+	Path             string         `json:"path"`
+	Branch           string         `json:"branch,omitempty"`
+	Head             string         `json:"head,omitempty"`
+	Repository       string         `json:"repository"`
+	DefaultBranch    string         `json:"default_branch,omitempty"`
+	DiskBytes        int64          `json:"disk_bytes"`
+	Classification   Classification `json:"classification"`
+	Reason           string         `json:"reason"`
+	Primary          bool           `json:"primary,omitempty"`
+	Detached         bool           `json:"detached,omitempty"`
+	Locked           bool           `json:"locked,omitempty"`
+	Prunable         bool           `json:"prunable,omitempty"`
+	Dirty            *bool          `json:"dirty,omitempty"`
+	Action           Action         `json:"action"`
+	ReclaimedBytes   int64          `json:"reclaimed_bytes"`
+	Removed          bool           `json:"removed,omitempty"`
+	BranchDeleted    bool           `json:"branch_deleted,omitempty"`
+	Error            string         `json:"error,omitempty"`
+	*WorktreeDetails `json:",omitempty"`
+}
+
+// WorktreeDetails is embedded to keep optional inventory data flat in JSON
+// while avoiding allocating it for ordinary classifier rows.
+type WorktreeDetails struct {
+	RetentionBasis string         `json:"retention_basis,omitempty"`
+	ObservedAt     *time.Time     `json:"observed_at,omitempty"`
+	EligibleAt     *time.Time     `json:"eligible_at,omitempty"`
+	Remaining      time.Duration  `json:"retention_remaining_ns,omitempty"`
+	CacheWarnings  []CacheWarning `json:"cache_warnings,omitempty"`
+	Provider       string         `json:"provider,omitempty"`
+	ProviderPR     int            `json:"provider_pr,omitempty"`
+	ProviderURL    string         `json:"provider_url,omitempty"`
+	MergedAt       *time.Time     `json:"merged_at,omitempty"`
+	ProviderProof  ProviderProof  `json:"-"`
+}
+
+// ProviderProof is retained only for mutation revalidation; it is never emitted.
+type ProviderProof struct {
+	Kind                                                                                string
+	HeadRemote, BaseRemote                                                              string
+	Number                                                                              int
+	MergedAt                                                                            time.Time
+	MergeCommitSHA, HeadSHA, HeadOwner, HeadRepo, HeadRef, BaseOwner, BaseRepo, BaseRef string
+}
+
+func (w *Worktree) Details() *WorktreeDetails {
+	if w.WorktreeDetails == nil {
+		w.WorktreeDetails = &WorktreeDetails{}
+	}
+	return w.WorktreeDetails
+}
+
+// CacheWarning is advisory storage information. It cannot affect cleanup eligibility.
+type CacheWarning struct {
+	Path   string `json:"path"`
+	Bytes  int64  `json:"bytes"`
+	Kind   string `json:"kind"`
+	Reason string `json:"reason"`
+	Error  string `json:"error,omitempty"`
 }
 
 // Summary contains aggregate scan and cleanup results.
 type Summary struct {
-	Repositories   int           `json:"repositories"`
-	Scanned        int           `json:"scanned"`
-	Safe           int           `json:"safe"`
-	Removed        int           `json:"removed"`
-	Skipped        int           `json:"skipped"`
-	Pruned         int           `json:"pruned"`
-	PotentialBytes int64         `json:"potential_bytes"`
-	ReclaimedBytes int64         `json:"reclaimed_bytes"`
-	Duration       time.Duration `json:"duration_ns"`
+	Repositories      int           `json:"repositories"`
+	Scanned           int           `json:"scanned"`
+	Safe              int           `json:"safe"`
+	Removed           int           `json:"removed"`
+	Skipped           int           `json:"skipped"`
+	Pruned            int           `json:"pruned"`
+	PotentialBytes    int64         `json:"potential_bytes"`
+	ReclaimedBytes    int64         `json:"reclaimed_bytes"`
+	CacheWarningCount int           `json:"cache_warning_count"`
+	CacheWarningBytes int64         `json:"cache_warning_bytes"`
+	Duration          time.Duration `json:"duration_ns"`
 }
 
 // Inventory is the machine-readable output document.

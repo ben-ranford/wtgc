@@ -17,13 +17,12 @@ true:
 - Its path can be resolved and inspected.
 - No Git command needed for the decision failed.
 
-## Immediate Eligibility
+## Retention
 
-V1 does not impose an age threshold. Once every safety condition passes, a
-worktree can be reported as eligible immediately.
-
-Users who want a delay should schedule cleanup with their own cadence, for
-example daily or weekly dry-runs before cleanup.
+`--retention DURATION` keeps an otherwise proven worktree until its observed
+time plus the duration. The default is zero. Provider merge time is preferred;
+otherwise wtgc uses the newest worktree mtime. Future, missing, unreadable, or
+changed timestamps fail closed and are checked again before mutation.
 
 ## Classification Meanings
 
@@ -67,7 +66,19 @@ local default branch, and atomically deletes that ref only if it still points to
 the proven object. This expected-object check prevents a concurrent branch
 update from being deleted.
 
-## Cache Warnings
+## Provider confirmation and cache warnings
 
-Cache warnings are intentionally deferred. Until wtgc has cache behavior, it
-should not warn about stale cache data or cache invalidation.
+`--provider github` is explicit opt-in. GitHub access uses only `GH_TOKEN` or
+`GITHUB_TOKEN` environment variables; tokens are never accepted as arguments
+or written to reports. A provider error, rate limit, malformed response,
+timeout, redirect, missing pull request, or ambiguous upstream mapping keeps
+the worktree. Provider confirmation requires an immutable head SHA and exact
+head/base repository and ref identity; branch names alone are never proof.
+Forks are valid only when their mapped upstream matches. The merge commit must
+be reachable from both the local default branch and its selected remote-tracking
+default. `--provider-remote` selects an otherwise ambiguous remote mapping.
+
+`--cache-threshold BYTES` defaults to 100 MiB; an explicit `0` reports every
+recognized cache directory. It never deletes a cache or changes eligibility.
+Provider-confirmed squash worktrees retain their local branch under
+`--delete-branch`, because squash proof cannot establish local branch ancestry.

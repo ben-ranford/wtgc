@@ -1,0 +1,2 @@
+go test fuzz v1
+[]byte("worktree\\x00HEAD\\x00branch\\x00")

@@ -32,6 +32,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
+      issues: read
     env:
       CGO_ENABLED: 1
     steps:
@@ -44,12 +45,28 @@ jobs:
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with:
           go-version-file: go.mod
+      - name: Setup Node
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v7
+        with:
+          node-version: '24.0.0'
+      - name: Install pinned uv
+        run: |
+          uv_venv="$RUNNER_TEMP/wtgc-uv"
+          python3 -m venv "$uv_venv"
+          "$uv_venv/bin/pip" install --no-deps 'https://files.pythonhosted.org/packages/05/20/0e9f74079ba34f12c5d5d01289dc8f8da94c11f855020bdfd7c5ddb412e1/uv-0.12.11-py3-none-manylinux_2_17_x86_64.manylinux2014_x86_64.whl#sha256=2c0d529c347eccaebaeec1be0e2a7a0a7d814128595b2549649060d2f75d0df6'
+          "$uv_venv/bin/uv" --version
+          echo "$uv_venv/bin" >> "$GITHUB_PATH"
       - name: Verify tag points to release SHA
         env:
           RELEASE_SHA: ${{ inputs.sha }}
           RELEASE_TAG: ${{ inputs.tag_name }}
         run: sh ./scripts/verify-release-ref.sh "$RELEASE_TAG" "$RELEASE_SHA"
       - name: Run CI target
+        env:
+          DUPLICATION_BASE: ${{ inputs.sha }}
+          SUPPRESSION_BASE: ${{ inputs.sha }}
+          SUPPRESSION_VERIFY_ISSUES: '1'
+          GH_TOKEN: ${{ github.token }}
         run: make ci
 
   build:

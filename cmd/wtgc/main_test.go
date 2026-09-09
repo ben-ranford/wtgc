@@ -147,6 +147,28 @@ func TestRunUsageError(t *testing.T) {
 	}
 }
 
+func TestConfirmerDescribesBranchOutcomeAccurately(t *testing.T) {
+	tests := []struct {
+		name     string
+		worktree model.Worktree
+		want     string
+	}{
+		{name: "local ancestry", worktree: model.Worktree{Path: "/local", Branch: "feature"}, want: "remove /local and delete its local branch? [y/N] "},
+		{name: "provider squash", worktree: model.Worktree{Path: "/provider", Branch: "feature", WorktreeDetails: &model.WorktreeDetails{ProviderProof: model.ProviderProof{HeadSHA: "abc123"}}}, want: "remove /provider and retain its local branch (provider squash proof)? [y/N] "},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			var output bytes.Buffer
+			if !confirmer(strings.NewReader("yes\n"), &output, true)(test.worktree) {
+				t.Fatal("confirmation was rejected")
+			}
+			if got := output.String(); got != test.want {
+				t.Fatalf("prompt = %q, want %q", got, test.want)
+			}
+		})
+	}
+}
+
 func TestRunWritesJSONReportFromInjectedBackend(t *testing.T) {
 	t.Parallel()
 	var stdout, stderr bytes.Buffer
@@ -336,6 +358,12 @@ func (*mainFakeGit) Prune(context.Context, model.Repository) error {
 
 func (*mainFakeGit) DeleteBranch(context.Context, model.Repository, string, string) error {
 	return nil
+}
+func (*mainFakeGit) ProviderUpstream(context.Context, model.Repository, string) (string, string, string, error) {
+	return "origin", "feature", "https://github.com/owner/repo.git", nil
+}
+func (*mainFakeGit) ProviderDefaultTracking(context.Context, model.Repository, string, string) (string, string, string, error) {
+	return "origin", "main", "https://github.com/owner/repo.git", nil
 }
 
 func mainRecord(branch string) model.RegisteredWorktree {

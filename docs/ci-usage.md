@@ -5,6 +5,25 @@
 `make ci` is the canonical local and CI validation target. It runs:
 
 - `make format-check`
+- `make mod-check` verifies a tidy module graph and module checksums.
+- `make feature-flag-check` validates `.ci/feature-flags.json`; an empty `flags`
+  array is the valid no-feature-flag state.
+- `make gostyle`, `make actionlint`, and `make shellcheck` run the pinned Go
+  tools declared in `Makefile`. Shell quality gates run on POSIX/Linux CI;
+  Windows keeps its native Go tests.
+- `make dup-check` requires a fetched `DUPLICATION_BASE` (default
+  `origin/main`) and writes `.artifacts/changed-code-duplication.json`. Set an
+  explicit local commit/ref when working offline; missing base evidence fails.
+- `make bench-gate` compares `BenchmarkRunClassifies350Worktrees` at the
+  merge-base and candidate, enforcing allocations and bytes/op only. It writes
+  raw outputs and a Markdown comparison under `.artifacts` and removes its
+  temporary baseline worktree on exit.
+- `make fuzz-corpus-check` executes each committed porcelain corpus seed once;
+  the scheduled fuzz workflow runs a bounded 30-second campaign.
+- `make ci-tools-cov` covers the repository-owned CI validators. `make cov`
+  enforces its preserved 85% total floor and checked-in individual package
+  floors from `.ci/coverage-ratchet.json`
+  and emits JSON results in `.artifacts`.
 - `make automation-check`
 - `make lint`
 - `make security`
@@ -25,14 +44,23 @@ Tool versions are pinned in `Makefile`:
 
 - `golangci-lint`: `v2.9.0`
 - `gosec`: `v2.22.11`
-- Go toolchain target: `go1.26.5`
-- Coverage floor: `COVERAGE_MIN`; safety and failure-path tests keep it enforced.
+- Go toolchain target: `go1.26.6`
+- Coverage floors: `.ci/coverage-ratchet.json`; safety and failure-path tests keep the checked-in total and package ratchets enforced.
 - `GOSEC_FLAGS`: currently excludes `G204` because wtgc intentionally shells
   out to Git through argument-vector subprocess calls. Source changes to the
   command runner should still receive manual security review.
 - `make vuln`: runs `govulncheck` against the configured package pattern.
-- `make suppressions`: rejects inline static-analysis suppressions so
-  exceptions stay central and reviewable.
+- `make suppressions`: compares new suppressions with `SUPPRESSION_BASE` and
+  requires `.ci/static-suppressions.json` entries with location, rationale,
+  owner, removal condition, and an existing GitHub issue URL. The trusted
+  suppression workflow can create a missing tracking issue but deliberately
+  fails until its URL is committed; local/offline checks never claim an issue
+  exists. The central `G204` Gosec policy remains reviewed in `Makefile`.
+  Its contract tests require POSIX `sh`, Git, Python 3, and Node.js.
+- `make harness-check` validates and smoke-installs the pinned harness skill;
+  it requires Node.js `>=22.20` and `uv`. CI supplies Node 24 and installs a
+  pinned, checksum-verified `uv` wheel into an isolated runner-temp virtual
+  environment before invoking `make ci`.
 - `make automation-check`: validates shell syntax, GitHub Actions pinning, and
   workflow and Lefthook YAML parsing, plus the queue-me workflow/controller
   contracts. Ruby and Node.js are required development tools so this validation
