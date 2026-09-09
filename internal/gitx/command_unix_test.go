@@ -24,12 +24,16 @@ func TestRunCancellationKillsGitProcessGroup(t *testing.T) {
 	dir := t.TempDir()
 	parentFile := filepath.Join(dir, "parent.pid")
 	childFile := filepath.Join(dir, "child.pid")
+	parentTemporaryFile := parentFile + ".tmp"
+	childTemporaryFile := childFile + ".tmp"
 	script := filepath.Join(dir, "git")
 	content := "#!/bin/sh\n" +
-		"printf '%s' \"$$\" > " + quoteShell(parentFile) + "\n" +
+		"printf '%s' \"$$\" > " + quoteShell(parentTemporaryFile) + "\n" +
+		"mv " + quoteShell(parentTemporaryFile) + " " + quoteShell(parentFile) + "\n" +
 		"sleep 60 &\n" +
 		"child=$!\n" +
-		"printf '%s' \"$child\" > " + quoteShell(childFile) + "\n" +
+		"printf '%s' \"$child\" > " + quoteShell(childTemporaryFile) + "\n" +
+		"mv " + quoteShell(childTemporaryFile) + " " + quoteShell(childFile) + "\n" +
 		"wait \"$child\"\n"
 	writeTestExecutable(t, script, content)
 
