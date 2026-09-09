@@ -90,6 +90,8 @@ wtgc clean --scan-root "$HOME/Projects" --json
 
 Worktree removal keeps the local branch. Add `--delete-branch` only when you
 also intend to delete branches after their worktrees are safely removed.
+Provider-confirmed squash candidates always retain their local branch, so an
+interactive prompt states that outcome before removing the worktree.
 
 Git commands have no deadline by default. For hooks and scheduled jobs, set
 `WTGC_GIT_TIMEOUT=2m` (or another positive Go duration) to apply a deadline to

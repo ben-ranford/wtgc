@@ -115,7 +115,11 @@ func confirmer(input io.Reader, output io.Writer, deleteBranch bool) func(model.
 		}
 		suffix := ""
 		if deleteBranch && worktree.Branch != "" && !worktree.Prunable {
-			suffix = " and delete its local branch"
+			if worktree.WorktreeDetails != nil && worktree.ProviderProof.HeadSHA != "" {
+				suffix = " and retain its local branch (provider squash proof)"
+			} else {
+				suffix = " and delete its local branch"
+			}
 		}
 		fmt.Fprintf(output, "%s %s%s? [y/N] ", action, report.SafeHumanText(worktree.Path), suffix)
 		answer, err := reader.ReadString('\n')

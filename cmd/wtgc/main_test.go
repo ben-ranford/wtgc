@@ -147,6 +147,28 @@ func TestRunUsageError(t *testing.T) {
 	}
 }
 
+func TestConfirmerDescribesBranchOutcomeAccurately(t *testing.T) {
+	tests := []struct {
+		name     string
+		worktree model.Worktree
+		want     string
+	}{
+		{name: "local ancestry", worktree: model.Worktree{Path: "/local", Branch: "feature"}, want: "remove /local and delete its local branch? [y/N] "},
+		{name: "provider squash", worktree: model.Worktree{Path: "/provider", Branch: "feature", WorktreeDetails: &model.WorktreeDetails{ProviderProof: model.ProviderProof{HeadSHA: "abc123"}}}, want: "remove /provider and retain its local branch (provider squash proof)? [y/N] "},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			var output bytes.Buffer
+			if !confirmer(strings.NewReader("yes\n"), &output, true)(test.worktree) {
+				t.Fatal("confirmation was rejected")
+			}
+			if got := output.String(); got != test.want {
+				t.Fatalf("prompt = %q, want %q", got, test.want)
+			}
+		})
+	}
+}
+
 func TestRunWritesJSONReportFromInjectedBackend(t *testing.T) {
 	t.Parallel()
 	var stdout, stderr bytes.Buffer

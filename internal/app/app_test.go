@@ -196,6 +196,22 @@ func TestProviderProofRequiresExactIdentityAndSelectedDefaultReachability(t *tes
 	}
 }
 
+func TestExecuteAllowsCanonicalProviderRepositoryCasing(t *testing.T) {
+	now := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
+	proof := validProviderProof(now)
+	proof.HeadOwner, proof.HeadRepo, proof.BaseOwner, proof.BaseRepo = "OWNER", "REPO", "Owner", "Repo"
+	backend := newFakeGit(branchRecord("feature"))
+	backend.clean = []bool{true, true}
+	backend.ancestorResults = []bool{false, true, true, false, true, true}
+	inv, err := New(backend).Run(context.Background(), Options{Roots: []string{"/scan"}, Execute: true, Provider: &proofSequence{proofs: []provider.PullRequest{proof, proof}}, Now: func() time.Time { return now }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if backend.removeCalls != 1 || !inv.Worktrees[0].Removed {
+		t.Fatalf("item=%+v removes=%d", inv.Worktrees[0], backend.removeCalls)
+	}
+}
+
 func TestProviderProofRejectsLocalAndSelectedDefaultReachabilityFailures(t *testing.T) {
 	now := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
 	for _, test := range []struct {
@@ -363,6 +379,7 @@ func TestExecuteRejectsChangedProviderProofTuple(t *testing.T) {
 		{name: "pull request number", change: func(p *provider.PullRequest) { p.Number++ }},
 		{name: "merged timestamp", change: func(p *provider.PullRequest) { p.MergedAt = p.MergedAt.Add(-time.Second) }},
 		{name: "merge commit", change: func(p *provider.PullRequest) { p.MergeCommitSHA = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" }},
+		{name: "head SHA", change: func(p *provider.PullRequest) { p.HeadSHA = "def456" }},
 		{name: "head remote", prepare: func(f *fakeGit) {
 			f.providerUpstreams = []providerMapping{{remote: "origin", branch: "feature", url: "https://github.com/owner/repo.git"}, {remote: "fork", branch: "feature", url: "https://github.com/owner/repo.git"}}
 		}},
@@ -387,6 +404,9 @@ func TestExecuteRejectsChangedProviderProofTuple(t *testing.T) {
 		{name: "base ref", change: func(p *provider.PullRequest) { p.BaseRef = "trunk" }, prepare: func(f *fakeGit) {
 			f.providerDefaults = []providerMapping{{remote: "origin", branch: "main", url: "https://github.com/owner/repo.git"}, {remote: "origin", branch: "trunk", url: "https://github.com/owner/repo.git"}}
 		}},
+		{name: "canonical repository casing", change: func(p *provider.PullRequest) {
+			p.HeadOwner, p.HeadRepo, p.BaseOwner, p.BaseRepo = "OWNER", "REPO", "Owner", "Repo"
+		}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			changed := base
@@ -402,6 +422,12 @@ func TestExecuteRejectsChangedProviderProofTuple(t *testing.T) {
 			inv, err := New(backend).Run(context.Background(), Options{Roots: []string{"/scan"}, Execute: true, Provider: &proofSequence{proofs: []provider.PullRequest{base, changed}}, Now: func() time.Time { return now }})
 			if err != nil {
 				t.Fatal(err)
+			}
+			if test.name == "canonical repository casing" {
+				if backend.removeCalls != 1 || !inv.Worktrees[0].Removed {
+					t.Fatalf("item=%+v removes=%d", inv.Worktrees[0], backend.removeCalls)
+				}
+				return
 			}
 			if backend.removeCalls != 0 || inv.Worktrees[0].Classification != model.Kept {
 				t.Fatalf("item=%+v removes=%d", inv.Worktrees[0], backend.removeCalls)

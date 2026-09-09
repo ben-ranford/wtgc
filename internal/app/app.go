@@ -360,7 +360,7 @@ func (a *App) providerProof(ctx context.Context, repo model.Repository, record m
 	if err != nil {
 		return provider.PullRequest{}, false, providerFailureCategory(err)
 	}
-	if proof.Number <= 0 || proof.MergedAt.IsZero() || proof.MergedAt.After(now) || proof.HeadSHA != record.Head || proof.HeadOwner != ho || proof.HeadRepo != hr || proof.HeadRef != headRef || proof.BaseOwner != bo || proof.BaseRepo != br || proof.BaseRef != baseRef || !fullOID(proof.MergeCommitSHA) {
+	if proof.Number <= 0 || proof.MergedAt.IsZero() || proof.MergedAt.After(now) || proof.HeadSHA != record.Head || !sameGitHubRepository(proof.HeadOwner, proof.HeadRepo, ho, hr) || proof.HeadRef != headRef || !sameGitHubRepository(proof.BaseOwner, proof.BaseRepo, bo, br) || proof.BaseRef != baseRef || !fullOID(proof.MergeCommitSHA) {
 		return provider.PullRequest{}, false, "proof identity is invalid"
 	}
 	proof.HeadRemote, proof.BaseRemote = headRemote, trackingRemote
@@ -652,7 +652,22 @@ func revalidationDecision(previous, fresh model.Worktree, now time.Time) (model.
 func providerProofChanged(previous, fresh model.Worktree) bool {
 	old := previous.WorktreeDetails != nil && previous.ProviderProof.HeadSHA != ""
 	current := fresh.WorktreeDetails != nil && fresh.ProviderProof.HeadSHA != ""
-	return old != current || (old && fresh.ProviderProof != previous.ProviderProof)
+	return old != current || (old && !sameProviderProof(previous.ProviderProof, fresh.ProviderProof))
+}
+
+func sameProviderProof(previous, fresh model.ProviderProof) bool {
+	return previous.Kind == fresh.Kind &&
+		previous.HeadRemote == fresh.HeadRemote && previous.BaseRemote == fresh.BaseRemote &&
+		previous.Number == fresh.Number && previous.MergedAt == fresh.MergedAt &&
+		previous.MergeCommitSHA == fresh.MergeCommitSHA && previous.HeadSHA == fresh.HeadSHA &&
+		sameGitHubRepository(previous.HeadOwner, previous.HeadRepo, fresh.HeadOwner, fresh.HeadRepo) && previous.HeadRef == fresh.HeadRef &&
+		sameGitHubRepository(previous.BaseOwner, previous.BaseRepo, fresh.BaseOwner, fresh.BaseRepo) && previous.BaseRef == fresh.BaseRef
+}
+
+// GitHub canonicalizes repository owner and name casing, but refs and object
+// IDs remain exact proof components.
+func sameGitHubRepository(owner, repo, wantOwner, wantRepo string) bool {
+	return strings.EqualFold(owner, wantOwner) && strings.EqualFold(repo, wantRepo)
 }
 
 func retentionRevalidationFailure(previous, fresh model.Worktree, now time.Time) string {

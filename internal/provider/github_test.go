@@ -25,6 +25,16 @@ func TestGitHubAcceptsOnlyExactIdentity(t *testing.T) {
 		t.Fatalf("proof=%+v err=%v", p, err)
 	}
 }
+
+func TestGitHubAcceptsCanonicalRepositoryCasingOnly(t *testing.T) {
+	c := NewGitHub(&http.Client{Transport: roundTrip(func(*http.Request) (*http.Response, error) {
+		body := `[{"state":"closed","merged_at":"2026-01-02T03:04:05Z","merge_commit_sha":"merge","head":{"sha":"oid","ref":"feature","repo":{"name":"Source","owner":{"login":"Fork"}}},"base":{"ref":"main","repo":{"name":"Target","owner":{"login":"Base"}}}}]`
+		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(body)), Header: make(http.Header)}, nil
+	})})
+	if _, err := c.FindMerged(context.Background(), Query{HeadOwner: "fork", HeadRepo: "source", HeadRef: "feature", HeadSHA: "oid", BaseOwner: "base", BaseRepo: "target", BaseRef: "main"}); err != nil {
+		t.Fatalf("canonical repository casing rejected: %v", err)
+	}
+}
 func TestGitHubRejectsWrongOIDAndOversizedResponse(t *testing.T) {
 	c := NewGitHub(&http.Client{Transport: roundTrip(func(*http.Request) (*http.Response, error) {
 		return &http.Response{StatusCode: 200, Body: io.NopCloser(strings.NewReader(`[{"state":"closed","number":7,"merged_at":"2026-01-02T03:04:05Z","merge_commit_sha":"m","head":{"sha":"wrong","ref":"f","repo":{"name":"r","owner":{"login":"o"}}},"base":{"ref":"b","repo":{"name":"x","owner":{"login":"y"}}}}]`))}, nil

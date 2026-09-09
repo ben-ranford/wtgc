@@ -116,7 +116,13 @@ func exactProof(pulls []githubPull, q Query) (PullRequest, bool, error) {
 }
 
 func matches(p githubPull, q Query) bool {
-	return p.State == "closed" && p.MergedAt != nil && !p.MergedAt.IsZero() && p.Head.SHA == q.HeadSHA && p.Head.Ref == q.HeadRef && p.Head.Repo.Owner.Login == q.HeadOwner && p.Head.Repo.Name == q.HeadRepo && p.Base.Ref == q.BaseRef && p.Base.Repo.Owner.Login == q.BaseOwner && p.Base.Repo.Name == q.BaseRepo
+	return p.State == "closed" && p.MergedAt != nil && !p.MergedAt.IsZero() && p.Head.SHA == q.HeadSHA && p.Head.Ref == q.HeadRef && sameRepository(p.Head.Repo.Owner.Login, p.Head.Repo.Name, q.HeadOwner, q.HeadRepo) && p.Base.Ref == q.BaseRef && sameRepository(p.Base.Repo.Owner.Login, p.Base.Repo.Name, q.BaseOwner, q.BaseRepo)
+}
+
+// GitHub repository owner and name routing is case-insensitive; refs and
+// object IDs remain exact immutable proof components.
+func sameRepository(owner, repo, wantOwner, wantRepo string) bool {
+	return strings.EqualFold(owner, wantOwner) && strings.EqualFold(repo, wantRepo)
 }
 
 func validQuery(q Query) error {
