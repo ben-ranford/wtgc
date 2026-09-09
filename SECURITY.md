@@ -6,7 +6,7 @@ Security fixes are supported on the current release line and the default branch.
 
 | Version | Supported |
 | --- | --- |
-| 1.1.x | :white_check_mark: |
+| [Latest published release line](https://github.com/ben-ranford/wtgc/releases/latest) | :white_check_mark: |
 | main | :white_check_mark: |
 
 ## Reporting a Vulnerability
