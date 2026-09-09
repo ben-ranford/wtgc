@@ -296,10 +296,52 @@ jobs:
           end
           RUBY
 
+      - name: Commit candidate formula snapshot
+        working-directory: homebrew-tap
+        shell: /usr/bin/env -u BASH_ENV -u ENV -u PROMPT_COMMAND -u PS4 -u SHELLOPTS -u BASHOPTS /bin/bash --noprofile --norc -euo pipefail {0}
+        run: |
+          git_bin=/usr/bin/git
+          mktemp_bin=/usr/bin/mktemp
+          if [ ! -x "${git_bin}" ] || [ ! -x "${mktemp_bin}" ]; then
+            echo "::error::Trusted binaries are not available for Homebrew validation" >&2
+            exit 1
+          fi
+          export PATH=/usr/bin:/bin
+
+          git_home="$("${mktemp_bin}" -d)"
+          trap 'rm -rf "${git_home}"' EXIT
+          git_safe() {
+            env -i \
+              HOME="${git_home}" \
+              PATH="${PATH}" \
+              GIT_TERMINAL_PROMPT=0 \
+              GIT_CONFIG_NOSYSTEM=1 \
+              "${git_bin}" \
+              -c core.hooksPath=/dev/null \
+              -c credential.helper= \
+              -c protocol.file.allow=never \
+              -c protocol.ext.allow=never \
+              "$@"
+          }
+
+          git_safe add Formula/wtgc.rb
+          if git_safe diff --cached --quiet; then
+            exit 0
+          fi
+          git_safe \
+            -c user.name=github-actions[bot] \
+            -c user.email=41898282+github-actions[bot]@users.noreply.github.com \
+            commit --no-verify -m "wtgc ${RELEASE_TAG} validation snapshot"
+
       - name: Validate formula
         working-directory: homebrew-tap
         run: |
           set -euo pipefail
+          formula_version="${RELEASE_TAG#wtgc-v}"
+          if [ "${formula_version}" = "${RELEASE_TAG}" ]; then
+            echo "release tag must start with wtgc-v: ${RELEASE_TAG}" >&2
+            exit 1
+          fi
           if brew tap | grep -Fx 'ben-ranford/tap' >/dev/null; then
             brew untap ben-ranford/tap
           fi
@@ -308,6 +350,16 @@ jobs:
           brew audit --strict --online ben-ranford/tap/wtgc
           export HOMEBREW_NO_SANDBOX_LINUX=1
           brew install --build-from-source ben-ranford/tap/wtgc
+          installed_version="$("$(brew --prefix ben-ranford/tap/wtgc)/bin/wtgc" --version)"
+          expected_version_prefix="wtgc v${formula_version} ("
+          case "${installed_version}" in
+            "${expected_version_prefix}"*)
+              ;;
+            *)
+            echo "installed Homebrew wtgc version does not match ${RELEASE_TAG}: ${installed_version}" >&2
+            exit 1
+              ;;
+          esac
           brew test ben-ranford/tap/wtgc
 
   update-homebrew-tap:
@@ -476,3 +528,85 @@ jobs:
 
           echo "Failed to push Homebrew formula after retries" >&2
           exit 1
+
+  verify-published-homebrew-tap:
+    needs: update-homebrew-tap
+    if: ${{ needs.update-homebrew-tap.result == 'success' }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    env:
+      RELEASE_TAG: ${{ inputs.tag_name }}
+      SOURCE_SHA: ${{ inputs.sha }}
+      SOURCE_REPO: ${{ github.repository }}
+    steps:
+      - name: Set up Homebrew
+        uses: Homebrew/actions/setup-homebrew@3cdb78d0f62ad29dd32de765782654f4eedea607 # v2026.08.31.1
+
+      - name: Clone published tap repository anonymously
+        shell: /usr/bin/env -u BASH_ENV -u ENV -u PROMPT_COMMAND -u PS4 -u SHELLOPTS -u BASHOPTS /bin/bash --noprofile --norc -euo pipefail {0}
+        run: |
+          git_bin=/usr/bin/git
+          mktemp_bin=/usr/bin/mktemp
+          if [ ! -x "${git_bin}" ] || [ ! -x "${mktemp_bin}" ]; then
+            echo "::error::Trusted binaries are not available for Homebrew publication verification" >&2
+            exit 1
+          fi
+          export PATH=/usr/bin:/bin
+
+          git_home="$("${mktemp_bin}" -d)"
+          trap 'rm -rf "${git_home}"' EXIT
+          env -i \
+            HOME="${git_home}" \
+            PATH="${PATH}" \
+            GIT_TERMINAL_PROMPT=0 \
+            GIT_CONFIG_NOSYSTEM=1 \
+            "${git_bin}" \
+            -c core.hooksPath=/dev/null \
+            -c protocol.file.allow=never \
+            -c protocol.ext.allow=never \
+            clone --origin origin --branch main --single-branch \
+            https://github.com/ben-ranford/homebrew-tap.git homebrew-tap
+
+      - name: Verify published formula
+        working-directory: homebrew-tap
+        run: |
+          set -euo pipefail
+          formula_version="${RELEASE_TAG#wtgc-v}"
+          if [ "${formula_version}" = "${RELEASE_TAG}" ]; then
+            echo "release tag must start with wtgc-v: ${RELEASE_TAG}" >&2
+            exit 1
+          fi
+          expected_source_url="https://github.com/${SOURCE_REPO}/archive/${SOURCE_SHA}.tar.gz"
+          formula_url_counts="$(awk -v expected_source_url="${expected_source_url}" '
+            /^  url "[^"]+"$/ {
+              total++
+              if ($0 == "  url \"" expected_source_url "\"") {
+                expected++
+              }
+            }
+            END { print expected + 0, total + 0 }
+          ' Formula/wtgc.rb)"
+          if [ "${formula_url_counts}" != "1 1" ]; then
+            echo "published Homebrew formula must contain exactly the requested release source URL" >&2
+            exit 1
+          fi
+          if brew tap | grep -Fx 'ben-ranford/tap' >/dev/null; then
+            brew untap ben-ranford/tap
+          fi
+          brew tap --custom-remote ben-ranford/tap "file://${PWD}"
+          brew trust ben-ranford/tap
+          brew audit --strict --online ben-ranford/tap/wtgc
+          export HOMEBREW_NO_SANDBOX_LINUX=1
+          brew install --build-from-source ben-ranford/tap/wtgc
+          installed_version="$("$(brew --prefix ben-ranford/tap/wtgc)/bin/wtgc" --version)"
+          expected_version_prefix="wtgc v${formula_version} ("
+          case "${installed_version}" in
+            "${expected_version_prefix}"*)
+              ;;
+            *)
+            echo "installed published Homebrew wtgc version does not match ${RELEASE_TAG}: ${installed_version}" >&2
+            exit 1
+              ;;
+          esac
+          brew test ben-ranford/tap/wtgc

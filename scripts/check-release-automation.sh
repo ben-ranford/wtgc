@@ -50,6 +50,12 @@ expect_matches() {
   printf '%s\n' "$subject" | grep -E -- "$pattern" >/dev/null || fail "$message"
 }
 
+line_number() {
+  subject="$1"
+  pattern="$2"
+  printf '%s\n' "$subject" | awk -v pattern="$pattern" '$0 ~ pattern { print NR; exit }'
+}
+
 workflow_job() {
   job="$1"
   workflow="${2:-.github/workflows/release.yml}"
@@ -63,10 +69,12 @@ workflow_job() {
 tap_gate="$(workflow_job homebrew-tap-token-gate)"
 tap_validation="$(workflow_job validate-homebrew-tap)"
 tap_publish="$(workflow_job update-homebrew-tap)"
+tap_public_validation="$(workflow_job verify-published-homebrew-tap)"
 
 [ -n "$tap_gate" ] || fail "release workflow is missing the Homebrew token gate job"
 [ -n "$tap_validation" ] || fail "release workflow is missing the tokenless Homebrew validation job"
 [ -n "$tap_publish" ] || fail "release workflow is missing the Homebrew tap publication job"
+[ -n "$tap_public_validation" ] || fail "release workflow is missing the published Homebrew validation job"
 
 expect_contains "$tap_gate" "HOMEBREW_TAP_TOKEN" "Homebrew token gate must inspect HOMEBREW_TAP_TOKEN"
 expect_contains "$tap_gate" "outputs:" "Homebrew token gate must expose token availability to downstream jobs"
@@ -79,9 +87,35 @@ expect_contains "$tap_validation" "brew test" "Homebrew validation must test the
 expect_contains "$tap_validation" "SOURCE_SHA" "Homebrew validation must bind its formula to the release SHA"
 expect_contains "$tap_validation" "archive/\${SOURCE_SHA}.tar.gz" "Homebrew validation must use an immutable source archive"
 expect_contains "$tap_validation" "sha256" "Homebrew validation must checksum the source archive"
+expect_contains "$tap_validation" "Commit candidate formula snapshot" "Homebrew validation must commit the generated candidate formula before tapping it"
+expect_contains "$tap_validation" "commit --no-verify -m \"wtgc \${RELEASE_TAG} validation snapshot\"" "Homebrew validation must create a local candidate snapshot"
+expect_contains "$tap_validation" "expected_version_prefix=\"wtgc v\${formula_version} (\"" "Homebrew validation must require the requested installed version prefix"
+expect_contains "$tap_validation" "installed_version" "Homebrew validation must inspect the installed binary version"
+regenerate_formula_line="$(line_number "$tap_validation" '^[[:space:]]*- name: Regenerate wtgc formula$')"
+candidate_snapshot_line="$(line_number "$tap_validation" '^[[:space:]]*- name: Commit candidate formula snapshot$')"
+candidate_tap_line="$(line_number "$tap_validation" 'brew tap --custom-remote')"
+[ -n "$regenerate_formula_line" ] && [ -n "$candidate_snapshot_line" ] && [ -n "$candidate_tap_line" ] || fail "Homebrew validation must include formula generation, snapshot commit, and tap steps"
+[ "$regenerate_formula_line" -lt "$candidate_snapshot_line" ] && [ "$candidate_snapshot_line" -lt "$candidate_tap_line" ] || fail "Homebrew validation must regenerate, commit, then tap the candidate formula"
 case "$tap_validation" in
   *HOMEBREW_TAP_TOKEN*)
     fail "Homebrew validation must not receive the tap token"
+    ;;
+  *)
+    ;;
+esac
+
+expect_contains "$tap_public_validation" "needs: update-homebrew-tap" "Published Homebrew validation must wait for publication"
+expect_contains "$tap_public_validation" "Clone published tap repository anonymously" "Published Homebrew validation must clone the public tap without a token"
+expect_contains "$tap_public_validation" "brew install --build-from-source" "Published Homebrew validation must install the published formula"
+expect_contains "$tap_public_validation" "brew test" "Published Homebrew validation must test the published formula"
+expect_contains "$tap_public_validation" "expected_version_prefix=\"wtgc v\${formula_version} (\"" "Published Homebrew validation must require the requested installed version prefix"
+expect_contains "$tap_public_validation" "SOURCE_SHA: \${{ inputs.sha }}" "Published Homebrew validation must bind the formula to the release SHA"
+expect_contains "$tap_public_validation" "SOURCE_REPO: \${{ github.repository }}" "Published Homebrew validation must bind the formula to the source repository"
+expect_contains "$tap_public_validation" "https://github.com/\${SOURCE_REPO}/archive/\${SOURCE_SHA}.tar.gz" "Published Homebrew validation must require the release source archive"
+expect_contains "$tap_public_validation" "formula_url_counts" "Published Homebrew validation must reject missing or duplicate source URLs"
+case "$tap_public_validation" in
+  *HOMEBREW_TAP_TOKEN*)
+    fail "Published Homebrew validation must not receive the tap token"
     ;;
   *)
     ;;
@@ -124,6 +158,33 @@ git -C "$test_root/repo" commit -qam second
 second_sha="$(git -C "$test_root/repo" rev-parse HEAD)"
 expect_ref_failure "$test_root/repo" "$(pwd -P)/scripts/verify-release-ref.sh" v1.0.0 "$second_sha"
 expect_ref_failure "$test_root/repo" "$(pwd -P)/scripts/verify-release-ref.sh" missing "$first_sha"
+
+mkdir -p "$test_root/tap-source/Formula"
+git -C "$test_root/tap-source" init -q -b main
+git -C "$test_root/tap-source" config user.name "wtgc release test"
+git -C "$test_root/tap-source" config user.email "wtgc-release-test@example.invalid"
+printf '  version "1.0.0"\n' > "$test_root/tap-source/Formula/wtgc.rb"
+git -C "$test_root/tap-source" add Formula/wtgc.rb
+git -C "$test_root/tap-source" commit -qm initial-formula
+printf '  version "1.1.0"\n' > "$test_root/tap-source/Formula/wtgc.rb"
+git clone -q --branch main --single-branch "$test_root/tap-source" "$test_root/tap-before-commit"
+expect_contains "$(cat "$test_root/tap-before-commit/Formula/wtgc.rb")" 'version "1.0.0"' "an anonymous tap clone must not see an uncommitted candidate formula"
+git -C "$test_root/tap-source" add Formula/wtgc.rb
+git -C "$test_root/tap-source" commit -qm candidate-formula
+git clone -q --branch main --single-branch "$test_root/tap-source" "$test_root/tap-after-commit"
+expect_contains "$(cat "$test_root/tap-after-commit/Formula/wtgc.rb")" 'version "1.1.0"' "an anonymous tap clone must see the committed candidate formula"
+
+matches_requested_release_version() {
+  installed_version="$1"
+  formula_version="$2"
+  case "$installed_version" in
+    "wtgc v${formula_version} ("*) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+matches_requested_release_version 'wtgc v1.1.0 (commit homebrew, built homebrew)' 1.1.0 || fail "expected Homebrew version prefix was rejected"
+expect_failure matches_requested_release_version 'wtgc v1.0.0 (commit homebrew, built homebrew)' 1.1.0
 
 mkdir -p "$test_root/bin" "$test_root/assets" "$test_root/gh-state/assets"
 printf 'archive\n' > "$test_root/assets/wtgc_v1.0.0_linux_amd64.tar.gz"
