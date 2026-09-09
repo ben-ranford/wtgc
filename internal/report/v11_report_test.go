@@ -145,6 +145,15 @@ func TestV11HumanMetadataEscapesAttackerControlledText(t *testing.T) {
 	}
 }
 
+type inventorySchemaDocument struct {
+	Properties  map[string]json.RawMessage `json:"properties"`
+	Definitions struct {
+		Worktree struct {
+			Properties map[string]json.RawMessage `json:"properties"`
+		} `json:"worktree"`
+	} `json:"$defs"`
+}
+
 func assertDocumentMatchesPublishedSchemaProperties(t *testing.T, document map[string]any) {
 	t.Helper()
 	_, source, _, ok := runtime.Caller(0)
@@ -155,14 +164,7 @@ func assertDocumentMatchesPublishedSchemaProperties(t *testing.T, document map[s
 	if err != nil {
 		t.Fatalf("read inventory schema: %v", err)
 	}
-	var schema struct {
-		Properties  map[string]json.RawMessage `json:"properties"`
-		Definitions struct {
-			Worktree struct {
-				Properties map[string]json.RawMessage `json:"properties"`
-			} `json:"worktree"`
-		} `json:"$defs"`
-	}
+	var schema inventorySchemaDocument
 	if err := json.Unmarshal(data, &schema); err != nil {
 		t.Fatalf("parse inventory schema: %v", err)
 	}

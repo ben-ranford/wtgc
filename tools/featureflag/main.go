@@ -52,23 +52,9 @@ func validate(path string) error {
 }
 
 func validateIn(path, repositoryPath string) error {
-	root, err := os.OpenRoot(filepath.Dir(path))
+	doc, err := readDeclarations(path)
 	if err != nil {
-		return fmt.Errorf("read %q: %w", path, err)
-	}
-	defer root.Close()
-	b, err := root.ReadFile(filepath.Base(path))
-	if err != nil {
-		return fmt.Errorf("read %q: %w", path, err)
-	}
-	var doc declarationFile
-	dec := json.NewDecoder(strings.NewReader(string(b)))
-	dec.DisallowUnknownFields()
-	if err := dec.Decode(&doc); err != nil {
-		return fmt.Errorf("parse %q: %w", path, err)
-	}
-	if err := dec.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
-		return errors.New("declaration file contains multiple JSON values")
+		return err
 	}
 	repository, err := os.OpenRoot(repositoryPath)
 	if err != nil {
@@ -77,35 +63,64 @@ func validateIn(path, repositoryPath string) error {
 	defer repository.Close()
 	seen := map[string]bool{}
 	for _, item := range doc.Flags {
-		if !flagName.MatchString(item.Name) {
-			return fmt.Errorf("invalid flag name %q", item.Name)
-		}
-		if seen[item.Name] {
-			return fmt.Errorf("duplicate declaration %q", item.Name)
-		}
-		seen[item.Name] = true
-		if strings.TrimSpace(item.Owner) == "" || strings.TrimSpace(item.Issue) == "" || strings.TrimSpace(item.RemovalCondition) == "" {
-			return fmt.Errorf("%q must declare owner, issue, and removal_condition", item.Name)
-		}
-		if len(item.References) == 0 {
-			return fmt.Errorf("%q is stale: no source references declared", item.Name)
-		}
-		found := false
-		for _, ref := range item.References {
-			if filepath.IsAbs(ref) || strings.Contains(ref, "..") {
-				return fmt.Errorf("%q has unsafe reference %q", item.Name, ref)
-			}
-			source, readErr := repository.ReadFile(ref)
-			if readErr != nil {
-				return fmt.Errorf("%q is stale: read %q: %w", item.Name, ref, readErr)
-			}
-			if strings.Contains(string(source), item.Name) {
-				found = true
-			}
-		}
-		if !found {
-			return fmt.Errorf("%q is stale: its name is absent from declared source references", item.Name)
+		if err := validateDeclaration(item, repository, seen); err != nil {
+			return err
 		}
 	}
 	return nil
+}
+
+func readDeclarations(path string) (declarationFile, error) {
+	root, err := os.OpenRoot(filepath.Dir(path))
+	if err != nil {
+		return declarationFile{}, fmt.Errorf("read %q: %w", path, err)
+	}
+	defer root.Close()
+	b, err := root.ReadFile(filepath.Base(path))
+	if err != nil {
+		return declarationFile{}, fmt.Errorf("read %q: %w", path, err)
+	}
+	var doc declarationFile
+	dec := json.NewDecoder(strings.NewReader(string(b)))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&doc); err != nil {
+		return declarationFile{}, fmt.Errorf("parse %q: %w", path, err)
+	}
+	if err := dec.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
+		return declarationFile{}, errors.New("declaration file contains multiple JSON values")
+	}
+	return doc, nil
+}
+
+func validateDeclaration(item declaration, repository *os.Root, seen map[string]bool) error {
+	if !flagName.MatchString(item.Name) {
+		return fmt.Errorf("invalid flag name %q", item.Name)
+	}
+	if seen[item.Name] {
+		return fmt.Errorf("duplicate declaration %q", item.Name)
+	}
+	seen[item.Name] = true
+	if strings.TrimSpace(item.Owner) == "" || strings.TrimSpace(item.Issue) == "" || strings.TrimSpace(item.RemovalCondition) == "" {
+		return fmt.Errorf("%q must declare owner, issue, and removal_condition", item.Name)
+	}
+	if len(item.References) == 0 {
+		return fmt.Errorf("%q is stale: no source references declared", item.Name)
+	}
+	found := false
+	for _, ref := range item.References {
+		if filepath.IsAbs(ref) || strings.Contains(ref, "..") {
+			return fmt.Errorf("%q has unsafe reference %q", item.Name, ref)
+		}
+		source, err := repository.ReadFile(ref)
+		if err != nil {
+			return fmt.Errorf("%q is stale: read %q: %w", item.Name, ref, err)
+		}
+		if strings.Contains(string(source), item.Name) {
+			found = true
+		}
+	}
+	if found {
+		return nil
+	}
+	return fmt.Errorf("%q is stale: its name is absent from declared source references", item.Name)
 }

@@ -30,7 +30,7 @@ func run(args []string, stderr io.Writer) int {
 	totalOut := fs.String("total-out", "", "total result JSON")
 	packagesOut := fs.String("packages-out", "", "package result JSON")
 	failuresOut := fs.String("package-failures-out", "", "failure result JSON")
-	if e := fs.Parse(args); e != nil {
+	if err := fs.Parse(args); err != nil {
 		return 2
 	}
 	if *profile == "" || *totalOut == "" || *packagesOut == "" || *failuresOut == "" {
@@ -138,22 +138,9 @@ func readProfile(path string) (map[string]counter, error) {
 		return nil, fmt.Errorf("invalid coverage profile header")
 	}
 	for s.Scan() {
-		parts := strings.Fields(s.Text())
-		if len(parts) != 3 {
-			return nil, fmt.Errorf("invalid coverage line %q", s.Text())
-		}
-		colon := strings.Index(parts[0], ":")
-		if colon < 1 {
-			return nil, fmt.Errorf("invalid package path %q", parts[0])
-		}
-		pkg := filepath.Dir(parts[0][:colon])
-		statements, e := strconv.ParseInt(parts[1], 10, 64)
-		if e != nil || statements < 0 {
-			return nil, fmt.Errorf("invalid statement count %q", parts[1])
-		}
-		hits, e := strconv.ParseInt(parts[2], 10, 64)
-		if e != nil || hits < 0 {
-			return nil, fmt.Errorf("invalid hit count %q", parts[2])
+		pkg, statements, hits, err := parseProfileRow(s.Text())
+		if err != nil {
+			return nil, err
 		}
 		v := out[pkg]
 		v.total += statements
@@ -169,6 +156,26 @@ func readProfile(path string) (map[string]counter, error) {
 		return nil, fmt.Errorf("coverage profile has no statements")
 	}
 	return out, nil
+}
+
+func parseProfileRow(row string) (string, int64, int64, error) {
+	parts := strings.Fields(row)
+	if len(parts) != 3 {
+		return "", 0, 0, fmt.Errorf("invalid coverage line %q", row)
+	}
+	colon := strings.Index(parts[0], ":")
+	if colon < 1 {
+		return "", 0, 0, fmt.Errorf("invalid package path %q", parts[0])
+	}
+	statements, err := strconv.ParseInt(parts[1], 10, 64)
+	if err != nil || statements < 0 {
+		return "", 0, 0, fmt.Errorf("invalid statement count %q", parts[1])
+	}
+	hits, err := strconv.ParseInt(parts[2], 10, 64)
+	if err != nil || hits < 0 {
+		return "", 0, 0, fmt.Errorf("invalid hit count %q", parts[2])
+	}
+	return filepath.Dir(parts[0][:colon]), statements, hits, nil
 }
 func coverage(v counter) float64 {
 	if v.total == 0 {

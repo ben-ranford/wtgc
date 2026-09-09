@@ -37,68 +37,64 @@ func writeHuman(w io.Writer, inv model.Inventory) error {
 	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
 	fmt.Fprintln(tw, "PATH\tBRANCH\tCLASSIFICATION\tDIRTY\tACTION\tSIZE\tRECLAIMED\tREASON")
 	for _, wt := range inv.Worktrees {
-		reason := wt.Reason
-		if wt.Error != "" {
-			reason = strings.TrimSpace(reason + "; " + wt.Error)
-		}
-		fmt.Fprintf(tw, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
-			SafeHumanText(wt.Path),
-			SafeHumanText(emptyDash(wt.Branch)),
-			wt.Classification,
-			dirtyString(wt.Dirty),
-			action(wt),
-			ByteString(wt.DiskBytes),
-			ByteString(wt.ReclaimedBytes),
-			SafeHumanText(reason),
-		)
-		if wt.WorktreeDetails != nil {
-			for _, warning := range wt.CacheWarnings {
-				detail := warning.Reason
-				if warning.Error != "" {
-					detail += ": " + warning.Error
-				}
-				fmt.Fprintf(tw, "  cache warning\t-\t-\t-\t-\t%s\t-\t%s: %s\n", ByteString(warning.Bytes), SafeHumanText(warning.Path), SafeHumanText(detail))
-			}
-			if wt.Provider != "" {
-				fmt.Fprintf(tw, "  provider\t-\t-\t-\t-\t-\t-\t%s PR #%d %s\n", SafeHumanText(wt.Provider), wt.ProviderPR, SafeHumanText(wt.ProviderURL))
-			}
-			if wt.RetentionBasis != "" {
-				fmt.Fprintf(tw, "  retention\t-\t-\t-\t-\t-\t-\t%s observed=%s eligible=%s remaining=%s\n", SafeHumanText(wt.RetentionBasis), wt.ObservedAt.UTC(), wt.EligibleAt.UTC(), wt.Remaining)
-			}
-		}
+		writeWorktree(tw, wt)
 	}
 	if err := tw.Flush(); err != nil {
 		return err
 	}
+	writeSummary(w, inv)
+	return nil
+}
 
+func writeWorktree(w io.Writer, wt model.Worktree) {
+	reason := withError(wt.Reason, wt.Error)
+	fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", SafeHumanText(wt.Path), SafeHumanText(emptyDash(wt.Branch)), wt.Classification, dirtyString(wt.Dirty), action(wt), ByteString(wt.DiskBytes), ByteString(wt.ReclaimedBytes), SafeHumanText(reason))
+	if wt.WorktreeDetails != nil {
+		writeDetails(w, wt)
+	}
+}
+
+func writeDetails(w io.Writer, wt model.Worktree) {
+	for _, warning := range wt.CacheWarnings {
+		fmt.Fprintf(w, "  cache warning\t-\t-\t-\t-\t%s\t-\t%s: %s\n", ByteString(warning.Bytes), SafeHumanText(warning.Path), SafeHumanText(withSuffix(warning.Reason, warning.Error, ": ")))
+	}
+	if wt.Provider != "" {
+		fmt.Fprintf(w, "  provider\t-\t-\t-\t-\t-\t-\t%s PR #%d %s\n", SafeHumanText(wt.Provider), wt.ProviderPR, SafeHumanText(wt.ProviderURL))
+	}
+	if wt.RetentionBasis != "" {
+		fmt.Fprintf(w, "  retention\t-\t-\t-\t-\t-\t-\t%s observed=%s eligible=%s remaining=%s\n", SafeHumanText(wt.RetentionBasis), wt.ObservedAt.UTC(), wt.EligibleAt.UTC(), wt.Remaining)
+	}
+}
+
+func writeSummary(w io.Writer, inv model.Inventory) {
 	s := inv.Summary
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, "Summary:")
-	safeRoots := make([]string, len(inv.Roots))
-	for i, root := range inv.Roots {
-		safeRoots[i] = SafeHumanText(root)
-	}
-	fmt.Fprintf(w, "  roots: %s\n", strings.Join(safeRoots, ", "))
-	fmt.Fprintf(w, "  dry run: %t\n", inv.DryRun)
-	fmt.Fprintf(w, "  repositories: %d\n", s.Repositories)
-	fmt.Fprintf(w, "  scanned: %d\n", s.Scanned)
-	fmt.Fprintf(w, "  safe: %d\n", s.Safe)
-	fmt.Fprintf(w, "  removed: %d\n", s.Removed)
-	fmt.Fprintf(w, "  skipped: %d\n", s.Skipped)
-	fmt.Fprintf(w, "  pruned: %d\n", s.Pruned)
-	fmt.Fprintf(w, "  potential reclaimable: %s\n", ByteString(s.PotentialBytes))
-	fmt.Fprintf(w, "  reclaimed: %s\n", ByteString(s.ReclaimedBytes))
-	fmt.Fprintf(w, "  cache warnings: %d (%s)\n", s.CacheWarningCount, ByteString(s.CacheWarningBytes))
-	fmt.Fprintf(w, "  duration: %s\n", s.Duration)
-
+	fmt.Fprintf(w, "  roots: %s\n", strings.Join(safeRoots(inv.Roots), ", "))
+	fmt.Fprintf(w, "  dry run: %t\n  repositories: %d\n  scanned: %d\n  safe: %d\n  removed: %d\n  skipped: %d\n  pruned: %d\n", inv.DryRun, s.Repositories, s.Scanned, s.Safe, s.Removed, s.Skipped, s.Pruned)
+	fmt.Fprintf(w, "  potential reclaimable: %s\n  reclaimed: %s\n  cache warnings: %d (%s)\n  duration: %s\n", ByteString(s.PotentialBytes), ByteString(s.ReclaimedBytes), s.CacheWarningCount, ByteString(s.CacheWarningBytes), s.Duration)
 	if len(inv.Errors) > 0 {
 		fmt.Fprintln(w, "  errors:")
 		for _, errText := range inv.Errors {
 			fmt.Fprintf(w, "    - %s\n", SafeHumanText(errText))
 		}
 	}
+}
 
-	return nil
+func safeRoots(roots []string) []string {
+	values := make([]string, len(roots))
+	for i, root := range roots {
+		values[i] = SafeHumanText(root)
+	}
+	return values
+}
+
+func withError(value, err string) string { return withSuffix(value, err, "; ") }
+func withSuffix(value, suffix, separator string) string {
+	if suffix == "" {
+		return value
+	}
+	return strings.TrimSpace(value + separator + suffix)
 }
 
 // SafeHumanText escapes control characters before untrusted text is displayed

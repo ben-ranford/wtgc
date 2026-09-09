@@ -34,7 +34,7 @@ type Query struct {
 	HeadSHA   string
 }
 
-// Client is deliberately independent from Git inspection and cleanup decisions.
-type Client interface {
+// MergeFinder is deliberately independent from Git inspection and cleanup decisions.
+type MergeFinder interface {
 	FindMerged(context.Context, Query) (PullRequest, error)
 }

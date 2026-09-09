@@ -48,7 +48,7 @@ type Options struct {
 	Now            func() time.Time
 	Retention      time.Duration
 	CacheThreshold int64
-	Provider       provider.Client
+	Provider       provider.MergeFinder
 	ProviderRemote string
 	CacheScanner   func(context.Context, string, int64) []cache.Warning
 }
@@ -112,9 +112,6 @@ func (a *App) Run(ctx context.Context, opts Options) (model.Inventory, error) {
 }
 
 func (a *App) addCacheWarnings(ctx context.Context, threshold int64, scanner func(context.Context, string, int64) []cache.Warning, inv *model.Inventory) {
-	if threshold == 0 {
-		threshold = cache.DefaultThreshold
-	}
 	if scanner == nil {
 		scanner = cache.Scan
 	}
@@ -189,7 +186,13 @@ type classificationJob struct {
 	record        model.RegisteredWorktree
 }
 
-func (a *App) scanRepositories(ctx context.Context, repositories []model.Repository, protectedPath string, p provider.Client, providerRemote string, now time.Time, inv *model.Inventory) {
+type classifyOptions struct {
+	provider       provider.MergeFinder
+	providerRemote string
+	now            time.Time
+}
+
+func (a *App) scanRepositories(ctx context.Context, repositories []model.Repository, protectedPath string, p provider.MergeFinder, providerRemote string, now time.Time, inv *model.Inventory) {
 	jobs := a.collectClassificationJobs(ctx, repositories, protectedPath, inv)
 	if len(jobs) == 0 {
 		return
@@ -229,7 +232,7 @@ func (a *App) collectClassificationJobs(ctx context.Context, repositories []mode
 	return jobs
 }
 
-func (a *App) classifyJobs(ctx context.Context, jobs []classificationJob, p provider.Client, providerRemote string, now time.Time, inv *model.Inventory) {
+func (a *App) classifyJobs(ctx context.Context, jobs []classificationJob, p provider.MergeFinder, providerRemote string, now time.Time, inv *model.Inventory) {
 	inv.Worktrees = slices.Grow(inv.Worktrees, len(jobs))
 	jobCh := make(chan classificationJob)
 	resultCh := make(chan model.Worktree, len(jobs))
@@ -243,7 +246,7 @@ func (a *App) classifyJobs(ctx context.Context, jobs []classificationJob, p prov
 		go func() {
 			defer group.Done()
 			for job := range jobCh {
-				resultCh <- a.classify(ctx, job.repo, job.defaultBranch, job.protectedPath, job.record, p, providerRemote, now)
+				resultCh <- a.classify(ctx, job, classifyOptions{provider: p, providerRemote: providerRemote, now: now})
 			}
 		}()
 	}
@@ -262,7 +265,8 @@ func (a *App) classifyJobs(ctx context.Context, jobs []classificationJob, p prov
 	}
 }
 
-func (a *App) classify(ctx context.Context, repo model.Repository, defaultBranch, protectedPath string, record model.RegisteredWorktree, p provider.Client, providerRemote string, now time.Time) model.Worktree {
+func (a *App) classify(ctx context.Context, job classificationJob, options classifyOptions) model.Worktree {
+	repo, defaultBranch, protectedPath, record := job.repo, job.defaultBranch, job.protectedPath, job.record
 	item := model.Worktree{
 		Path:          record.Path,
 		Branch:        record.Branch,
@@ -300,8 +304,8 @@ func (a *App) classify(ctx context.Context, repo model.Repository, defaultBranch
 			item.Classification, item.Reason = model.Kept, "dirty worktree branch tip is not reachable from the local default branch"
 			return item
 		}
-		if p != nil {
-			proof, ok, category := a.providerProof(ctx, repo, record, defaultBranch, p, providerRemote, now)
+		if options.provider != nil {
+			proof, ok, category := a.providerProof(ctx, repo, record, defaultBranch, options.provider, options.providerRemote, options.now)
 			if ok {
 				item.Classification, item.Reason = model.SafeToRemove, "clean squash-merged pull request has exact provider and selected-default reachability proof"
 				details := item.Details()
@@ -335,7 +339,7 @@ func providerProofIdentity(proof provider.PullRequest) model.ProviderProof {
 	return model.ProviderProof{Kind: "github", HeadRemote: proof.HeadRemote, BaseRemote: proof.BaseRemote, Number: proof.Number, MergedAt: proof.MergedAt, MergeCommitSHA: proof.MergeCommitSHA, HeadSHA: proof.HeadSHA, HeadOwner: proof.HeadOwner, HeadRepo: proof.HeadRepo, HeadRef: proof.HeadRef, BaseOwner: proof.BaseOwner, BaseRepo: proof.BaseRepo, BaseRef: proof.BaseRef}
 }
 
-func (a *App) providerProof(ctx context.Context, repo model.Repository, record model.RegisteredWorktree, defaultBranch string, p provider.Client, selectedRemote string, now time.Time) (provider.PullRequest, bool, string) {
+func (a *App) providerProof(ctx context.Context, repo model.Repository, record model.RegisteredWorktree, defaultBranch string, p provider.MergeFinder, selectedRemote string, now time.Time) (provider.PullRequest, bool, string) {
 	headRemote, headRef, headURL, err := a.git.ProviderUpstream(ctx, repo, record.Branch)
 	if err != nil {
 		return provider.PullRequest{}, false, "mapping unavailable or ambiguous"
@@ -530,6 +534,10 @@ func (a *App) removeWorktree(ctx context.Context, repo model.Repository, opts Op
 }
 
 func (a *App) deleteWorktreeBranch(ctx context.Context, repo model.Repository, fresh model.Worktree, item *model.Worktree, inv *model.Inventory) {
+	if fresh.WorktreeDetails != nil && fresh.ProviderProof.HeadSHA != "" {
+		item.Error = "worktree removed; branch retained because provider squash proof does not authorize branch deletion"
+		return
+	}
 	if err := a.git.DeleteBranch(ctx, repo, fresh.Branch, fresh.DefaultBranch); err != nil {
 		item.Error = fmt.Sprintf("worktree removed; branch retained: %v", err)
 		inv.Errors = append(inv.Errors, fmt.Sprintf("%s: delete branch %s: %v", repo.PrimaryPath, fresh.Branch, err))
@@ -599,47 +607,66 @@ func (a *App) revalidate(ctx context.Context, repo model.Repository, opts Option
 	if err != nil {
 		return classificationError(previous, fmt.Sprintf("revalidate worktree list: %v", err)), false
 	}
-	for _, record := range records {
-		if record.Path != previous.Path {
-			continue
-		}
-		if record.Head != previous.Head || record.Branch != previous.Branch {
-			previous.Classification = model.Kept
-			previous.Reason = "worktree HEAD or branch changed after scan"
-			return previous, false
-		}
-		fresh := a.classify(ctx, repo, defaultBranch, opts.ProtectedPath, record, opts.Provider, opts.ProviderRemote, opts.Now().UTC())
-		if fresh.DefaultBranch != previous.DefaultBranch {
-			fresh.Classification, fresh.Reason = model.Kept, "revalidation blocked removal: default branch changed after scan"
-			return fresh, false
-		}
-		previousProvider := previous.WorktreeDetails != nil && previous.ProviderProof.HeadSHA != ""
-		freshProvider := fresh.WorktreeDetails != nil && fresh.ProviderProof.HeadSHA != ""
-		if previousProvider != freshProvider || (previousProvider && fresh.ProviderProof != previous.ProviderProof) {
-			fresh.Classification, fresh.Reason = model.Kept, "revalidation blocked removal: provider proof changed after scan"
-			return fresh, false
-		}
-		if previous.WorktreeDetails != nil && previous.RetentionBasis != "" {
-			if previous.ObservedAt == nil || previous.EligibleAt == nil {
-				fresh.Classification, fresh.Reason = model.Kept, "revalidation blocked removal: retention evidence is incomplete"
-				return fresh, false
-			}
-			now := opts.Now().UTC()
-			observed, basis, err := retentionObservedAt(&fresh)
-			if err != nil || basis != previous.RetentionBasis || !observed.Equal(*previous.ObservedAt) || observed.IsZero() || observed.After(now) || now.Before(observed.Add(previous.EligibleAt.Sub(*previous.ObservedAt))) {
-				fresh.Classification, fresh.Reason = model.Kept, "revalidation blocked removal: retention window has not elapsed or timestamp changed"
-				return fresh, false
-			}
-		}
-		if fresh.Classification != model.SafeToRemove {
-			fresh.Reason = "revalidation blocked removal: " + fresh.Reason
-			return fresh, false
-		}
-		return fresh, true
+	record, found := registeredRecord(records, previous.Path)
+	if !found {
+		previous.Classification, previous.Reason = model.Kept, "worktree registration changed after scan"
+		return previous, false
 	}
-	previous.Classification = model.Kept
-	previous.Reason = "worktree registration changed after scan"
-	return previous, false
+	if record.Head != previous.Head || record.Branch != previous.Branch {
+		previous.Classification, previous.Reason = model.Kept, "worktree HEAD or branch changed after scan"
+		return previous, false
+	}
+	fresh := a.classify(ctx, classificationJob{repo: repo, defaultBranch: defaultBranch, protectedPath: opts.ProtectedPath, record: record}, classifyOptions{provider: opts.Provider, providerRemote: opts.ProviderRemote, now: opts.Now().UTC()})
+	return revalidationDecision(previous, fresh, opts.Now().UTC())
+}
+
+func registeredRecord(records []model.RegisteredWorktree, path string) (model.RegisteredWorktree, bool) {
+	for _, record := range records {
+		if record.Path == path {
+			return record, true
+		}
+	}
+	return model.RegisteredWorktree{}, false
+}
+
+func revalidationDecision(previous, fresh model.Worktree, now time.Time) (model.Worktree, bool) {
+	if fresh.DefaultBranch != previous.DefaultBranch {
+		fresh.Classification, fresh.Reason = model.Kept, "revalidation blocked removal: default branch changed after scan"
+		return fresh, false
+	}
+	if providerProofChanged(previous, fresh) {
+		fresh.Classification, fresh.Reason = model.Kept, "revalidation blocked removal: provider proof changed after scan"
+		return fresh, false
+	}
+	if reason := retentionRevalidationFailure(previous, fresh, now); reason != "" {
+		fresh.Classification, fresh.Reason = model.Kept, reason
+		return fresh, false
+	}
+	if fresh.Classification != model.SafeToRemove {
+		fresh.Reason = "revalidation blocked removal: " + fresh.Reason
+		return fresh, false
+	}
+	return fresh, true
+}
+
+func providerProofChanged(previous, fresh model.Worktree) bool {
+	old := previous.WorktreeDetails != nil && previous.ProviderProof.HeadSHA != ""
+	current := fresh.WorktreeDetails != nil && fresh.ProviderProof.HeadSHA != ""
+	return old != current || (old && fresh.ProviderProof != previous.ProviderProof)
+}
+
+func retentionRevalidationFailure(previous, fresh model.Worktree, now time.Time) string {
+	if previous.WorktreeDetails == nil || previous.RetentionBasis == "" {
+		return ""
+	}
+	if previous.ObservedAt == nil || previous.EligibleAt == nil {
+		return "revalidation blocked removal: retention evidence is incomplete"
+	}
+	observed, basis, err := retentionObservedAt(&fresh)
+	if err != nil || basis != previous.RetentionBasis || !observed.Equal(*previous.ObservedAt) || observed.IsZero() || observed.After(now) || now.Before(observed.Add(previous.EligibleAt.Sub(*previous.ObservedAt))) {
+		return "revalidation blocked removal: retention window has not elapsed or timestamp changed"
+	}
+	return ""
 }
 
 func repoDefaultBranchFailed(inv *model.Inventory, repo model.Repository) bool {

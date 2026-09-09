@@ -57,7 +57,7 @@ func TestGitHubProviderSquashProofWithRealGitWorktree(t *testing.T) {
 		t.Fatalf("selected base remote did not restore proof: %+v", itemByPath(t, selected, worktree))
 	}
 
-	executed, err := application.Run(context.Background(), Options{Roots: []string{repo.Root}, Provider: client, ProviderRemote: "origin", Execute: true})
+	executed, err := application.Run(context.Background(), Options{Roots: []string{repo.Root}, Provider: client, ProviderRemote: "origin", Execute: true, DeleteBranch: true})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -66,6 +66,9 @@ func TestGitHubProviderSquashProofWithRealGitWorktree(t *testing.T) {
 	}
 	if _, err := os.Stat(worktree); !os.IsNotExist(err) {
 		t.Fatalf("worktree still exists: %v", err)
+	}
+	if got := strings.Fields(testgit.Run(t, repo.Path, "show-ref", "--verify", "refs/heads/squash"))[0]; got != head {
+		t.Fatalf("branch ref = %q, want captured head %q", got, head)
 	}
 }
 
@@ -143,10 +146,10 @@ func itemByPath(t *testing.T, inv model.Inventory, path string) model.Worktree {
 type providerRoundTrip func(*http.Request) (*http.Response, error)
 
 func (f providerRoundTrip) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
-func githubProofClient(head, merge string, heads ...string) provider.Client {
+func githubProofClient(head, merge string, heads ...string) provider.MergeFinder {
 	return githubProofClientRepos(head, merge, "owner", "repo", "owner", "repo", heads...)
 }
-func githubProofClientRepos(head, merge, headOwner, headRepo, baseOwner, baseRepo string, heads ...string) provider.Client {
+func githubProofClientRepos(head, merge, headOwner, headRepo, baseOwner, baseRepo string, heads ...string) provider.MergeFinder {
 	calls := 0
 	return provider.NewGitHub(&http.Client{Transport: providerRoundTrip(func(r *http.Request) (*http.Response, error) {
 		current := head

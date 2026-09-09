@@ -79,7 +79,7 @@ func TestCompareRejectsMissingAndRegressedMetrics(t *testing.T) {
 	if e := compare(b, h, 10, 10, filepath.Join(t.TempDir(), "out.md")); e == nil || !strings.Contains(e.Error(), "bytes") {
 		t.Fatalf("err=%v", e)
 	}
-	if e := compare(b, fixture(t, "none", "ok\n"), 10, 10, filepath.Join(t.TempDir(), "out.md")); e == nil {
+	if compare(b, fixture(t, "none", "ok\n"), 10, 10, filepath.Join(t.TempDir(), "out.md")) == nil {
 		t.Fatal("accepted malformed benchmark")
 	}
 }

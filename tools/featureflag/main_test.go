@@ -64,6 +64,20 @@ func TestValidateInAcceptsDeclaredFlagAndRejectsUnsafeReferences(t *testing.T) {
 	if err := validateIn(contract, root); err != nil {
 		t.Fatalf("valid declaration rejected: %v", err)
 	}
+	missingAfterMatch := `{"flags":[{"name":"launch-mode","owner":"team","issue":"#42","removal_condition":"release complete","references":["feature.go","missing.go"]}]}`
+	if err := os.WriteFile(contract, []byte(missingAfterMatch), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := validateIn(contract, root); err == nil || !strings.Contains(err.Error(), "missing.go") {
+		t.Fatalf("missing reference after match err = %v", err)
+	}
+	unsafeAfterMatch := `{"flags":[{"name":"launch-mode","owner":"team","issue":"#42","removal_condition":"release complete","references":["feature.go","../outside.go"]}]}`
+	if err := os.WriteFile(contract, []byte(unsafeAfterMatch), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := validateIn(contract, root); err == nil || !strings.Contains(err.Error(), "unsafe") {
+		t.Fatalf("unsafe reference after match err = %v", err)
+	}
 	unsafe := `{"flags":[{"name":"launch-mode","owner":"team","issue":"#42","removal_condition":"release complete","references":["../outside.go"]}]}`
 	if err := os.WriteFile(contract, []byte(unsafe), 0o600); err != nil {
 		t.Fatal(err)

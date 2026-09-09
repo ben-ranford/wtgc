@@ -58,8 +58,9 @@ Tool versions are pinned in `Makefile`:
   exists. The central `G204` Gosec policy remains reviewed in `Makefile`.
   Its contract tests require POSIX `sh`, Git, Python 3, and Node.js.
 - `make harness-check` validates and smoke-installs the pinned harness skill;
-  it requires Node.js `>=22.20` and `uv`. CI supplies Node 24 and pinned
-  `astral-sh/setup-uv` before invoking `make ci`.
+  it requires Node.js `>=22.20` and `uv`. CI supplies Node 24 and installs a
+  pinned, checksum-verified `uv` wheel into an isolated runner-temp virtual
+  environment before invoking `make ci`.
 - `make automation-check`: validates shell syntax, GitHub Actions pinning, and
   workflow and Lefthook YAML parsing, plus the queue-me workflow/controller
   contracts. Ruby and Node.js are required development tools so this validation

@@ -159,6 +159,20 @@ func TestRetentionKeepsFutureLocalMtime(t *testing.T) {
 	}
 }
 
+func TestExplicitZeroCacheThresholdReachesScanner(t *testing.T) {
+	backend := newFakeGit(branchRecord("feature"))
+	backend.clean = []bool{true}
+	backend.ancestor, backend.remote = true, true
+	var got int64 = -1
+	_, err := New(backend).Run(context.Background(), Options{Roots: []string{"/scan"}, CacheThreshold: 0, CacheScanner: func(_ context.Context, _ string, threshold int64) []cache.Warning {
+		got = threshold
+		return nil
+	}})
+	if err != nil || got != 0 {
+		t.Fatalf("err=%v threshold=%d", err, got)
+	}
+}
+
 func TestProviderProofRequiresExactIdentityAndSelectedDefaultReachability(t *testing.T) {
 	backend := newFakeGit(branchRecord("feature"))
 	backend.clean = []bool{true}
@@ -317,7 +331,7 @@ func TestExecuteRejectsProviderProofBasisSubstitution(t *testing.T) {
 	for _, test := range []struct {
 		name     string
 		ancestor []bool
-		provider provider.Client
+		provider provider.MergeFinder
 	}{
 		{name: "local to provider", ancestor: []bool{true, false, true, true}, provider: proofProvider{proof: proof}},
 		{name: "provider to local", ancestor: []bool{false, true, true, true}, provider: proofProvider{proof: proof}},
@@ -544,6 +558,21 @@ func TestExecuteRemovesThenOptionallyDeletesBranch(t *testing.T) {
 	}
 	if backend.pruneCalls != 0 {
 		t.Fatalf("Prune() calls = %d, want 0 without an accepted stale record", backend.pruneCalls)
+	}
+}
+
+func TestProviderSquashRemovalRetainsBranchWithoutDeleteError(t *testing.T) {
+	now := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
+	backend := newFakeGit(branchRecord("feature"))
+	backend.clean = []bool{true, true}
+	backend.ancestorResults = []bool{false, true, true, false, true, true}
+	inventory, err := New(backend).Run(context.Background(), Options{Roots: []string{"/scan"}, Execute: true, DeleteBranch: true, Provider: proofProvider{proof: validProviderProof(now)}, Now: func() time.Time { return now }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	item := inventory.Worktrees[0]
+	if !item.Removed || item.BranchDeleted || backend.removeCalls != 1 || backend.deleteCalls != 0 || !contains(item.Error, "provider squash proof") {
+		t.Fatalf("item=%+v remove/delete=%d/%d", item, backend.removeCalls, backend.deleteCalls)
 	}
 }
 

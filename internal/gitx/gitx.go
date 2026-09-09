@@ -21,6 +21,10 @@ import (
 
 const localBranchRefPrefix = "refs/heads/"
 const revParseCommand = "rev-parse"
+const remoteTrackingRefPrefix = "refs/remotes/"
+const verifyFlag = "--verify"
+const commitSuffix = "^{commit}"
+const defaultBranchLabel = "default branch"
 
 // RemoteRef is an exact local remote-tracking ref selected for provider proof.
 type RemoteRef struct{ Remote, Branch, URL string }
@@ -34,10 +38,10 @@ func (c *Client) ProviderDefaultTracking(ctx context.Context, repo model.Reposit
 		if err := validateShortBranchName("provider remote", selectedRemote); err != nil {
 			return "", "", "", err
 		}
-		if err := validateShortBranchName("default branch", branch); err != nil {
+		if err := validateShortBranchName(defaultBranchLabel, branch); err != nil {
 			return "", "", "", err
 		}
-		out, err := c.run(ctx, repo.PrimaryPath, revParseCommand, "--verify", "refs/remotes/"+selectedRemote+"/"+branch+"^{commit}")
+		out, err := c.run(ctx, repo.PrimaryPath, revParseCommand, verifyFlag, remoteTrackingRefPrefix+selectedRemote+"/"+branch+commitSuffix)
 		if err != nil || !isFullObjectID(strings.TrimSpace(string(out))) {
 			return "", "", "", fmt.Errorf("selected provider remote %q has no default tracking ref for %q", selectedRemote, branch)
 		}
@@ -77,7 +81,7 @@ func (c *Client) DefaultTrackingRef(ctx context.Context, repo model.Repository, 
 	if err := validateRepository(repo); err != nil {
 		return RemoteRef{}, err
 	}
-	if err := validateShortBranchName("default branch", defaultBranch); err != nil {
+	if err := validateShortBranchName(defaultBranchLabel, defaultBranch); err != nil {
 		return RemoteRef{}, err
 	}
 	remotes, err := c.configuredRemotes(ctx, repo)
@@ -113,10 +117,10 @@ func (c *Client) configuredRemotes(ctx context.Context, repo model.Repository) (
 }
 
 func (c *Client) hasTrackingRef(ctx context.Context, repo model.Repository, remote, branch string) (bool, error) {
-	ref := "refs/remotes/" + remote + "/" + branch
-	_, err := c.run(ctx, repo.PrimaryPath, "show-ref", "--verify", "--quiet", ref)
+	ref := remoteTrackingRefPrefix + remote + "/" + branch
+	_, err := c.run(ctx, repo.PrimaryPath, "show-ref", verifyFlag, "--quiet", ref)
 	if err == nil {
-		out, err := c.run(ctx, repo.PrimaryPath, revParseCommand, "--verify", ref+"^{commit}")
+		out, err := c.run(ctx, repo.PrimaryPath, revParseCommand, verifyFlag, ref+commitSuffix)
 		if err != nil {
 			return false, err
 		}
@@ -359,7 +363,7 @@ func (c *Client) DefaultBranch(ctx context.Context, repo model.Repository) (stri
 	resolved := make(map[string]struct{})
 	var errs []error
 	for _, remote := range remotes {
-		ref := "refs/remotes/" + remote + "/HEAD"
+		ref := remoteTrackingRefPrefix + remote + "/HEAD"
 		out, err := c.run(ctx, repo.PrimaryPath, "symbolic-ref", "--quiet", "--short", ref)
 		if err != nil {
 			errs = append(errs, fmt.Errorf("resolve %s: %w", ref, err))
@@ -516,7 +520,7 @@ func (c *Client) DeleteBranch(ctx context.Context, repo model.Repository, shortB
 	if err := validateShortBranchName("branch", shortBranch); err != nil {
 		return err
 	}
-	if err := validateShortBranchName("default branch", defaultBranch); err != nil {
+	if err := validateShortBranchName(defaultBranchLabel, defaultBranch); err != nil {
 		return err
 	}
 	if shortBranch == defaultBranch {
@@ -525,7 +529,7 @@ func (c *Client) DeleteBranch(ctx context.Context, repo model.Repository, shortB
 
 	branchRef := localBranchRefPrefix + shortBranch
 	defaultRef := localBranchRefPrefix + defaultBranch
-	out, err := c.run(ctx, repo.PrimaryPath, revParseCommand, "--verify", branchRef+"^{commit}")
+	out, err := c.run(ctx, repo.PrimaryPath, revParseCommand, verifyFlag, branchRef+commitSuffix)
 	if err != nil {
 		return fmt.Errorf("resolve branch %s: %w", branchRef, err)
 	}
@@ -533,7 +537,7 @@ func (c *Client) DeleteBranch(ctx context.Context, repo model.Repository, shortB
 	if !isFullObjectID(branchOID) {
 		return fmt.Errorf("resolve branch %s: unexpected object id %q", branchRef, branchOID)
 	}
-	if _, err := c.run(ctx, repo.PrimaryPath, revParseCommand, "--verify", defaultRef+"^{commit}"); err != nil {
+	if _, err := c.run(ctx, repo.PrimaryPath, revParseCommand, verifyFlag, defaultRef+commitSuffix); err != nil {
 		return fmt.Errorf("resolve default branch %s: %w", defaultRef, err)
 	}
 	merged, err := c.IsAncestor(ctx, repo, branchOID, defaultRef)

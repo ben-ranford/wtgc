@@ -60,4 +60,5 @@ jobs:
       artifact-metadata: write
       contents: write
       id-token: write
+      issues: read
     secrets: inherit

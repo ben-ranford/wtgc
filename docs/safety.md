@@ -78,7 +78,7 @@ Forks are valid only when their mapped upstream matches. The merge commit must
 be reachable from both the local default branch and its selected remote-tracking
 default. `--provider-remote` selects an otherwise ambiguous remote mapping.
 
-`--cache-threshold BYTES` defaults to 100 MiB and reports large common build
-and dependency caches only; it never deletes a cache or changes eligibility.
+`--cache-threshold BYTES` defaults to 100 MiB; an explicit `0` reports every
+recognized cache directory. It never deletes a cache or changes eligibility.
 Provider-confirmed squash worktrees retain their local branch under
 `--delete-branch`, because squash proof cannot establish local branch ancestry.

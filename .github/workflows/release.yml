@@ -49,8 +49,13 @@ jobs:
         uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v7
         with:
           node-version: '24.0.0'
-      - name: Setup uv
-        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+      - name: Install pinned uv
+        run: |
+          uv_venv="$RUNNER_TEMP/wtgc-uv"
+          python3 -m venv "$uv_venv"
+          "$uv_venv/bin/pip" install --no-deps 'https://files.pythonhosted.org/packages/05/20/0e9f74079ba34f12c5d5d01289dc8f8da94c11f855020bdfd7c5ddb412e1/uv-0.12.11-py3-none-manylinux_2_17_x86_64.manylinux2014_x86_64.whl#sha256=2c0d529c347eccaebaeec1be0e2a7a0a7d814128595b2549649060d2f75d0df6'
+          "$uv_venv/bin/uv" --version
+          echo "$uv_venv/bin" >> "$GITHUB_PATH"
       - name: Verify tag points to release SHA
         env:
           RELEASE_SHA: ${{ inputs.sha }}
