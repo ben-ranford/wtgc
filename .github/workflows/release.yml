@@ -32,6 +32,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
+      issues: read
     env:
       CGO_ENABLED: 1
     steps:
@@ -44,12 +45,23 @@ jobs:
         uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7
         with:
           go-version-file: go.mod
+      - name: Setup Node
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v7
+        with:
+          node-version: '24.0.0'
+      - name: Setup uv
+        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
       - name: Verify tag points to release SHA
         env:
           RELEASE_SHA: ${{ inputs.sha }}
           RELEASE_TAG: ${{ inputs.tag_name }}
         run: sh ./scripts/verify-release-ref.sh "$RELEASE_TAG" "$RELEASE_SHA"
       - name: Run CI target
+        env:
+          DUPLICATION_BASE: ${{ inputs.sha }}
+          SUPPRESSION_BASE: ${{ inputs.sha }}
+          SUPPRESSION_VERIFY_ISSUES: '1'
+          GH_TOKEN: ${{ github.token }}
         run: make ci
 
   build:

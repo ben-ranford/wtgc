@@ -4,7 +4,7 @@
 
 Requirements:
 
-- Go `1.26.5` or newer
+- Go `1.26.6` or newer
 - Git `2.36+`
 - `make`
 
@@ -14,6 +14,11 @@ Install tools and run the full local gate:
 make setup
 make ci
 ```
+
+`make ci` needs the pull-request base ref locally. CI supplies its exact base
+SHA; for offline work, set `DUPLICATION_BASE` and `SUPPRESSION_BASE` to a
+known local commit. The command fails rather than silently skipping these
+diff-scoped checks.
 
 For a faster edit loop:
 

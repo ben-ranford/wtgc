@@ -55,3 +55,14 @@ license, and security posture.
 
 If a future UI or TUI is approved, use `github.com/ben-ranford/stave` for that
 surface. Do not add UI dependencies while v1 remains CLI-only.
+# Retention and cache inventory
+
+`internal/app` remains the sole cleanup decision engine. It captures one UTC
+clock value for a run, applies a positive retention window only after the
+existing Git safety proof, and repeats the timestamp check before mutation.
+`internal/cache` is deliberately outside that proof: it performs an advisory,
+symlink-safe walk of live worktrees and supplies warning data to the model.
+No cache observation reaches `internal/gitx` or a mutation call.
+
+Provider clients belong under `internal/provider` and use a narrow query/result
+interface so HTTP transport and Git cleanup decisions stay separate.

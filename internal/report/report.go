@@ -51,6 +51,21 @@ func writeHuman(w io.Writer, inv model.Inventory) error {
 			ByteString(wt.ReclaimedBytes),
 			SafeHumanText(reason),
 		)
+		if wt.WorktreeDetails != nil {
+			for _, warning := range wt.CacheWarnings {
+				detail := warning.Reason
+				if warning.Error != "" {
+					detail += ": " + warning.Error
+				}
+				fmt.Fprintf(tw, "  cache warning\t-\t-\t-\t-\t%s\t-\t%s: %s\n", ByteString(warning.Bytes), SafeHumanText(warning.Path), SafeHumanText(detail))
+			}
+			if wt.Provider != "" {
+				fmt.Fprintf(tw, "  provider\t-\t-\t-\t-\t-\t-\t%s PR #%d %s\n", SafeHumanText(wt.Provider), wt.ProviderPR, SafeHumanText(wt.ProviderURL))
+			}
+			if wt.RetentionBasis != "" {
+				fmt.Fprintf(tw, "  retention\t-\t-\t-\t-\t-\t-\t%s observed=%s eligible=%s remaining=%s\n", SafeHumanText(wt.RetentionBasis), wt.ObservedAt.UTC(), wt.EligibleAt.UTC(), wt.Remaining)
+			}
+		}
 	}
 	if err := tw.Flush(); err != nil {
 		return err
@@ -73,6 +88,7 @@ func writeHuman(w io.Writer, inv model.Inventory) error {
 	fmt.Fprintf(w, "  pruned: %d\n", s.Pruned)
 	fmt.Fprintf(w, "  potential reclaimable: %s\n", ByteString(s.PotentialBytes))
 	fmt.Fprintf(w, "  reclaimed: %s\n", ByteString(s.ReclaimedBytes))
+	fmt.Fprintf(w, "  cache warnings: %d (%s)\n", s.CacheWarningCount, ByteString(s.CacheWarningBytes))
 	fmt.Fprintf(w, "  duration: %s\n", s.Duration)
 
 	if len(inv.Errors) > 0 {

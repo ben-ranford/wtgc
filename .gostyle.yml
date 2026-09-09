@@ -1,0 +1,17 @@
+analyzers:
+  disable:
+    # These repository-wide conventions predate the gate and are enforced by
+    # existing review/lint policy. Keep gostyle focused on source-level API
+    # context and error-handling regressions until their migration is scoped.
+    - errorstrings
+    - funcfmt
+    - ifacenames
+    - nilslices
+    - recvnames
+    - recvtype
+    - repetition
+analyzers-settings:
+  contexts:
+    exclude-test: true
+  handlerrors:
+    exclude-test: true

@@ -22,6 +22,125 @@ import (
 const localBranchRefPrefix = "refs/heads/"
 const revParseCommand = "rev-parse"
 
+// RemoteRef is an exact local remote-tracking ref selected for provider proof.
+type RemoteRef struct{ Remote, Branch, URL string }
+
+func (c *Client) ProviderUpstream(ctx context.Context, repo model.Repository, branch string) (string, string, string, error) {
+	r, err := c.BranchUpstream(ctx, repo, branch)
+	return r.Remote, r.Branch, r.URL, err
+}
+func (c *Client) ProviderDefaultTracking(ctx context.Context, repo model.Repository, branch, selectedRemote string) (string, string, string, error) {
+	if selectedRemote != "" {
+		if err := validateShortBranchName("provider remote", selectedRemote); err != nil {
+			return "", "", "", err
+		}
+		if err := validateShortBranchName("default branch", branch); err != nil {
+			return "", "", "", err
+		}
+		out, err := c.run(ctx, repo.PrimaryPath, revParseCommand, "--verify", "refs/remotes/"+selectedRemote+"/"+branch+"^{commit}")
+		if err != nil || !isFullObjectID(strings.TrimSpace(string(out))) {
+			return "", "", "", fmt.Errorf("selected provider remote %q has no default tracking ref for %q", selectedRemote, branch)
+		}
+		url, err := c.remoteURL(ctx, repo, selectedRemote)
+		return selectedRemote, branch, url, err
+	}
+	r, err := c.DefaultTrackingRef(ctx, repo, branch)
+	return r.Remote, r.Branch, r.URL, err
+}
+
+// BranchUpstream returns the single configured upstream of a local branch.
+func (c *Client) BranchUpstream(ctx context.Context, repo model.Repository, branch string) (RemoteRef, error) {
+	if err := validateRepository(repo); err != nil {
+		return RemoteRef{}, err
+	}
+	if err := validateShortBranchName("branch", branch); err != nil {
+		return RemoteRef{}, err
+	}
+	out, err := c.run(ctx, repo.PrimaryPath, "for-each-ref", "--format=%(upstream:remotename)%00%(upstream:remoteref)", localBranchRefPrefix+branch)
+	if err != nil {
+		return RemoteRef{}, err
+	}
+	parts := strings.Split(strings.TrimSpace(string(out)), "\x00")
+	if len(parts) != 2 || parts[0] == "" || !strings.HasPrefix(parts[1], "refs/heads/") {
+		return RemoteRef{}, fmt.Errorf("branch %q has no unambiguous upstream", branch)
+	}
+	remote, ref := parts[0], strings.TrimPrefix(parts[1], "refs/heads/")
+	url, err := c.remoteURL(ctx, repo, remote)
+	if err != nil {
+		return RemoteRef{}, err
+	}
+	return RemoteRef{Remote: remote, Branch: ref, URL: url}, nil
+}
+
+// DefaultTrackingRef returns the only remote-tracking ref for defaultBranch.
+func (c *Client) DefaultTrackingRef(ctx context.Context, repo model.Repository, defaultBranch string) (RemoteRef, error) {
+	if err := validateRepository(repo); err != nil {
+		return RemoteRef{}, err
+	}
+	if err := validateShortBranchName("default branch", defaultBranch); err != nil {
+		return RemoteRef{}, err
+	}
+	remotes, err := c.configuredRemotes(ctx, repo)
+	if err != nil {
+		return RemoteRef{}, err
+	}
+	var candidates []string
+	for _, remote := range remotes {
+		found, err := c.hasTrackingRef(ctx, repo, remote, defaultBranch)
+		if err != nil {
+			return RemoteRef{}, err
+		}
+		if found {
+			candidates = append(candidates, remote)
+		}
+	}
+	if len(candidates) != 1 {
+		return RemoteRef{}, fmt.Errorf("default branch %q has %d candidate remote-tracking refs", defaultBranch, len(candidates))
+	}
+	url, err := c.remoteURL(ctx, repo, candidates[0])
+	if err != nil {
+		return RemoteRef{}, err
+	}
+	return RemoteRef{Remote: candidates[0], Branch: defaultBranch, URL: url}, nil
+}
+
+func (c *Client) configuredRemotes(ctx context.Context, repo model.Repository) ([]string, error) {
+	out, err := c.run(ctx, repo.PrimaryPath, "remote")
+	if err != nil {
+		return nil, err
+	}
+	return strings.Fields(string(out)), nil
+}
+
+func (c *Client) hasTrackingRef(ctx context.Context, repo model.Repository, remote, branch string) (bool, error) {
+	ref := "refs/remotes/" + remote + "/" + branch
+	_, err := c.run(ctx, repo.PrimaryPath, "show-ref", "--verify", "--quiet", ref)
+	if err == nil {
+		out, err := c.run(ctx, repo.PrimaryPath, revParseCommand, "--verify", ref+"^{commit}")
+		if err != nil {
+			return false, err
+		}
+		return isFullObjectID(strings.TrimSpace(string(out))), nil
+	}
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) && exitErr.ExitCode() == 1 {
+		return false, nil
+	}
+	return false, err
+}
+
+func (c *Client) remoteURL(ctx context.Context, repo model.Repository, remote string) (string, error) {
+	out, err := c.run(ctx, repo.PrimaryPath, "remote", "get-url", remote)
+	if err != nil {
+		return "", err
+	}
+	url := strings.TrimSpace(string(out))
+	if url == "" {
+		return "", fmt.Errorf("remote %q has no URL", remote)
+	}
+	return url, nil
+}
+
 // Client executes Git commands for repository discovery and cleanup.
 type Client struct {
 	gitBinary      string

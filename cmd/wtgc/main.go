@@ -15,6 +15,7 @@ import (
 	"github.com/ben-ranford/wtgc/internal/cli"
 	"github.com/ben-ranford/wtgc/internal/gitx"
 	"github.com/ben-ranford/wtgc/internal/model"
+	"github.com/ben-ranford/wtgc/internal/provider"
 	"github.com/ben-ranford/wtgc/internal/report"
 )
 
@@ -73,11 +74,17 @@ func run(
 		return 1
 	}
 	appOptions := app.Options{
-		Roots:         opts.Roots,
-		Execute:       !opts.DryRun,
-		Interactive:   opts.Interactive,
-		DeleteBranch:  opts.DeleteBranch,
-		ProtectedPath: workingDirectory,
+		Roots:          opts.Roots,
+		Execute:        !opts.DryRun,
+		Interactive:    opts.Interactive,
+		DeleteBranch:   opts.DeleteBranch,
+		ProtectedPath:  workingDirectory,
+		Retention:      opts.Retention,
+		CacheThreshold: opts.CacheThreshold,
+		ProviderRemote: opts.ProviderRemote,
+	}
+	if opts.Provider == "github" {
+		appOptions.Provider = provider.NewGitHub(nil)
 	}
 	if opts.Interactive {
 		appOptions.Confirm = confirmer(stdin, stderr, opts.DeleteBranch)

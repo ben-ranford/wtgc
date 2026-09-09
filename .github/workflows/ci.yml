@@ -9,6 +9,7 @@ on:
 
 permissions:
   contents: read
+  issues: read
 
 jobs:
   native-tests:
@@ -40,6 +41,14 @@ jobs:
         with:
           go-version-file: go.mod
 
+      - name: Setup Node
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v7
+        with:
+          node-version: '24.0.0'
+
+      - name: Setup uv
+        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+
       - name: Run native tests
         run: go test ./...
 
@@ -62,8 +71,29 @@ jobs:
         with:
           go-version-file: go.mod
 
+      - name: Setup Node
+        uses: actions/setup-node@48b55a011bda9f5d6aeb4c2d9c7362e8dae4041e # v7
+        with:
+          node-version: '24.0.0'
+
+      - name: Setup uv
+        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+
       - name: Run full CI target
+        env:
+          DUPLICATION_BASE: ${{ github.event.pull_request.base.sha || github.sha }}
+          SUPPRESSION_BASE: ${{ github.event.pull_request.base.sha || github.sha }}
+          SUPPRESSION_VERIFY_ISSUES: '1'
+          GH_TOKEN: ${{ github.token }}
         run: make ci
+
+      - name: Upload quality-gate artifacts
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: quality-gate-artifacts
+          path: .artifacts/
+          if-no-files-found: error
 
       - name: Run automation checks
         run: make release-check VERSION=ci-check PLATFORMS="linux/amd64"

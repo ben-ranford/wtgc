@@ -29,7 +29,7 @@ python3 -m check_jsonschema --schemafile docs/inventory.schema.json inventory.js
 
 ## Top-Level Fields
 
-- `schema_version`: currently `1.0.0`.
+- `schema_version`: currently `1.1.0`.
 - `generated_at`: RFC 3339 timestamp.
 - `dry_run`: whether this run reported only.
 - `roots`: requested repository roots.
@@ -57,9 +57,14 @@ python3 -m check_jsonschema --schemafile docs/inventory.schema.json inventory.js
 - `removed`, `branch_deleted`: cleanup effects retained for compatibility and
   quick filtering.
 - `error`: row-specific error detail.
+- `retention_basis`, `observed_at`, `eligible_at`, `retention_remaining_ns`: present for otherwise safe rows when a positive retention window is configured.
+- `cache_warnings`: advisory cache rows, each with path, estimated bytes, kind, and reason. These rows never change cleanup classification or reclaimed-byte totals.
+- `provider`, `provider_pr`, `provider_url`, `merged_at`: present for an exact GitHub squash-merge proof. They contain no credential or raw API data.
 
 ## Notes
 
 Summary counters use snake_case JSON names. `potential_bytes` is the dry-run
 reclaimable estimate; `reclaimed_bytes` is the total actually reclaimed during
-mutating runs. `duration_ns` is encoded as an integer nanosecond duration.
+mutating runs. `cache_warning_count` and `cache_warning_bytes` are advisory
+totals and remain separate from cleanup totals. `duration_ns` is encoded as an
+integer nanosecond duration.

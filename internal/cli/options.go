@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"time"
 )
 
 const (
@@ -15,15 +16,19 @@ const (
 
 // Options is the stable command contract consumed by the application layer.
 type Options struct {
-	Command      string
-	Roots        []string
-	DryRun       bool
-	Yes          bool
-	Interactive  bool
-	DeleteBranch bool
-	JSON         bool
-	Version      bool
-	Help         bool
+	Command        string
+	Roots          []string
+	DryRun         bool
+	Yes            bool
+	Interactive    bool
+	DeleteBranch   bool
+	JSON           bool
+	Version        bool
+	Help           bool
+	Provider       string
+	ProviderRemote string
+	Retention      time.Duration
+	CacheThreshold int64
 }
 
 // UsageError reports input that should be shown with command usage and a
@@ -101,6 +106,10 @@ func Parse(args []string) (Options, error) {
 	fs.BoolVar(&opts.Version, "version", false, "print version and exit")
 	fs.BoolVar(&opts.Help, "help", false, "show help")
 	fs.BoolVar(&opts.Help, "h", false, "show help")
+	fs.StringVar(&opts.Provider, "provider", "", "optional merge-proof provider (github)")
+	fs.StringVar(&opts.ProviderRemote, "provider-remote", "", "remote used for provider proof when mapping is ambiguous")
+	fs.DurationVar(&opts.Retention, "retention", 0, "minimum age before cleanup")
+	fs.Int64Var(&opts.CacheThreshold, "cache-threshold", 100*1024*1024, "report cache directories at or above this byte threshold")
 	fs.Var(&dryRun, "dry-run", "preview cleanup actions without removing anything")
 
 	if err := fs.Parse(args); err != nil {
@@ -127,6 +136,18 @@ func Parse(args []string) (Options, error) {
 
 	if err := validateExecutionMode(&opts, dryRun); err != nil {
 		return Options{}, err
+	}
+	if opts.Provider != "" && opts.Provider != "github" {
+		return Options{}, &UsageError{Message: "--provider must be github"}
+	}
+	if opts.ProviderRemote != "" && opts.Provider == "" {
+		return Options{}, &UsageError{Message: "--provider-remote requires --provider github"}
+	}
+	if opts.Retention < 0 {
+		return Options{}, &UsageError{Message: "--retention must not be negative"}
+	}
+	if opts.CacheThreshold < 0 {
+		return Options{}, &UsageError{Message: "--cache-threshold must not be negative"}
 	}
 
 	if len(roots) == 0 {
@@ -218,6 +239,10 @@ Flags:
   --interactive      prompt before destructive cleanup actions
   --delete-branch    delete branches for removed worktrees when safe
   --json             write machine-readable JSON
+	  --provider github   use explicit GitHub merge proof for squash merges
+	  --provider-remote NAME select the mapped GitHub remote when ambiguous
+	  --retention DURATION keep proven worktrees until this age has elapsed
+	  --cache-threshold BYTES report advisory caches at or above this size
   --version          print version and exit
   -h, --help         show help
 `, name)

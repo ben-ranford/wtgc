@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -23,6 +24,19 @@ var (
 	wtgcBuildPath string
 	wtgcBuildErr  error
 )
+
+const firstLaunchReadyTimeout = 15 * time.Second
+
+func TestMain(m *testing.M) {
+	code := m.Run()
+	if wtgcBuildPath != "" {
+		if err := os.RemoveAll(filepath.Dir(wtgcBuildPath)); err != nil {
+			fmt.Fprintf(os.Stderr, "remove integration binary directory: %v\n", err)
+			code = 1
+		}
+	}
+	os.Exit(code)
+}
 
 func TestNoArgsPrintsUsageAndExits(t *testing.T) {
 	binary := wtgcBinary(t)
@@ -45,6 +59,15 @@ func TestNoArgsPrintsUsageAndExits(t *testing.T) {
 	}
 	if stderr.Len() != 0 {
 		t.Fatalf("stderr = %q, want empty", stderr.String())
+	}
+}
+
+func TestReadinessProbeTimesOutForHungHelper(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Millisecond)
+	defer cancel()
+	err := exec.CommandContext(ctx, "sh", "-c", "sleep 1").Run()
+	if ctx.Err() == nil || err == nil {
+		t.Fatalf("hung helper err=%v context=%v", err, ctx.Err())
 	}
 }
 
@@ -706,6 +729,17 @@ func wtgcBinary(t *testing.T) string {
 		out, err := cmd.CombinedOutput()
 		if err != nil {
 			wtgcBuildErr = errors.New(strings.TrimSpace(string(out)) + ": " + err.Error())
+			return
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), firstLaunchReadyTimeout)
+		defer cancel()
+		ready := exec.CommandContext(ctx, wtgcBuildPath, "--version")
+		if output, err := ready.CombinedOutput(); err != nil {
+			if ctx.Err() != nil {
+				wtgcBuildErr = fmt.Errorf("wtgc first-launch readiness exceeded %s: %w", firstLaunchReadyTimeout, ctx.Err())
+			} else {
+				wtgcBuildErr = fmt.Errorf("wtgc first-launch readiness: %v: %s", err, strings.TrimSpace(string(output)))
+			}
 		}
 	})
 	if wtgcBuildErr != nil {

@@ -337,6 +337,12 @@ func (*mainFakeGit) Prune(context.Context, model.Repository) error {
 func (*mainFakeGit) DeleteBranch(context.Context, model.Repository, string, string) error {
 	return nil
 }
+func (*mainFakeGit) ProviderUpstream(context.Context, model.Repository, string) (string, string, string, error) {
+	return "origin", "feature", "https://github.com/owner/repo.git", nil
+}
+func (*mainFakeGit) ProviderDefaultTracking(context.Context, model.Repository, string, string) (string, string, string, error) {
+	return "origin", "main", "https://github.com/owner/repo.git", nil
+}
 
 func mainRecord(branch string) model.RegisteredWorktree {
 	return model.RegisteredWorktree{Path: "/repo", Branch: branch, Head: "abc123", Primary: true}

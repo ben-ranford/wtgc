@@ -6,7 +6,7 @@
   "additionalProperties": false,
   "required": ["schema_version", "generated_at", "dry_run", "roots", "worktrees", "summary"],
   "properties": {
-    "schema_version": { "type": "string", "const": "1.0.0" },
+    "schema_version": { "type": "string", "const": "1.1.0" },
     "generated_at": { "type": "string", "format": "date-time" },
     "dry_run": { "type": "boolean" },
     "roots": {
@@ -75,7 +75,13 @@
         "reclaimed_bytes": { "type": "integer", "minimum": 0 },
         "removed": { "type": "boolean" },
         "branch_deleted": { "type": "boolean" },
-        "error": { "type": "string" }
+        "error": { "type": "string" },
+        "retention_basis": { "type": "string" },
+        "observed_at": { "type": "string", "format": "date-time" },
+        "eligible_at": { "type": "string", "format": "date-time" },
+        "retention_remaining_ns": { "type": "integer" },
+        "cache_warnings": { "type": "array", "items": { "$ref": "#/$defs/cache_warning" } }
+        ,"provider": { "type": "string" }, "provider_pr": { "type": "integer", "minimum": 1 }, "provider_url": { "type": "string" }, "merged_at": { "type": "string", "format": "date-time" }
       }
     },
     "summary": {
@@ -101,8 +107,11 @@
         "pruned": { "type": "integer", "minimum": 0 },
         "potential_bytes": { "type": "integer", "minimum": 0 },
         "reclaimed_bytes": { "type": "integer", "minimum": 0 },
-        "duration_ns": { "type": "integer", "minimum": 0 }
+        "duration_ns": { "type": "integer", "minimum": 0 },
+        "cache_warning_count": { "type": "integer", "minimum": 0 },
+        "cache_warning_bytes": { "type": "integer", "minimum": 0 }
       }
-    }
+    },
+    "cache_warning": { "type": "object", "additionalProperties": false, "required": ["path", "bytes", "kind", "reason"], "properties": { "path":{"type":"string"}, "bytes":{"type":"integer","minimum":0}, "kind":{"type":"string"}, "reason":{"type":"string"}, "error":{"type":"string"} } }
   }
 }
