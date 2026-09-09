@@ -1,18 +1,23 @@
 #!/usr/bin/env node
 // Verify the statically loaded trusted workflow handler with mocked GitHub REST calls.
-const fs = require('node:fs');
-const path = require('node:path');
-const { trackSuppressions } = require('./suppression-accountability.js');
+import fs from 'node:fs';
+import path from 'node:path';
+import { createRequire } from 'node:module';
+import { fileURLToPath } from 'node:url';
 
-const workflow = fs.readFileSync(path.join(__dirname, '..', '.github', 'workflows', 'suppression-accountability.yml'), 'utf8');
+const require = createRequire(import.meta.url);
+const { trackSuppressions } = require('./suppression-accountability.js');
+const scriptDirectory = path.dirname(fileURLToPath(import.meta.url));
+
+const workflow = fs.readFileSync(path.join(scriptDirectory, '..', '.github', 'workflows', 'suppression-accountability.yml'), 'utf8');
 if (!workflow.includes('pull_request_target:')) throw new Error('workflow must retain its trusted trigger');
 if (!workflow.includes('branches: [main]')) throw new Error('workflow must restrict trusted execution to main');
-if (!workflow.includes('ref: ${{ github.event.pull_request.base.sha }}')) throw new Error('workflow must check out the immutable trusted base SHA');
+if (!workflow.includes('ref: ${{ github.sha }}')) throw new Error('workflow must check out the immutable trusted workflow SHA');
 if (!workflow.includes('persist-credentials: false')) throw new Error('trusted checkout must not retain credentials');
 if (!workflow.includes("require('${{ github.workspace }}/scripts/suppression-accountability.js')")) throw new Error('workflow must load the static accountability handler');
-const release = fs.readFileSync(path.join(__dirname, '..', '.github', 'workflows', 'release.yml'), 'utf8');
-const ci = fs.readFileSync(path.join(__dirname, '..', '.github', 'workflows', 'ci.yml'), 'utf8');
-const releasePlease = fs.readFileSync(path.join(__dirname, '..', '.github', 'workflows', 'release-please.yml'), 'utf8');
+const release = fs.readFileSync(path.join(scriptDirectory, '..', '.github', 'workflows', 'release.yml'), 'utf8');
+const ci = fs.readFileSync(path.join(scriptDirectory, '..', '.github', 'workflows', 'ci.yml'), 'utf8');
+const releasePlease = fs.readFileSync(path.join(scriptDirectory, '..', '.github', 'workflows', 'release-please.yml'), 'utf8');
 if (!release.includes('issues: read')) throw new Error('release checks must declare the issue-read permission they use');
 const releaseAssets = releasePlease.slice(releasePlease.indexOf('  release-assets:'));
 if (!releaseAssets.includes('issues: read')) throw new Error('release caller must grant the callee issue-read permission');
@@ -80,4 +85,4 @@ async function main() {
   process.stdout.write('suppression accountability workflow tests passed\n');
 }
 
-main();
+await main();

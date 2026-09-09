@@ -1,4 +1,5 @@
 const markers = /(?:#|\/\/)\s*nosec\b|\/\/\s*nolint\b|\/\/\s*NOSONAR\b/i;
+const issueURLPattern = /^https:\/\/github\.com\/([^/]+)\/([^/]+)\/issues\/(\d+)$/;
 const requiredFields = ['location', 'rationale', 'owner', 'removal_condition'];
 
 function suppressionLocations(files) {
@@ -52,7 +53,7 @@ function parseManifest(content) {
 }
 
 async function trackLocation(github, context, location, entry) {
-  const issueMatch = String(entry.issue || '').match(/^https:\/\/github\.com\/([^/]+)\/([^/]+)\/issues\/(\d+)$/);
+  const issueMatch = issueURLPattern.exec(String(entry.issue || ''));
   if (entry.issue && !issueMatch) throw new Error(`suppression issue for ${location} must be a GitHub issue URL`);
   const marker = `<!-- wtgc-suppression-accountability:${location} -->`;
   const body = `${marker}\nLocation: ${location}\n\nRationale: ${entry.rationale}\n\nOwner: ${entry.owner}\n\nRemoval condition: ${entry.removal_condition}`;

@@ -94,7 +94,7 @@ vuln:
 suppression-base := $(if $(SUPPRESSION_BASE),$(SUPPRESSION_BASE),$(DUPLICATION_BASE))
 suppression-contracts:
 	./scripts/check-suppressions-contract-test.sh
-	node ./scripts/suppression-accountability-workflow-test.js
+	node ./scripts/suppression-accountability-workflow-test.mjs
 
 suppressions: suppression-contracts
 	SUPPRESSION_BASE="$(suppression-base)" ./scripts/check-suppressions.sh

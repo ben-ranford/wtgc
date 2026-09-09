@@ -65,10 +65,10 @@ func (c *Client) BranchUpstream(ctx context.Context, repo model.Repository, bran
 		return RemoteRef{}, err
 	}
 	parts := strings.Split(strings.TrimSpace(string(out)), "\x00")
-	if len(parts) != 2 || parts[0] == "" || !strings.HasPrefix(parts[1], "refs/heads/") {
+	if len(parts) != 2 || parts[0] == "" || !strings.HasPrefix(parts[1], localBranchRefPrefix) {
 		return RemoteRef{}, fmt.Errorf("branch %q has no unambiguous upstream", branch)
 	}
-	remote, ref := parts[0], strings.TrimPrefix(parts[1], "refs/heads/")
+	remote, ref := parts[0], strings.TrimPrefix(parts[1], localBranchRefPrefix)
 	url, err := c.remoteURL(ctx, repo, remote)
 	if err != nil {
 		return RemoteRef{}, err

@@ -145,13 +145,17 @@ func TestV11HumanMetadataEscapesAttackerControlledText(t *testing.T) {
 	}
 }
 
+type inventorySchemaWorktreeDefinition struct {
+	Properties map[string]json.RawMessage `json:"properties"`
+}
+
+type inventorySchemaDefinitions struct {
+	Worktree inventorySchemaWorktreeDefinition `json:"worktree"`
+}
+
 type inventorySchemaDocument struct {
 	Properties  map[string]json.RawMessage `json:"properties"`
-	Definitions struct {
-		Worktree struct {
-			Properties map[string]json.RawMessage `json:"properties"`
-		} `json:"worktree"`
-	} `json:"$defs"`
+	Definitions inventorySchemaDefinitions `json:"$defs"`
 }
 
 func assertDocumentMatchesPublishedSchemaProperties(t *testing.T, document map[string]any) {

@@ -67,16 +67,33 @@ func readFuzzCorpus(t testing.TB, target string) [][]byte {
 		if err != nil {
 			t.Fatal(err)
 		}
-		lines := strings.Split(strings.TrimSpace(string(data)), "\n")
-		if len(lines) != 2 || lines[0] != "go test fuzz v1" {
-			t.Fatalf("invalid corpus seed %s", path)
-		}
-		encoded := strings.TrimSuffix(strings.TrimPrefix(lines[1], "[]byte("), ")")
-		value, err := strconv.Unquote(encoded)
-		if err != nil || !strings.HasPrefix(lines[1], "[]byte(") {
+		value, err := parseFuzzCorpusSeed(data)
+		if err != nil {
 			t.Fatalf("invalid corpus seed %s", path)
 		}
 		seeds = append(seeds, []byte(value))
 	}
 	return seeds
+}
+
+func parseFuzzCorpusSeed(data []byte) (string, error) {
+	normalized := strings.ReplaceAll(string(data), "\r\n", "\n")
+	if strings.Contains(normalized, "\r") {
+		return "", strconv.ErrSyntax
+	}
+	lines := strings.Split(strings.TrimSpace(normalized), "\n")
+	if len(lines) != 2 || lines[0] != "go test fuzz v1" || !strings.HasPrefix(lines[1], "[]byte(") {
+		return "", strconv.ErrSyntax
+	}
+	return strconv.Unquote(strings.TrimSuffix(strings.TrimPrefix(lines[1], "[]byte("), ")"))
+}
+
+func TestParseFuzzCorpusSeedAcceptsCRLFOnlyAsLineEnding(t *testing.T) {
+	value, err := parseFuzzCorpusSeed([]byte("go test fuzz v1\r\n[]byte(\"fixture\")\r\n"))
+	if err != nil || value != "fixture" {
+		t.Fatalf("parse CRLF corpus seed = %q, %v", value, err)
+	}
+	if _, err := parseFuzzCorpusSeed([]byte("go test fuzz v1\r[]byte(\"fixture\")\n")); err == nil {
+		t.Fatal("accepted malformed lone-CR corpus seed")
+	}
 }
