@@ -2,11 +2,15 @@
 set -eu
 
 test_root=".codex-artifacts/release-automation-check.$$"
+dispatch_test_root=""
 
 cleanup() {
   if [ -d "$test_root" ]; then
     find "$test_root" -mindepth 1 -exec rm -rf {} +
     rmdir "$test_root"
+  fi
+  if [ -n "$dispatch_test_root" ] && [ -d "$dispatch_test_root" ]; then
+    rm -rf "$dispatch_test_root"
   fi
 }
 trap cleanup EXIT INT TERM
@@ -48,11 +52,12 @@ expect_matches() {
 
 workflow_job() {
   job="$1"
+  workflow="${2:-.github/workflows/release.yml}"
   awk -v job="$job" '
     $0 == "  " job ":" { found = 1 }
     found && $0 ~ /^  [[:alnum:]_-]+:$/ && $0 != "  " job ":" { exit }
     found { print }
-  ' .github/workflows/release.yml
+  ' "$workflow"
 }
 
 tap_gate="$(workflow_job homebrew-tap-token-gate)"
@@ -93,6 +98,11 @@ expect_contains "$tap_publish" "unset HOMEBREW_TAP_TOKEN" "Homebrew tap publicat
 expect_contains "$tap_publish" "Gem::Version" "Homebrew tap publication must refuse stale formula versions"
 expect_contains "$tap_publish" "SOURCE_SHA" "Homebrew tap publication must bind its formula to the release SHA"
 expect_contains "$tap_publish" "archive/\${SOURCE_SHA}.tar.gz" "Homebrew tap publication must use an immutable source archive"
+
+metadata_dispatch="$(workflow_job release-pr-metadata .github/workflows/release-please.yml)"
+[ -n "$metadata_dispatch" ] || fail "release please workflow is missing the PR metadata dispatch job"
+expect_contains "$metadata_dispatch" "GH_REPO: \${{ github.repository }}" "PR metadata dispatch must provide an explicit repository context"
+expect_contains "$metadata_dispatch" "gh workflow run pr-metadata.yml --ref \"\$RELEASE_PR_BRANCH\" -f pr-number=\"\$RELEASE_PR_NUMBER\"" "PR metadata dispatch must preserve the Release Please branch and PR number"
 
 mkdir -p "$test_root/repo"
 git -C "$test_root/repo" init -q
@@ -175,5 +185,43 @@ expect_failure env \
   PATH="$(pwd -P)/$test_root/bin:$PATH" \
   WTGC_TEST_GH_STATE="$(pwd -P)/$test_root/gh-state" \
   sh ./scripts/publish-release-assets.sh v1.0.0 "$test_root/assets"
+
+dispatch_test_root="$(mktemp -d "${TMPDIR:-/tmp}/wtgc-release-metadata-dispatch.XXXXXX")"
+mkdir -p "$dispatch_test_root/bin" "$dispatch_test_root/outside-git"
+cat > "$dispatch_test_root/bin/gh" <<'EOF'
+#!/usr/bin/env sh
+set -eu
+
+[ "${GH_REPO:-}" = "owner/repository" ] || exit 1
+[ "$1" = workflow ] && [ "$2" = run ] && [ "$3" = pr-metadata.yml ]
+[ "$4" = --ref ] && [ "$5" = release-please--branches--main ]
+[ "$6" = -f ] && [ "$7" = pr-number=123 ]
+EOF
+chmod +x "$dispatch_test_root/bin/gh"
+
+if (
+  cd "$dispatch_test_root/outside-git"
+  unset GIT_DIR GIT_WORK_TREE GIT_CEILING_DIRECTORIES
+  git rev-parse --is-inside-work-tree
+) >/dev/null 2>&1; then
+  fail "PR metadata dispatch test directory must be outside a Git worktree"
+fi
+
+if (
+  cd "$dispatch_test_root/outside-git"
+  unset GIT_DIR GIT_WORK_TREE GIT_CEILING_DIRECTORIES
+  PATH="$dispatch_test_root/bin:$PATH" \
+    GH_REPO='' \
+    gh workflow run pr-metadata.yml --ref release-please--branches--main -f pr-number=123
+) >/dev/null 2>&1; then
+  fail "PR metadata dispatch accepted a missing repository context"
+fi
+(
+  cd "$dispatch_test_root/outside-git"
+  unset GIT_DIR GIT_WORK_TREE GIT_CEILING_DIRECTORIES
+  PATH="$dispatch_test_root/bin:$PATH" \
+    GH_REPO=owner/repository \
+    gh workflow run pr-metadata.yml --ref release-please--branches--main -f pr-number=123
+) >/dev/null
 
 echo "Release automation integrity checks passed."
