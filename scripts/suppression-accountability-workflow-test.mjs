@@ -41,10 +41,10 @@ const ci = fs.readFileSync(path.join(scriptDirectory, '..', '.github', 'workflow
 const releasePlease = fs.readFileSync(path.join(scriptDirectory, '..', '.github', 'workflows', 'release-please.yml'), 'utf8');
 const qualityArtifacts = namedWorkflowBlock(ci, 'Upload quality-gate artifacts');
 if (!qualityArtifacts) throw new Error('CI must retain its quality-gate artifact upload');
-const artifactLines = qualityArtifacts.split('\n').map((line) => line.trim());
-if (!artifactLines.includes('path: .artifacts/')) throw new Error('quality-gate upload must stay scoped to .artifacts');
-if (!artifactLines.includes('include-hidden-files: true')) throw new Error('quality-gate upload must include the managed hidden artifact directory');
-if (!artifactLines.includes('if-no-files-found: error')) throw new Error('quality-gate upload must fail when reports are missing');
+const artifactLines = new Set(qualityArtifacts.split('\n').map((line) => line.trim()));
+if (!artifactLines.has('path: .artifacts/')) throw new Error('quality-gate upload must stay scoped to .artifacts');
+if (!artifactLines.has('include-hidden-files: true')) throw new Error('quality-gate upload must include the managed hidden artifact directory');
+if (!artifactLines.has('if-no-files-found: error')) throw new Error('quality-gate upload must fail when reports are missing');
 if (!release.includes('issues: read')) throw new Error('release checks must declare the issue-read permission they use');
 const releaseAssets = namedJob(releasePlease, 'release-assets');
 if (!releaseAssets.includes('issues: read')) throw new Error('release caller must grant the callee issue-read permission');
