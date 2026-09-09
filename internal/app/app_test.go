@@ -371,11 +371,7 @@ func TestExecuteRejectsProviderProofBasisSubstitution(t *testing.T) {
 func TestExecuteRejectsChangedProviderProofTuple(t *testing.T) {
 	now := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
 	base := validProviderProof(now)
-	for _, test := range []struct {
-		name    string
-		change  func(*provider.PullRequest)
-		prepare func(*fakeGit)
-	}{
+	for _, test := range []providerProofMutation{
 		{name: "pull request number", change: func(p *provider.PullRequest) { p.Number++ }},
 		{name: "merged timestamp", change: func(p *provider.PullRequest) { p.MergedAt = p.MergedAt.Add(-time.Second) }},
 		{name: "merge commit", change: func(p *provider.PullRequest) { p.MergeCommitSHA = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" }},
@@ -409,30 +405,46 @@ func TestExecuteRejectsChangedProviderProofTuple(t *testing.T) {
 		}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			changed := base
-			if test.change != nil {
-				test.change(&changed)
-			}
-			backend := newFakeGit(branchRecord("feature"))
-			backend.clean = []bool{true, true}
-			backend.ancestorResults = []bool{false, true, true, false, true, true}
-			if test.prepare != nil {
-				test.prepare(backend)
-			}
-			inv, err := New(backend).Run(context.Background(), Options{Roots: []string{"/scan"}, Execute: true, Provider: &proofSequence{proofs: []provider.PullRequest{base, changed}}, Now: func() time.Time { return now }})
-			if err != nil {
-				t.Fatal(err)
-			}
-			if test.name == "canonical repository casing" {
-				if backend.removeCalls != 1 || !inv.Worktrees[0].Removed {
-					t.Fatalf("item=%+v removes=%d", inv.Worktrees[0], backend.removeCalls)
-				}
-				return
-			}
-			if backend.removeCalls != 0 || inv.Worktrees[0].Classification != model.Kept {
-				t.Fatalf("item=%+v removes=%d", inv.Worktrees[0], backend.removeCalls)
-			}
+			runProviderProofMutation(t, now, base, test)
 		})
+	}
+}
+
+type providerProofMutation struct {
+	name    string
+	change  func(*provider.PullRequest)
+	prepare func(*fakeGit)
+}
+
+func runProviderProofMutation(t *testing.T, now time.Time, base provider.PullRequest, test providerProofMutation) {
+	t.Helper()
+	changed := base
+	if test.change != nil {
+		test.change(&changed)
+	}
+	backend := newFakeGit(branchRecord("feature"))
+	backend.clean = []bool{true, true}
+	backend.ancestorResults = []bool{false, true, true, false, true, true}
+	if test.prepare != nil {
+		test.prepare(backend)
+	}
+	inv, err := New(backend).Run(context.Background(), Options{Roots: []string{"/scan"}, Execute: true, Provider: &proofSequence{proofs: []provider.PullRequest{base, changed}}, Now: func() time.Time { return now }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertProviderProofMutationResult(t, test.name, backend, inv)
+}
+
+func assertProviderProofMutationResult(t *testing.T, name string, backend *fakeGit, inv model.Inventory) {
+	t.Helper()
+	if name == "canonical repository casing" {
+		if backend.removeCalls != 1 || !inv.Worktrees[0].Removed {
+			t.Fatalf("item=%+v removes=%d", inv.Worktrees[0], backend.removeCalls)
+		}
+		return
+	}
+	if backend.removeCalls != 0 || inv.Worktrees[0].Classification != model.Kept {
+		t.Fatalf("item=%+v removes=%d", inv.Worktrees[0], backend.removeCalls)
 	}
 }
 

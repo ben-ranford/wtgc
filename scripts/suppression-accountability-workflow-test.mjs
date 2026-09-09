@@ -9,25 +9,44 @@ const require = createRequire(import.meta.url);
 const { trackSuppressions } = require('./suppression-accountability.js');
 const scriptDirectory = path.dirname(fileURLToPath(import.meta.url));
 
+function namedWorkflowBlock(source, name) {
+  const lines = source.split('\n');
+  const start = lines.indexOf(`      - name: ${name}`);
+  if (start < 0) return '';
+  let end = start + 1;
+  while (end < lines.length && !lines[end].startsWith('      - name:')) end++;
+  return lines.slice(start, end).join('\n');
+}
+
+function namedJob(source, name) {
+  const lines = source.split('\n');
+  const start = lines.indexOf(`  ${name}:`);
+  if (start < 0) return '';
+  let end = start + 1;
+  while (end < lines.length && !(lines[end].startsWith('  ') && lines[end][2] !== ' ')) end++;
+  return lines.slice(start, end).join('\n');
+}
+
 const workflow = fs.readFileSync(path.join(scriptDirectory, '..', '.github', 'workflows', 'suppression-accountability.yml'), 'utf8');
 if (!workflow.includes('pull_request_target:')) throw new Error('workflow must retain its trusted trigger');
 if (!workflow.includes('branches: [main]')) throw new Error('workflow must restrict trusted execution to main');
-const checkout = workflow.match(/- name: Checkout trusted workflow source[\s\S]*?(?=\n      - name:|$)/)?.[0];
+const checkout = namedWorkflowBlock(workflow, 'Checkout trusted workflow source');
 if (!checkout) throw new Error('workflow must retain the trusted checkout step');
-if (/^\s*(ref|repository):/m.test(checkout)) throw new Error('trusted checkout must use the protected default workflow source');
+if (checkout.split('\n').some((line) => line.trimStart().startsWith('ref:') || line.trimStart().startsWith('repository:'))) throw new Error('trusted checkout must use the protected default workflow source');
 if (!checkout.includes('persist-credentials: false')) throw new Error('trusted checkout must not retain credentials');
-if (/allow-unsafe-pr-checkout:\s*true|github\.event\.pull_request\.(head|merge)/.test(checkout)) throw new Error('trusted checkout must not select PR-controlled source');
+if (checkout.includes('allow-unsafe-pr-checkout: true') || checkout.includes('github.event.pull_request.head') || checkout.includes('github.event.pull_request.merge')) throw new Error('trusted checkout must not select PR-controlled source');
 if (!workflow.includes("require('${{ github.workspace }}/scripts/suppression-accountability.js')")) throw new Error('workflow must load the static accountability handler');
 const release = fs.readFileSync(path.join(scriptDirectory, '..', '.github', 'workflows', 'release.yml'), 'utf8');
 const ci = fs.readFileSync(path.join(scriptDirectory, '..', '.github', 'workflows', 'ci.yml'), 'utf8');
 const releasePlease = fs.readFileSync(path.join(scriptDirectory, '..', '.github', 'workflows', 'release-please.yml'), 'utf8');
-const qualityArtifacts = ci.match(/- name: Upload quality-gate artifacts[\s\S]*?(?=\n      - name:|$)/)?.[0];
+const qualityArtifacts = namedWorkflowBlock(ci, 'Upload quality-gate artifacts');
 if (!qualityArtifacts) throw new Error('CI must retain its quality-gate artifact upload');
-if (!/^\s*path:\s*\.artifacts\/\s*$/m.test(qualityArtifacts)) throw new Error('quality-gate upload must stay scoped to .artifacts');
-if (!/^\s*include-hidden-files:\s*true\s*$/m.test(qualityArtifacts)) throw new Error('quality-gate upload must include the managed hidden artifact directory');
-if (!/^\s*if-no-files-found:\s*error\s*$/m.test(qualityArtifacts)) throw new Error('quality-gate upload must fail when reports are missing');
+const artifactLines = qualityArtifacts.split('\n').map((line) => line.trim());
+if (!artifactLines.includes('path: .artifacts/')) throw new Error('quality-gate upload must stay scoped to .artifacts');
+if (!artifactLines.includes('include-hidden-files: true')) throw new Error('quality-gate upload must include the managed hidden artifact directory');
+if (!artifactLines.includes('if-no-files-found: error')) throw new Error('quality-gate upload must fail when reports are missing');
 if (!release.includes('issues: read')) throw new Error('release checks must declare the issue-read permission they use');
-const releaseAssets = releasePlease.slice(releasePlease.indexOf('  release-assets:'));
+const releaseAssets = namedJob(releasePlease, 'release-assets');
 if (!releaseAssets.includes('issues: read')) throw new Error('release caller must grant the callee issue-read permission');
 for (const workflowSource of [ci, release]) {
   if (!workflowSource.includes('python3 -m venv "$uv_venv"')) throw new Error('CI must install uv in a runner-temp virtual environment');

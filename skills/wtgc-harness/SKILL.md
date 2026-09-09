@@ -53,8 +53,8 @@ secrets, or create a scheduled action.
 
 When present, `cache_warnings` are advisory findings. `provider`, `merged_at`,
 and retention fields describe evidence used by the product; they do not weaken
-the safety decision. `retention_basis`, `retention_observed_at`,
-`retention_eligible_at`, and `retention_remaining_ns` explain why a candidate
+the safety decision. `retention_basis`, `observed_at`, `eligible_at`, and
+`retention_remaining_ns` explain why a candidate
 is still retained. A future or unknown retention timestamp must remain
 conservative.
 
@@ -65,7 +65,7 @@ GitHub squash-merge proof, use the implemented provider options in a dry-run:
 
 ```sh
 wtgc clean --json --scan-root "$ROOT" --provider github \
-  --provider-remote origin --retention 7d --cache-threshold 1073741824
+  --provider-remote origin --retention 168h --cache-threshold 1073741824
 ```
 
 `--provider github` opts into provider lookup. `--provider-remote NAME` selects
