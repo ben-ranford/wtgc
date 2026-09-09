@@ -6,7 +6,7 @@ Security fixes are supported on the current release line and the default branch.
 
 | Version | Supported |
 | --- | --- |
-| 1.0.x | :white_check_mark: |
+| 1.1.x | :white_check_mark: |
 | main | :white_check_mark: |
 
 ## Reporting a Vulnerability
