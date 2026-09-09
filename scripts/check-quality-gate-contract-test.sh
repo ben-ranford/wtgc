@@ -75,4 +75,31 @@ if make -C "$repo" shellcheck SHELLCHECK_FILES="$tmp/invalid.sh" >"$tmp/shellche
 	exit 1
 fi
 
+for name in one two three; do
+	printf '%s\n' '#!/bin/sh' 'true' > "$tmp/$name.sh"
+done
+cat > "$tmp/bin/go" <<'EOF'
+#!/bin/sh
+set -eu
+
+[ "$1" = run ]
+[ "$2" = github.com/wasilibs/go-shellcheck/cmd/shellcheck@v0.10.0 ]
+[ "$3" = --shell=sh ]
+[ "$#" = 4 ]
+printf '%s\n' "$4" >> "${WTGC_SHELLCHECK_CALL_LOG:?}"
+EOF
+chmod +x "$tmp/bin/go"
+
+shellcheck_files="$tmp/one.sh $tmp/two.sh $tmp/three.sh"
+if ! PATH="$tmp/bin:$PATH" WTGC_SHELLCHECK_CALL_LOG="$tmp/shellcheck-calls" make -C "$repo" shellcheck SHELLCHECK_FILES="$shellcheck_files" >"$tmp/shellcheck-files.out" 2>&1; then
+	echo "shellcheck rejected the per-file fake tool invocation" >&2
+	exit 1
+fi
+printf '%s\n' "$tmp/one.sh" "$tmp/two.sh" "$tmp/three.sh" | LC_ALL=C sort > "$tmp/shellcheck-expected"
+LC_ALL=C sort "$tmp/shellcheck-calls" > "$tmp/shellcheck-actual"
+if ! cmp -s "$tmp/shellcheck-expected" "$tmp/shellcheck-actual"; then
+	echo "shellcheck did not invoke the pinned tool exactly once per file" >&2
+	exit 1
+fi
+
 echo "quality gate contract tests passed"

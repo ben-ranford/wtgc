@@ -63,7 +63,7 @@ actionlint:
 shellcheck:
 	@files='$(SHELLCHECK_FILES)'; \
 	if [ -z "$$files" ]; then echo "No shell scripts found for ShellCheck."; exit 0; fi; \
-	printf '%s\n' "$$files" | xargs -n 50 env GOFLAGS=-buildvcs=false $(GO_CMD) run github.com/wasilibs/go-shellcheck/cmd/shellcheck@$(SHELLCHECK_VERSION) --shell=sh
+	printf '%s\n' "$$files" | xargs -n 1 env GOFLAGS=-buildvcs=false $(GO_CMD) run github.com/wasilibs/go-shellcheck/cmd/shellcheck@$(SHELLCHECK_VERSION) --shell=sh
 
 mod-check:
 	$(GO_CMD) mod tidy -diff
