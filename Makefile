@@ -18,7 +18,7 @@ GO_CMD := GOTOOLCHAIN=$(GO_TOOLCHAIN) $(GO)
 GOLANGCI_LINT_VERSION ?= v2.9.0
 GOSTYLE_VERSION ?= v0.25.3
 ACTIONLINT_VERSION ?= v1.7.12
-SHELLCHECK_VERSION ?= v0.10.0
+SHELLCHECK_VERSION ?= v0.11.1
 ACTIONLINT_FILES ?= .github/workflows/*.yml
 SHELLCHECK_FILES ?= $(shell find scripts .githooks -type f \( -name '*.sh' -o -path '.githooks/*' \) -print 2>/dev/null)
 GOSEC_VERSION ?= v2.22.11
