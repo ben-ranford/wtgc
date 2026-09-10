@@ -322,6 +322,45 @@ func TestRunReviewReturnsSelectionAndWriteErrors(t *testing.T) {
 	}
 }
 
+func TestRunReviewPreservesPartialScanWhenSelectionsAreMissing(t *testing.T) {
+	failed := model.Repository{CommonDir: "/lost/.git", PrimaryPath: "/lost"}
+	backend := &partialReviewGit{mainFakeGit: newMainFakeGit(mainRemovableRecord("feature")), failed: failed}
+	for _, test := range []struct {
+		name                 string
+		args                 []string
+		wantSelectionError   bool
+		wantSelectedWorktree int
+	}{
+		{name: "known selection", args: []string{"review", "--json", "--select", "/worktree"}, wantSelectedWorktree: 1},
+		{name: "known and missing selections", args: []string{"review", "--json", "--select", "/worktree", "--select", "/lost/worktree"}, wantSelectionError: true, wantSelectedWorktree: 1},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			var stdout, stderr bytes.Buffer
+			code := run(context.Background(), test.args, processIO{stdin: strings.NewReader(""), stdout: &stdout, stderr: &stderr}, mainCommandDependencies(backend, func() (string, error) { return "/repo", nil }))
+			if code != 1 || !strings.Contains(stderr.String(), "completed with 1 error") {
+				t.Fatalf("code=%d stderr=%q", code, stderr.String())
+			}
+			if test.wantSelectionError != strings.Contains(stderr.String(), "unknown advisory selection") {
+				t.Fatalf("selection diagnostic=%q", stderr.String())
+			}
+			var document struct {
+				Inventory struct{ Errors []string } `json:"inventory"`
+				View      struct {
+					Totals struct {
+						Selected struct{ Count int } `json:"selected"`
+					} `json:"totals"`
+				} `json:"view"`
+			}
+			if err := json.Unmarshal(stdout.Bytes(), &document); err != nil {
+				t.Fatalf("partial review JSON: %v\n%s", err, stdout.String())
+			}
+			if len(document.Inventory.Errors) != 1 || document.View.Totals.Selected.Count != test.wantSelectedWorktree {
+				t.Fatalf("document=%+v", document)
+			}
+		})
+	}
+}
+
 func TestNormalizeReviewPathsRejectsBrokenSymlink(t *testing.T) {
 	root := t.TempDir()
 	link := filepath.Join(root, "broken")
@@ -758,6 +797,22 @@ type mainFakeGit struct {
 type reviewNoMutationGit struct {
 	*mainFakeGit
 	removes, prunes, deletes int
+}
+
+type partialReviewGit struct {
+	*mainFakeGit
+	failed model.Repository
+}
+
+func (f *partialReviewGit) Discover(context.Context, []string) ([]model.Repository, []error) {
+	return []model.Repository{f.repositories[0], f.failed}, nil
+}
+
+func (f *partialReviewGit) List(ctx context.Context, repo model.Repository) ([]model.RegisteredWorktree, error) {
+	if repo.CommonDir == f.failed.CommonDir {
+		return nil, errors.New("lost repository")
+	}
+	return f.mainFakeGit.List(ctx, repo)
 }
 
 func (f *reviewNoMutationGit) Remove(context.Context, model.Repository, string) error {

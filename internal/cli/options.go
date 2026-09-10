@@ -8,6 +8,8 @@ import (
 	"io"
 	"strings"
 	"time"
+
+	"github.com/ben-ranford/wtgc/internal/model"
 )
 
 const (
@@ -173,6 +175,11 @@ func Parse(args []string) (Options, error) {
 		if opts.SortBy != "path" && opts.SortBy != "size" {
 			return Options{}, &UsageError{Message: "--sort-by must be path or size"}
 		}
+		for _, classification := range classifications {
+			if !isReviewClassification(classification) {
+				return Options{}, &UsageError{Message: fmt.Sprintf("unknown review classification %q", classification)}
+			}
+		}
 	}
 
 	if len(roots) == 0 {
@@ -184,6 +191,15 @@ func Parse(args []string) (Options, error) {
 	opts.SelectedPaths = append([]string(nil), selectedPaths...)
 
 	return opts, nil
+}
+
+func isReviewClassification(value string) bool {
+	switch model.Classification(value) {
+	case model.SafeToRemove, model.MergedButDirty, model.Unmerged, model.Prunable, model.Kept, model.Error:
+		return true
+	default:
+		return false
+	}
 }
 
 func validateReviewExecutionFlags(fs *flag.FlagSet, dryRun boolOption) error {

@@ -56,10 +56,7 @@ type Total struct {
 
 // Build validates advisory selections and deterministically projects inv.
 func Build(inv model.Inventory, opts Options) (Document, error) {
-	selected, err := resolveSelections(inv.Worktrees, opts.SelectedPaths)
-	if err != nil {
-		return Document{}, err
-	}
+	selected, selectionErr := resolveSelections(inv.Worktrees, opts.SelectedPaths)
 	doc := Document{ReviewSchemaVersion: SchemaVersion, Inventory: inv}
 	doc.View.GroupBy, doc.View.SortBy = opts.GroupBy, opts.SortBy
 	if doc.View.GroupBy == "" {
@@ -73,14 +70,14 @@ func Build(inv model.Inventory, opts Options) (Document, error) {
 
 	visible := make([]Row, 0, len(inv.Worktrees))
 	for _, worktree := range inv.Worktrees {
-		if matches(worktree, opts) || hasError(worktree) {
+		if matches(worktree, opts) || hasError(worktree) || selected[worktree.Path] {
 			visible = append(visible, Row{Worktree: worktree, Selected: selected[worktree.Path]})
 		}
 	}
 	sortRows(visible, doc.View.SortBy)
 	doc.View.Totals.Visible = totalRows(visible)
 	doc.View.Groups = groupRows(visible, doc.View.GroupBy)
-	return doc, nil
+	return doc, selectionErr
 }
 
 func resolveSelections(worktrees []model.Worktree, paths []string) (map[string]bool, error) {
@@ -89,20 +86,28 @@ func resolveSelections(worktrees []model.Worktree, paths []string) (map[string]b
 	for _, worktree := range worktrees {
 		counts[worktree.Path]++
 	}
+	var selectionErr error
 	for _, path := range paths {
 		if selected[path] {
-			return nil, fmt.Errorf("duplicate advisory selection %q", path)
+			if selectionErr == nil {
+				selectionErr = fmt.Errorf("duplicate advisory selection %q", path)
+			}
+			continue
 		}
 		switch counts[path] {
 		case 0:
-			return nil, fmt.Errorf("unknown advisory selection %q", path)
+			if selectionErr == nil {
+				selectionErr = fmt.Errorf("unknown advisory selection %q", path)
+			}
 		case 1:
 			selected[path] = true
 		default:
-			return nil, fmt.Errorf("ambiguous advisory selection %q", path)
+			if selectionErr == nil {
+				selectionErr = fmt.Errorf("ambiguous advisory selection %q", path)
+			}
 		}
 	}
-	return selected, nil
+	return selected, selectionErr
 }
 
 func matches(worktree model.Worktree, opts Options) bool {

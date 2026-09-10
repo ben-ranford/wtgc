@@ -57,6 +57,21 @@ func TestParseReviewFlagsAndReadOnlyContract(t *testing.T) {
 	}
 }
 
+func TestParseReviewClassifications(t *testing.T) {
+	valid := []string{"safe_to_remove", "merged_but_dirty", "unmerged", "stale_orphaned", "kept", "error"}
+	args := []string{"review"}
+	for _, classification := range valid {
+		args = append(args, "--classification", classification)
+	}
+	opts, err := Parse(args)
+	if err != nil || strings.Join(opts.Classifications, ",") != strings.Join(valid, ",") {
+		t.Fatalf("opts=%+v err=%v", opts, err)
+	}
+	if _, err := Parse([]string{"review", "--classification", "safe-to-remove"}); err == nil || !IsUsageError(err) {
+		t.Fatalf("invalid classification error=%v", err)
+	}
+}
+
 func TestParseCleanWithPositionalAndScanRoots(t *testing.T) {
 	opts, err := Parse([]string{"clean", "--scan-root", "../one", "--scan-root=three", "two"})
 	if err != nil {

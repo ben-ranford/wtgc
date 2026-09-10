@@ -140,7 +140,9 @@ func run(ctx context.Context, args []string, streams processIO, deps commandDepe
 		document, err := review.Build(inventory, reviewOptions)
 		if err != nil {
 			fmt.Fprintf(streams.stderr, "review: %v\n", err)
-			return 2
+			if runErr == nil {
+				return 2
+			}
 		}
 		if err := report.WriteReview(streams.stdout, document, format); err != nil {
 			fmt.Fprintf(streams.stderr, "write report: %v\n", err)

@@ -80,6 +80,30 @@ func TestBuildKeepsCacheWarningErrorsVisible(t *testing.T) {
 	}
 }
 
+func TestBuildKeepsSelectedRowsVisibleThroughFilters(t *testing.T) {
+	selected := worktree("/selected", "/selected-repository", model.SafeToRemove, 1)
+	matching := worktree("/matching", "/matching-repository", model.Kept, 1)
+	doc, err := Build(model.Inventory{Worktrees: []model.Worktree{selected, matching}}, Options{
+		Repositories:    []string{"/matching-repository"},
+		Classifications: []string{string(model.Kept)},
+		SelectedPaths:   []string{"/selected"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if doc.View.Totals.Visible.Count != 2 || doc.View.Totals.Selected.Count != 1 {
+		t.Fatalf("totals=%+v", doc.View.Totals)
+	}
+	for _, group := range doc.View.Groups {
+		for _, row := range group.Worktrees {
+			if row.Worktree.Path == "/selected" && row.Selected {
+				return
+			}
+		}
+	}
+	t.Fatal("selected row was filtered from the view")
+}
+
 func worktree(path, repository string, classification model.Classification, size int64) model.Worktree {
 	return model.Worktree{Path: path, Repository: repository, Classification: classification, DiskBytes: size}
 }
