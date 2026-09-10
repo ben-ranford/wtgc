@@ -5,9 +5,7 @@ import (
 	"context"
 	"fmt"
 	"io"
-	"os"
 	"strings"
-	"time"
 
 	"github.com/ben-ranford/wtgc/internal/app"
 	"github.com/ben-ranford/wtgc/internal/report"
@@ -30,12 +28,6 @@ func selectionConfirmer(ctx context.Context, input io.Reader, output io.Writer, 
 					accepted = false
 				}
 			}()
-		}
-		if file, ok := input.(*os.File); ok {
-			if err := requireInterruptibleSelectionInput(file); err != nil {
-				fmt.Fprintf(output, "prepare selected confirmation: %v\n", err)
-				return false
-			}
 		}
 		// Close the command-owned stream on cancellation instead of abandoning a
 		// blocked reader goroutine. In-memory readers finish synchronously.
@@ -67,18 +59,4 @@ func selectionConfirmer(ctx context.Context, input io.Reader, output io.Writer, 
 		answer = strings.ToLower(strings.TrimSpace(answer))
 		return answer == "y" || answer == "yes"
 	}
-}
-
-func requireInterruptibleSelectionInput(file *os.File) error {
-	if err := file.SetReadDeadline(time.Time{}); err == nil {
-		return nil
-	}
-	info, err := file.Stat()
-	if err != nil {
-		return err
-	}
-	if !info.Mode().IsRegular() {
-		return fmt.Errorf("selected confirmation requires interruptible input on this platform")
-	}
-	return nil
 }

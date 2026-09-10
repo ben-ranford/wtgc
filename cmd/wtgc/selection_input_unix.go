@@ -4,9 +4,11 @@ package main
 
 import (
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"syscall"
+	"time"
 )
 
 // Inherited stdin is not registered with Go's poller. A nonblocking duplicate
@@ -42,7 +44,7 @@ func prepareSelectionInput(input io.Reader) (io.Reader, func() error, error) {
 		return nil, nil, err
 	}
 	pollable := os.NewFile(uintptr(fd), file.Name())
-	return pollable, func() error {
+	release := func() error {
 		closeErr := pollable.Close()
 		if errors.Is(closeErr, os.ErrClosed) {
 			closeErr = nil
@@ -55,5 +57,23 @@ func prepareSelectionInput(input io.Reader) (io.Reader, func() error, error) {
 			}
 		})
 		return errors.Join(closeErr, controlErr, restoreErr)
-	}, nil
+	}
+	if err := requireInterruptibleSelectionInput(pollable); err != nil {
+		return nil, nil, errors.Join(err, release())
+	}
+	return pollable, release, nil
+}
+
+func requireInterruptibleSelectionInput(file *os.File) error {
+	if err := file.SetReadDeadline(time.Time{}); err == nil {
+		return nil
+	}
+	info, err := file.Stat()
+	if err != nil {
+		return err
+	}
+	if !info.Mode().IsRegular() {
+		return fmt.Errorf("selected confirmation requires interruptible input on this platform")
+	}
+	return nil
 }

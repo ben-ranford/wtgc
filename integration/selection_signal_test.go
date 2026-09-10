@@ -5,6 +5,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"runtime"
@@ -112,3 +114,66 @@ func (w *selectionPromptWriter) Write(p []byte) (int, error) {
 }
 
 func (w *selectionPromptWriter) String() string { return w.buffer.String() }
+
+// Exercise inherited native stdin, not a strings.Reader passed to run. This
+// contract runs on Windows too: deadline support is not a Close capability.
+func TestSelectedConfirmationBinaryPipeAnswers(t *testing.T) {
+	for _, answer := range []string{"yes\n", "no\n", "", "yes"} {
+		t.Run(fmt.Sprintf("answer=%q", answer), func(t *testing.T) {
+			repo := newRepository(t)
+			selected := repo.CreateMergedWorktree(t, "selected")
+			other := repo.CreateMergedWorktree(t, "unselected")
+			before := repo.RegisteredWorktrees(t)
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+			cmd := exec.CommandContext(ctx, wtgcBinary(t), "clean", "--select", selected, "--interactive", "--json", repo.Root)
+			cmd.Dir = repo.Path
+			stdin, err := cmd.StdinPipe()
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer stdin.Close()
+			var stdout, stderr bytes.Buffer
+			cmd.Stdout, cmd.Stderr = &stdout, &stderr
+			if err := cmd.Start(); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := io.WriteString(stdin, answer); err != nil {
+				t.Fatal(err)
+			}
+			if err := stdin.Close(); err != nil {
+				t.Fatal(err)
+			}
+			if err := cmd.Wait(); err != nil {
+				t.Fatalf("exit=%v stdout=%s stderr=%s", err, &stdout, &stderr)
+			}
+			var inv model.Inventory
+			if err := json.Unmarshal(stdout.Bytes(), &inv); err != nil {
+				t.Fatal(err)
+			}
+			removed := 0
+			if answer == "yes\n" {
+				removed = 1
+			}
+			if inv.SchemaVersion != "1.1.0" || inv.Summary.Removed != removed || inv.Summary.Pruned != 0 {
+				t.Fatalf("unexpected inventory: %+v", inv)
+			}
+			if strings.Count(stderr.String(), "[y/N]") != 1 {
+				t.Fatalf("prompt=%s", &stderr)
+			}
+			_, err = os.Stat(selected)
+			if removed == 1 && !os.IsNotExist(err) || removed == 0 && err != nil {
+				t.Fatalf("selected: %v", err)
+			}
+			if _, err := os.Stat(other); err != nil {
+				t.Fatal(err)
+			}
+			if !repo.BranchExists(t, "selected") || !repo.BranchExists(t, "unselected") {
+				t.Fatal("changed branches")
+			}
+			if removed == 0 && repo.RegisteredWorktrees(t) != before {
+				t.Fatal("decline/EOF changed registrations")
+			}
+		})
+	}
+}

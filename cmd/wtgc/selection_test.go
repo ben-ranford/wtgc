@@ -216,9 +216,6 @@ func TestSelectionConfirmationInputCapabilities(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer file.Close()
-	if err := requireInterruptibleSelectionInput(file); err != nil {
-		t.Fatalf("regular file capability rejected: %v", err)
-	}
 	if _, err := file.WriteString("yes\n"); err != nil {
 		t.Fatal(err)
 	}
@@ -231,7 +228,7 @@ func TestSelectionConfirmationInputCapabilities(t *testing.T) {
 	if err := file.Close(); err != nil {
 		t.Fatal(err)
 	}
-	if err := requireInterruptibleSelectionInput(file); err == nil {
+	if selectionConfirmer(context.Background(), file, io.Discard, false)(app.SelectionPreview{Count: 1}) {
 		t.Fatal("closed file accepted")
 	}
 	null, err := os.Open(os.DevNull)
@@ -242,8 +239,5 @@ func TestSelectionConfirmationInputCapabilities(t *testing.T) {
 	var output bytes.Buffer
 	if selectionConfirmer(context.Background(), null, &output, false)(app.SelectionPreview{Count: 1}) {
 		t.Fatal("null device accepted confirmation")
-	}
-	if !strings.Contains(output.String(), "requires interruptible input") {
-		t.Fatalf("missing capability failure: %s", &output)
 	}
 }

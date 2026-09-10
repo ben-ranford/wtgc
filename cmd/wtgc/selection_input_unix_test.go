@@ -194,3 +194,32 @@ func TestSelectionInputDetectsExternallyClosedDescriptor(t *testing.T) {
 		}
 	}
 }
+
+func TestSelectionInputCapabilityRegularAndClosed(t *testing.T) {
+	file, err := os.CreateTemp(t.TempDir(), "answers")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer file.Close()
+	if err := requireInterruptibleSelectionInput(file); err != nil {
+		t.Fatalf("finite regular input rejected: %v", err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := requireInterruptibleSelectionInput(file); err == nil {
+		t.Fatal("closed input accepted")
+	}
+	null, err := os.Open(os.DevNull)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer null.Close()
+	before := selectionInputFlags(t, null)
+	if _, _, err := prepareSelectionInput(null); err == nil {
+		t.Fatal("nonpollable device accepted")
+	}
+	if got := selectionInputFlags(t, null); got != before {
+		t.Fatalf("rejected input flags changed: %d -> %d", before, got)
+	}
+}
