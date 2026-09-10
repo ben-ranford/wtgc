@@ -11,6 +11,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/ben-ranford/wtgc/internal/gitx"
 	"github.com/ben-ranford/wtgc/internal/model"
 	"github.com/ben-ranford/wtgc/internal/review"
 	"github.com/ben-ranford/wtgc/internal/testgit"
@@ -219,6 +220,9 @@ func TestCleanExactSelectionPreservesUnselectedStaleRegistrationAndBranches(t *t
 	if err := os.RemoveAll(stale); err != nil {
 		t.Fatal(err)
 	}
+	if !hasRegisteredWorktree(t, repo, stale) {
+		t.Fatal("stale registration missing before selected cleanup")
+	}
 
 	inv, diagnostics := runSelectedClean(t, repo.Root, 0, "",
 		"clean", "--yes", "--delete-branch", "--json", "--select", selected, repo.Root,
@@ -232,7 +236,7 @@ func TestCleanExactSelectionPreservesUnselectedStaleRegistrationAndBranches(t *t
 	if _, err := os.Stat(unselected); err != nil || !repo.BranchExists(t, "unselected") || !repo.BranchExists(t, "stale") || repo.BranchExists(t, "selected") {
 		t.Fatalf("exact cleanup changed unselected worktree or branches: stat=%v", err)
 	}
-	if !strings.Contains(repo.RegisteredWorktrees(t), filepath.Clean(stale)) {
+	if !hasRegisteredWorktree(t, repo, stale) {
 		t.Fatal("selected cleanup pruned an unselected stale registration")
 	}
 }
@@ -310,6 +314,21 @@ func hasSelectedPath(t *testing.T, groups []review.Group, path string) bool {
 			if row.Selected && filepath.Clean(canonicalPath(t, row.Worktree.Path)) == filepath.Clean(selected) {
 				return true
 			}
+		}
+	}
+	return false
+}
+
+func hasRegisteredWorktree(t *testing.T, repo *testgit.Repository, path string) bool {
+	t.Helper()
+	records, err := gitx.ParseWorktreeListPorcelainZ([]byte(testgit.Run(t, repo.Path, "worktree", "list", "--porcelain", "-z")))
+	if err != nil {
+		t.Fatalf("parse worktree registrations: %v", err)
+	}
+	want := canonicalPathAllowMissing(t, path)
+	for _, record := range records {
+		if canonicalPathAllowMissing(t, record.Path) == want {
+			return true
 		}
 	}
 	return false
