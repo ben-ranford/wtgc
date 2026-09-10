@@ -29,6 +29,13 @@ func TestReviewProjectsLargeRealRepositoryAndRetainsPartialScanErrors(t *testing
 			selected = canonicalPath(t, path)
 		}
 	}
+	largest := filepath.Join(repo.Worktrees, "row-049")
+	testgit.WriteFile(t, filepath.Join(largest, "size-order-fixture.txt"), strings.Repeat("x", 256*1024))
+	testgit.Run(t, largest, "add", "size-order-fixture.txt")
+	testgit.Run(t, largest, "commit", "-m", "commit review size fixture")
+	testgit.Run(t, largest, "push", "-u", "origin", "review/row-049")
+	testgit.Run(t, repo.Path, "merge", "--no-ff", "--no-edit", "review/row-049")
+	testgit.Run(t, repo.Path, "push", "origin", "main")
 
 	doc, stderr := runReviewJSON(t, repo.Root, 1,
 		"review", "--json",
@@ -57,13 +64,32 @@ func TestReviewProjectsLargeRealRepositoryAndRetainsPartialScanErrors(t *testing
 		t.Fatalf("groups = %+v", doc.View.Groups)
 	}
 	rows := doc.View.Groups[0].Worktrees
+	if canonicalPath(t, rows[0].Worktree.Path) != canonicalPath(t, largest) {
+		t.Fatalf("largest worktree = %q, want %q", rows[0].Worktree.Path, largest)
+	}
+	unequalSizes, equalSizeTie := false, false
 	for i, row := range rows {
 		if row.Worktree.Classification != model.SafeToRemove {
 			t.Fatalf("row %d classification = %q", i, row.Worktree.Classification)
 		}
-		if i > 0 && rows[i-1].Worktree.Path > row.Worktree.Path {
-			t.Fatalf("size tie was not resolved by path: %q before %q", rows[i-1].Worktree.Path, row.Worktree.Path)
+		if i == 0 {
+			continue
 		}
+		previous := rows[i-1].Worktree
+		if previous.DiskBytes < row.Worktree.DiskBytes {
+			t.Fatalf("size order = %d before %d, want descending", previous.DiskBytes, row.Worktree.DiskBytes)
+		}
+		if previous.DiskBytes != row.Worktree.DiskBytes {
+			unequalSizes = true
+			continue
+		}
+		equalSizeTie = true
+		if previous.Path > row.Worktree.Path {
+			t.Fatalf("equal-size path order = %q before %q, want ascending", previous.Path, row.Worktree.Path)
+		}
+	}
+	if !unequalSizes || !equalSizeTie {
+		t.Fatalf("fixture must contain unequal sizes and an equal-size tie: unequal=%t tie=%t", unequalSizes, equalSizeTie)
 	}
 	if !hasSelectedPath(t, doc.View.Groups, selected) {
 		t.Fatalf("selected path %q was not retained in the projected view", selected)
