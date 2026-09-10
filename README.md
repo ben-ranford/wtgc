@@ -143,6 +143,7 @@ Runtime requirements:
 - [JSON inventory format](docs/inventory-schema.md)
 - [Hooks and scheduled cleanup](docs/ci-usage.md)
 - [How wtgc is structured](docs/architecture.md)
+- [1.2.0 and 1.3.0 roadmap](docs/roadmap-1.2-1.3.md)
 
 ## 💭 Feedback and contributing
 
