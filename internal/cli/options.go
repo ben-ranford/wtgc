@@ -113,10 +113,6 @@ func Parse(args []string) (Options, error) {
 	fs.Var(&dryRun, "dry-run", "preview cleanup actions without removing anything")
 
 	if err := fs.Parse(args); err != nil {
-		if errors.Is(err, flag.ErrHelp) {
-			opts.Help = true
-			return opts, nil
-		}
 		return Options{}, &UsageError{Message: err.Error()}
 	}
 

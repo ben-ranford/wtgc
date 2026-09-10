@@ -1,19 +1,19 @@
 {
-  "total_min": 85.0,
-  "package_min": 0.0,
+  "total_min": 98.0,
+  "package_min": 98.0,
   "packages": {
-    "github.com/ben-ranford/wtgc/cmd/wtgc": 78.0,
-    "github.com/ben-ranford/wtgc/internal/app": 87.0,
-    "github.com/ben-ranford/wtgc/internal/cache": 74.0,
-    "github.com/ben-ranford/wtgc/internal/cli": 89.0,
-    "github.com/ben-ranford/wtgc/internal/gitx": 80.0,
+    "github.com/ben-ranford/wtgc/cmd/wtgc": 98.0,
+    "github.com/ben-ranford/wtgc/internal/app": 98.0,
+    "github.com/ben-ranford/wtgc/internal/cache": 98.0,
+    "github.com/ben-ranford/wtgc/internal/cli": 98.0,
+    "github.com/ben-ranford/wtgc/internal/gitx": 98.0,
     "github.com/ben-ranford/wtgc/internal/model": 100.0,
-    "github.com/ben-ranford/wtgc/internal/provider": 80.0,
-    "github.com/ben-ranford/wtgc/internal/report": 83.0,
-    "github.com/ben-ranford/wtgc/tools/benchdelta": 76.0,
-    "github.com/ben-ranford/wtgc/tools/coveragegate": 78.0,
-    "github.com/ben-ranford/wtgc/tools/featureflag": 72.0,
-    "github.com/ben-ranford/wtgc/tools/prcheck": 97.0,
-    "github.com/ben-ranford/wtgc/tools/releasepack": 79.0
+    "github.com/ben-ranford/wtgc/internal/provider": 98.0,
+    "github.com/ben-ranford/wtgc/internal/report": 98.0,
+    "github.com/ben-ranford/wtgc/tools/benchdelta": 98.0,
+    "github.com/ben-ranford/wtgc/tools/coveragegate": 98.0,
+    "github.com/ben-ranford/wtgc/tools/featureflag": 98.0,
+    "github.com/ben-ranford/wtgc/tools/prcheck": 98.0,
+    "github.com/ben-ranford/wtgc/tools/releasepack": 98.0
   }
 }

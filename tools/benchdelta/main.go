@@ -16,7 +16,7 @@ import (
 	"strings"
 )
 
-var benchLine = regexp.MustCompile(`^(Benchmark\S+)\s+\d+\s+\S+\s+ns/op\s+(\d+)\s+B/op\s+(\d+)\s+allocs/op`)
+var benchLine = regexp.MustCompile(`^(Benchmark\S+)\s+\d+\s+\S+\s+ns/op\s+(\S+)\s+B/op\s+(\S+)\s+allocs/op`)
 
 type metric struct{ bytes, allocs float64 }
 
@@ -33,7 +33,7 @@ func run(args []string, stderr io.Writer) int {
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
-	if *base == "" || *head == "" || *summary == "" || !validThreshold(*maxBytes) || !validThreshold(*maxAllocs) || *minSamples < 1 {
+	if *base == "" || *head == "" || *summary == "" || !validNonNegativeFinite(*maxBytes) || !validNonNegativeFinite(*maxAllocs) || *minSamples < 1 {
 		fmt.Fprintln(stderr, "--base, --head, --summary-out, finite non-negative thresholds, and --min-samples >= 1 are required")
 		return 2
 	}
@@ -45,7 +45,7 @@ func run(args []string, stderr io.Writer) int {
 	fmt.Fprintln(stderr, "Memory benchmark allocation comparison passed.")
 	return 0
 }
-func validThreshold(value float64) bool {
+func validNonNegativeFinite(value float64) bool {
 	return value >= 0 && !math.IsNaN(value) && !math.IsInf(value, 0)
 }
 
@@ -67,13 +67,13 @@ func parse(path string, minSamples int) (map[string]metric, error) {
 		if len(m) == 0 {
 			continue
 		}
-		b, err := strconv.ParseFloat(m[2], 64)
+		b, err := parseMetric("bytes", m[2], m[1])
 		if err != nil {
-			return nil, fmt.Errorf("parse bytes/op for %s: %w", m[1], err)
+			return nil, err
 		}
-		a, err := strconv.ParseFloat(m[3], 64)
+		a, err := parseMetric("allocs", m[3], m[1])
 		if err != nil {
-			return nil, fmt.Errorf("parse allocs/op for %s: %w", m[1], err)
+			return nil, err
 		}
 		values[m[1]] = append(values[m[1]], metric{b, a})
 	}
@@ -94,6 +94,17 @@ func parse(path string, minSamples int) (map[string]metric, error) {
 		return nil, errors.New("no benchmark allocation lines found")
 	}
 	return out, nil
+}
+
+func parseMetric(name, value, benchmark string) (float64, error) {
+	metric, err := strconv.ParseFloat(value, 64)
+	if err != nil {
+		return 0, fmt.Errorf("parse %s/op for %s: %w", name, benchmark, err)
+	}
+	if !validNonNegativeFinite(metric) {
+		return 0, fmt.Errorf("invalid %s/op for %s: must be finite and non-negative", name, benchmark)
+	}
+	return metric, nil
 }
 func compare(basePath, headPath string, maxBytes, maxAllocs float64, summary string) error {
 	return compareSamples(basePath, headPath, maxBytes, maxAllocs, 1, summary)

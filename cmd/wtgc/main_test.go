@@ -12,6 +12,7 @@ import (
 
 	"github.com/ben-ranford/wtgc/internal/app"
 	"github.com/ben-ranford/wtgc/internal/model"
+	"github.com/ben-ranford/wtgc/internal/provider"
 )
 
 func TestRunHelpAndVersion(t *testing.T) {
@@ -30,7 +31,7 @@ func TestRunHelpAndVersion(t *testing.T) {
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			var stdout, stderr bytes.Buffer
-			code := run(context.Background(), test.args, strings.NewReader(""), &stdout, &stderr, nil, func() (string, error) { return "/tmp", nil })
+			code := run(context.Background(), test.args, processIO{stdin: strings.NewReader(""), stdout: &stdout, stderr: &stderr}, mainCommandDependencies(nil, func() (string, error) { return "/tmp", nil }))
 			if code != 0 {
 				t.Fatalf("exit = %d, stderr = %q", code, stderr.String())
 			}
@@ -43,9 +44,9 @@ func TestRunHelpAndVersion(t *testing.T) {
 
 func TestRunNoArgsDoesNotResolveWorkingDirectory(t *testing.T) {
 	var stdout, stderr bytes.Buffer
-	code := run(context.Background(), nil, strings.NewReader(""), &stdout, &stderr, nil, func() (string, error) {
+	code := run(context.Background(), nil, processIO{stdin: strings.NewReader(""), stdout: &stdout, stderr: &stderr}, mainCommandDependencies(nil, func() (string, error) {
 		return "", errors.New("getwd must not be called")
-	})
+	}))
 	if code != 0 {
 		t.Fatalf("exit = %d, stderr = %q", code, stderr.String())
 	}
@@ -87,7 +88,7 @@ func TestRunFlagOutputContracts(t *testing.T) {
 				backend = newMainFakeGit(mainRecord("main"), mainRemovableRecord("feature"))
 			}
 
-			code := run(context.Background(), test.args, strings.NewReader(test.stdin), &stdout, &stderr, backend, func() (string, error) { return "/repo", nil })
+			code := run(context.Background(), test.args, processIO{stdin: strings.NewReader(test.stdin), stdout: &stdout, stderr: &stderr}, mainCommandDependencies(backend, func() (string, error) { return "/repo", nil }))
 			if code != 0 {
 				t.Fatalf("exit = %d, stderr = %q", code, stderr.String())
 			}
@@ -141,7 +142,7 @@ func TestRunFlagOutputContracts(t *testing.T) {
 func TestRunUsageError(t *testing.T) {
 	t.Parallel()
 	var stdout, stderr bytes.Buffer
-	code := run(context.Background(), []string{"clean", "--yes", "--interactive"}, strings.NewReader(""), &stdout, &stderr, nil, func() (string, error) { return "/tmp", nil })
+	code := run(context.Background(), []string{"clean", "--yes", "--interactive"}, processIO{stdin: strings.NewReader(""), stdout: &stdout, stderr: &stderr}, mainCommandDependencies(nil, func() (string, error) { return "/tmp", nil }))
 	if code != 2 || !strings.Contains(stderr.String(), "mutually exclusive") || !strings.Contains(stderr.String(), "Usage:") {
 		t.Fatalf("exit = %d, stdout = %q, stderr = %q", code, stdout.String(), stderr.String())
 	}
@@ -174,7 +175,7 @@ func TestRunWritesJSONReportFromInjectedBackend(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	backend := newMainFakeGit(mainRecord("main"))
 
-	code := run(context.Background(), []string{"--json"}, strings.NewReader(""), &stdout, &stderr, backend, func() (string, error) { return "/repo", nil })
+	code := run(context.Background(), []string{"--json"}, processIO{stdin: strings.NewReader(""), stdout: &stdout, stderr: &stderr}, mainCommandDependencies(backend, func() (string, error) { return "/repo", nil }))
 	if code != 0 {
 		t.Fatalf("exit = %d, stderr = %q", code, stderr.String())
 	}
@@ -190,9 +191,9 @@ func TestRunReturnsOneWhenGetwdFails(t *testing.T) {
 	t.Parallel()
 	var stdout, stderr bytes.Buffer
 
-	code := run(context.Background(), []string{"clean"}, strings.NewReader(""), &stdout, &stderr, newMainFakeGit(mainRecord("main")), func() (string, error) {
+	code := run(context.Background(), []string{"clean"}, processIO{stdin: strings.NewReader(""), stdout: &stdout, stderr: &stderr}, mainCommandDependencies(newMainFakeGit(mainRecord("main")), func() (string, error) {
 		return "", errors.New("cwd unavailable")
-	})
+	}))
 	if code != 1 {
 		t.Fatalf("exit = %d, want 1", code)
 	}
@@ -207,7 +208,7 @@ func TestRunReturnsOneAfterWritingReportForAppError(t *testing.T) {
 	backend := newMainFakeGit()
 	backend.repositories = nil
 
-	code := run(context.Background(), []string{"clean"}, strings.NewReader(""), &stdout, &stderr, backend, func() (string, error) { return "/repo", nil })
+	code := run(context.Background(), []string{"clean"}, processIO{stdin: strings.NewReader(""), stdout: &stdout, stderr: &stderr}, mainCommandDependencies(backend, func() (string, error) { return "/repo", nil }))
 	if code != 1 {
 		t.Fatalf("exit = %d, want 1", code)
 	}
@@ -223,7 +224,7 @@ func TestRunReturnsOneWhenReportWriteFails(t *testing.T) {
 	t.Parallel()
 	var stderr bytes.Buffer
 
-	code := run(context.Background(), []string{"clean"}, strings.NewReader(""), failingWriter{}, &stderr, newMainFakeGit(mainRecord("main")), func() (string, error) { return "/repo", nil })
+	code := run(context.Background(), []string{"clean"}, processIO{stdin: strings.NewReader(""), stdout: failingWriter{}, stderr: &stderr}, mainCommandDependencies(newMainFakeGit(mainRecord("main")), func() (string, error) { return "/repo", nil }))
 	if code != 1 {
 		t.Fatalf("exit = %d, want 1", code)
 	}
@@ -286,6 +287,111 @@ func TestStaticInfoRequest(t *testing.T) {
 	}
 }
 
+func TestRunMainUsesStaticBackendAndRejectsInvalidTimeout(t *testing.T) {
+	t.Parallel()
+	backend := newMainFakeGit(mainRecord("main"))
+	newGitCalls, timedCalls := 0, 0
+	newGit := func(string) app.Git {
+		newGitCalls++
+		return backend
+	}
+	newTimedGit := func(_ string, timeout time.Duration) app.Git {
+		timedCalls++
+		if timeout != 150*time.Millisecond {
+			t.Fatalf("timeout = %s", timeout)
+		}
+		return backend
+	}
+
+	var stdout, stderr bytes.Buffer
+	if code := runMain([]string{"--help"}, processIO{stdin: strings.NewReader(""), stdout: &stdout, stderr: &stderr}, startupDependencies{getenv: func(string) string { return "invalid" }, getwd: func() (string, error) { return "/repo", nil }, newGit: newGit, newGitWithTimeout: newTimedGit}); code != 0 {
+		t.Fatalf("static info exit = %d, stderr=%q", code, stderr.String())
+	}
+	if newGitCalls != 1 || timedCalls != 0 || !strings.Contains(stdout.String(), "Usage:") {
+		t.Fatalf("static startup new=%d timed=%d stdout=%q", newGitCalls, timedCalls, stdout.String())
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	if code := runMain([]string{"clean"}, processIO{stdin: strings.NewReader(""), stdout: &stdout, stderr: &stderr}, startupDependencies{getenv: func(string) string { return "bad" }, getwd: func() (string, error) { return "/repo", nil }, newGit: newGit, newGitWithTimeout: newTimedGit}); code != 2 {
+		t.Fatalf("invalid timeout exit = %d", code)
+	}
+	if !strings.Contains(stderr.String(), "WTGC_GIT_TIMEOUT") || timedCalls != 0 {
+		t.Fatalf("stderr=%q timed=%d", stderr.String(), timedCalls)
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	if code := runMain([]string{"clean", "--json"}, processIO{stdin: strings.NewReader(""), stdout: &stdout, stderr: &stderr}, startupDependencies{getenv: func(string) string { return "150ms" }, getwd: func() (string, error) { return "/repo", nil }, newGit: newGit, newGitWithTimeout: newTimedGit}); code != 0 {
+		t.Fatalf("timed startup exit = %d stderr=%q", code, stderr.String())
+	}
+	if timedCalls != 1 || !strings.Contains(stdout.String(), `"schema_version"`) {
+		t.Fatalf("timed startup calls=%d stdout=%q", timedCalls, stdout.String())
+	}
+}
+
+func TestConfirmerPrunableAndEOFDefaultToNo(t *testing.T) {
+	var output bytes.Buffer
+	if confirmer(strings.NewReader(""), &output, false)(model.Worktree{Path: "/stale", Prunable: true}) {
+		t.Fatal("EOF must not confirm")
+	}
+	if !strings.Contains(output.String(), "prune stale metadata for /stale? [y/N] \n") {
+		t.Fatalf("prompt=%q", output.String())
+	}
+}
+
+func TestRunWithProviderBuildsProofBoundary(t *testing.T) {
+	t.Parallel()
+	backend := newMainFakeGit(mainRecord("main"), mainRemovableRecord("feature"))
+	proofCalls := 0
+	finder := mainProofFinder{proof: provider.PullRequest{
+		Number:         1,
+		URL:            "https://github.com/owner/repo/pull/1",
+		MergedAt:       time.Now().Add(-time.Minute),
+		HeadSHA:        "def456",
+		HeadOwner:      "owner",
+		HeadRepo:       "repo",
+		HeadRef:        "feature",
+		BaseOwner:      "owner",
+		BaseRepo:       "repo",
+		BaseRef:        "main",
+		MergeCommitSHA: strings.Repeat("a", 40),
+	}}
+	var stdout, stderr bytes.Buffer
+	code := run(context.Background(), []string{"clean", "--provider", "github", "--json"}, processIO{stdin: strings.NewReader(""), stdout: &stdout, stderr: &stderr}, commandDependencies{
+		backend: backend,
+		getwd:   func() (string, error) { return "/repo", nil },
+		newProvider: func() provider.MergeFinder {
+			proofCalls++
+			return finder
+		},
+	})
+	if code != 0 || proofCalls != 1 || !strings.Contains(stdout.String(), `"schema_version"`) {
+		t.Fatalf("code=%d calls=%d stdout=%q stderr=%q", code, proofCalls, stdout.String(), stderr.String())
+	}
+}
+
+func TestRunCreatesDefaultGitHubProviderWithoutNetworkWhenGitProofIsSufficient(t *testing.T) {
+	t.Parallel()
+	backend := newMainFakeGit(mainRecord("main"), mainRemovableRecord("feature"))
+	var stdout, stderr bytes.Buffer
+	code := runMain([]string{"clean", "--provider", "github", "--json"}, processIO{stdin: strings.NewReader(""), stdout: &stdout, stderr: &stderr}, startupDependencies{
+		getenv:            func(string) string { return "" },
+		getwd:             func() (string, error) { return "/repo", nil },
+		newGit:            func(string) app.Git { return backend },
+		newGitWithTimeout: func(string, time.Duration) app.Git { return backend },
+	})
+	if code != 0 || !strings.Contains(stdout.String(), `"schema_version"`) || stderr.Len() != 0 {
+		t.Fatalf("code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+}
+
+func TestProductionGitFactoriesCreateBoundaries(t *testing.T) {
+	if newGitBackend("git") == nil || newTimedGitBackend("git", time.Second) == nil {
+		t.Fatal("production Git factories returned nil")
+	}
+}
+
 func TestConfirmerDefaultsToNo(t *testing.T) {
 	t.Parallel()
 	var output bytes.Buffer
@@ -311,6 +417,14 @@ func TestConfirmerDefaultsToNo(t *testing.T) {
 type mainFakeGit struct {
 	repositories []model.Repository
 	records      []model.RegisteredWorktree
+}
+
+func mainCommandDependencies(backend app.Git, getwd func() (string, error)) commandDependencies {
+	return commandDependencies{
+		backend:     backend,
+		getwd:       getwd,
+		newProvider: func() provider.MergeFinder { return provider.NewGitHub(nil) },
+	}
 }
 
 func newMainFakeGit(records ...model.RegisteredWorktree) *mainFakeGit {
@@ -381,3 +495,9 @@ func (failingWriter) Write([]byte) (int, error) {
 }
 
 var _ io.Writer = failingWriter{}
+
+type mainProofFinder struct{ proof provider.PullRequest }
+
+func (p mainProofFinder) FindMerged(context.Context, provider.Query) (provider.PullRequest, error) {
+	return p.proof, nil
+}

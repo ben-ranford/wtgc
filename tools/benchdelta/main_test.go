@@ -24,7 +24,7 @@ func TestRunRejectsMissingAndInvalidInputs(t *testing.T) {
 			t.Fatalf("non-finite threshold %q exit = %d", threshold, code)
 		}
 	}
-	if validThreshold(math.NaN()) || validThreshold(math.Inf(1)) || !validThreshold(0) {
+	if validNonNegativeFinite(math.NaN()) || validNonNegativeFinite(math.Inf(1)) || !validNonNegativeFinite(0) {
 		t.Fatal("threshold validity accepted a non-finite value")
 	}
 }
@@ -46,6 +46,35 @@ func TestParseUsesMedianForDuplicateSamples(t *testing.T) {
 	}
 	if got := values["BenchmarkRun-8"]; got.bytes != 200 || got.allocs != 20 {
 		t.Fatalf("median metric = %#v", got)
+	}
+}
+
+func TestParseRejectsInvalidAllocationMetrics(t *testing.T) {
+	for _, metricName := range []string{"bytes", "allocs"} {
+		for _, value := range []string{"NaN", "+Inf", "-Inf", "-1"} {
+			t.Run(metricName+"/"+value, func(t *testing.T) {
+				bytes, allocs := "1", "1"
+				if metricName == "bytes" {
+					bytes = value
+				} else {
+					allocs = value
+				}
+				_, err := parse(fixture(t, "invalid", "BenchmarkRun-8 1 100 ns/op "+bytes+" B/op "+allocs+" allocs/op\n"), 1)
+				if err == nil || !strings.Contains(err.Error(), metricName+"/op") {
+					t.Fatalf("invalid %s metric accepted: %v", metricName, err)
+				}
+			})
+		}
+	}
+}
+
+func TestParseAcceptsZeroAllocationMetrics(t *testing.T) {
+	values, err := parse(fixture(t, "zero", "BenchmarkRun-8 1 100 ns/op 0 B/op 0 allocs/op\n"), 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := values["BenchmarkRun-8"]; got.bytes != 0 || got.allocs != 0 {
+		t.Fatalf("zero metric = %#v", got)
 	}
 }
 
@@ -93,5 +122,61 @@ func TestCompareWritesArtifactOnFailureAndHandlesZeroBaseline(t *testing.T) {
 	}
 	if data, err := os.ReadFile(summary); err != nil || !strings.Contains(string(data), "BenchmarkRun") {
 		t.Fatalf("summary = %q, err = %v", data, err)
+	}
+}
+
+func TestRunAndParseCoverErrorAndBoundaryPaths(t *testing.T) {
+	root := t.TempDir()
+	base := fixture(t, "base", "BenchmarkB-8 1 10 ns/op 10 B/op 1 allocs/op\n")
+	head := fixture(t, "head", "BenchmarkB-8 1 10 ns/op 11 B/op 1 allocs/op\n")
+	var stderr bytes.Buffer
+	if code := run([]string{"--base", base, "--head", head, "--summary-out", filepath.Join(root, "summary.md"), "--max-bytes-pct", "10", "--max-allocs-pct", "0", "--min-samples", "1"}, &stderr); code != 0 {
+		t.Fatalf("valid run=%d: %s", code, stderr.String())
+	}
+	if code := run([]string{"--base", base, "--head", head, "--summary-out", filepath.Join(root, "summary.md"), "--min-samples", "0"}, &stderr); code != 2 {
+		t.Fatalf("invalid sample count=%d", code)
+	}
+	if code := run([]string{"--base", base, "--head", fixture(t, "missing", "BenchmarkOther-8 1 10 ns/op 1 B/op 1 allocs/op\n"), "--summary-out", filepath.Join(root, "summary.md")}, &stderr); code != 1 {
+		t.Fatalf("missing candidate=%d", code)
+	}
+	for _, body := range []string{
+		"BenchmarkB-8 1 10 ns/op nope B/op 1 allocs/op\n",
+		"BenchmarkB-8 1 10 ns/op 1 B/op nope allocs/op\n",
+		"not a benchmark\n",
+	} {
+		if _, err := parse(fixture(t, "bad", body), 1); err == nil {
+			t.Fatalf("accepted malformed input %q", body)
+		}
+	}
+	if _, err := parse(filepath.Join(root, "missing"), 1); err == nil {
+		t.Fatal("accepted missing benchmark file")
+	}
+	if _, err := parse("\x00", 1); err == nil {
+		t.Fatal("accepted invalid benchmark root")
+	}
+	if _, err := parse("/dev/null/benchmark.out", 1); err == nil {
+		t.Fatal("accepted a non-directory benchmark root")
+	}
+	if err := compareSamples(base, head, 10, 0, 1, filepath.Join(root, "nested", "summary.md")); err != nil {
+		t.Fatalf("compareSamples success: %v", err)
+	}
+	if err := compareSamples(fixture(t, "base-two", "BenchmarkA-8 1 10 ns/op 1 B/op 1 allocs/op\nBenchmarkB-8 1 10 ns/op 1 B/op 1 allocs/op\n"), fixture(t, "head-one", "BenchmarkA-8 1 10 ns/op 1 B/op 1 allocs/op\n"), 0, 0, 1, filepath.Join(root, "missing.md")); err == nil || !strings.Contains(err.Error(), "missing candidate") {
+		t.Fatalf("missing candidate failure=%v", err)
+	}
+	if err := compare(base, head, 10, 0, root); err == nil {
+		t.Fatal("compare accepted directory summary target")
+	}
+	if _, err := parse(fixture(t, "oversized", strings.Repeat("x", 70<<10)+"\n"), 1); err == nil {
+		t.Fatal("parse accepted an oversized scanner token")
+	}
+	if got := percent(0, 0); got != 0 || percent(0, 1) != 100 || percent(10, 9) != -10 {
+		t.Fatalf("unexpected percentages: %v", got)
+	}
+}
+
+func TestRunRejectsFlagParsingFailure(t *testing.T) {
+	var stderr bytes.Buffer
+	if code := run([]string{"--not-a-flag"}, &stderr); code != 2 {
+		t.Fatalf("flag parse exit = %d", code)
 	}
 }

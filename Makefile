@@ -132,7 +132,7 @@ fuzz-corpus-check:
 
 ci-tools-cov:
 	@./scripts/managed-output.sh ensure "$(QUALITY_ARTIFACT_DIR)"
-	$(GO_CMD) test ./tools/benchdelta ./tools/coveragegate ./tools/featureflag -covermode=atomic -coverprofile="$(QUALITY_ARTIFACT_DIR)/ci-tools-coverage.out"
+	$(GO_CMD) test ./tools/benchdelta ./tools/coveragegate ./tools/featureflag ./tools/prcheck ./tools/releasepack -covermode=atomic -coverprofile="$(QUALITY_ARTIFACT_DIR)/ci-tools-coverage.out"
 	$(GO_CMD) run ./tools/coveragegate --coverprofile "$(QUALITY_ARTIFACT_DIR)/ci-tools-coverage.out" --config .ci/ci-tools-coverage.json --total-out "$(QUALITY_ARTIFACT_DIR)/ci-tools-coverage-total.json" --packages-out "$(QUALITY_ARTIFACT_DIR)/ci-tools-coverage-packages.json" --package-failures-out "$(QUALITY_ARTIFACT_DIR)/ci-tools-coverage-failures.json"
 
 race:

@@ -98,3 +98,65 @@ func TestValidateRejectsUnknownFieldsAndIncompleteDeclarations(t *testing.T) {
 		}
 	}
 }
+
+func TestRunAcceptsContractAndRejectsExtraArguments(t *testing.T) {
+	root := t.TempDir()
+	contract := filepath.Join(root, "flags.json")
+	if err := os.WriteFile(contract, []byte(`{"flags":[]}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var stderr bytes.Buffer
+	if code := run([]string{"--file", contract}, &stderr); code != 0 || !strings.Contains(stderr.String(), "valid") {
+		t.Fatalf("valid contract = (%d, %q)", code, stderr.String())
+	}
+	if code := run([]string{"--file", contract, "extra"}, &stderr); code != 2 {
+		t.Fatalf("extra argument = %d", code)
+	}
+}
+
+func TestValidateDeclarationCoversReferenceAndFieldFailures(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "source.go"), []byte("// launch-mode\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	repository, err := os.OpenRoot(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer repository.Close()
+	for _, item := range []declaration{
+		{Name: "a", Owner: "team", Issue: "#1", RemovalCondition: "done", References: []string{"source.go"}},
+		{Name: "ab", Owner: "", Issue: "#1", RemovalCondition: "done", References: []string{"source.go"}},
+		{Name: "ab", Owner: "team", Issue: "#1", RemovalCondition: "done", References: []string{"missing.go"}},
+	} {
+		if err := validateDeclaration(item, repository, map[string]bool{}); err == nil {
+			t.Fatalf("accepted invalid declaration %#v", item)
+		}
+	}
+	if err := validateDeclaration(declaration{Name: "launch-mode", Owner: "team", Issue: "#1", RemovalCondition: "done", References: []string{"source.go"}}, repository, map[string]bool{}); err != nil {
+		t.Fatalf("valid declaration rejected: %v", err)
+	}
+	seen := map[string]bool{"launch-mode": true}
+	if err := validateDeclaration(declaration{Name: "launch-mode", Owner: "team", Issue: "#1", RemovalCondition: "done", References: []string{"source.go"}}, repository, seen); err == nil || !strings.Contains(err.Error(), "duplicate") {
+		t.Fatalf("duplicate declaration accepted: %v", err)
+	}
+	if err := validateDeclaration(declaration{Name: "retire-me", Owner: "team", Issue: "#1", RemovalCondition: "done", References: []string{"source.go"}}, repository, map[string]bool{}); err == nil || !strings.Contains(err.Error(), "absent") {
+		t.Fatalf("stale declaration accepted: %v", err)
+	}
+}
+
+func TestDeclarationReadersFailClosedOnInvalidRootsAndFiles(t *testing.T) {
+	if _, err := readDeclarations("\x00"); err == nil {
+		t.Fatal("readDeclarations accepted invalid root")
+	}
+	if _, err := readDeclarations("/dev/null/flags.json"); err == nil {
+		t.Fatal("readDeclarations accepted a non-directory root")
+	}
+	if _, err := readDeclarations(filepath.Join(t.TempDir(), "missing.json")); err == nil {
+		t.Fatal("readDeclarations accepted missing file")
+	}
+	contract := writeContract(t, `{"flags":[]}`)
+	if err := validateIn(contract, "\x00"); err == nil {
+		t.Fatal("validateIn accepted invalid repository root")
+	}
+}

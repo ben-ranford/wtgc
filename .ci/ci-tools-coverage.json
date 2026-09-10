@@ -1,9 +1,11 @@
 {
-  "total_min": 75.0,
-  "package_min": 70.0,
+  "total_min": 98.0,
+  "package_min": 98.0,
   "packages": {
-    "github.com/ben-ranford/wtgc/tools/benchdelta": 75.0,
-    "github.com/ben-ranford/wtgc/tools/coveragegate": 75.0,
-    "github.com/ben-ranford/wtgc/tools/featureflag": 70.0
+    "github.com/ben-ranford/wtgc/tools/benchdelta": 98.0,
+    "github.com/ben-ranford/wtgc/tools/coveragegate": 98.0,
+    "github.com/ben-ranford/wtgc/tools/featureflag": 98.0,
+    "github.com/ben-ranford/wtgc/tools/prcheck": 98.0,
+    "github.com/ben-ranford/wtgc/tools/releasepack": 98.0
   }
 }
