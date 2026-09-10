@@ -45,9 +45,14 @@ func TestParseReviewFlagsAndReadOnlyContract(t *testing.T) {
 	if opts.Command != CommandReview || !opts.DryRun || strings.Join(opts.Repositories, ",") != "/repo,/other" || strings.Join(opts.Classifications, ",") != "kept,error" || opts.GroupBy != "repository" || opts.SortBy != "size" || strings.Join(opts.SelectedPaths, ",") != "/repo/wt" || strings.Join(opts.Roots, ",") != "/scan" {
 		t.Fatalf("opts=%+v", opts)
 	}
-	for _, args := range [][]string{{"review", "--yes"}, {"review", "--interactive"}, {"review", "--delete-branch"}, {"review", "--dry-run=false"}, {"review", "--group-by", "branch"}, {"review", "--sort-by", "branch"}} {
+	for _, args := range [][]string{{"review", "--yes"}, {"review", "--yes=false"}, {"review", "-y=false"}, {"review", "--interactive"}, {"review", "--interactive=false"}, {"review", "--delete-branch"}, {"review", "--delete-branch=false"}, {"review", "--dry-run=false"}, {"review", "--group-by", "branch"}, {"review", "--sort-by", "branch"}} {
 		if _, err := Parse(args); err == nil || !IsUsageError(err) {
 			t.Fatalf("Parse(%v) err=%v, want usage", args, err)
+		}
+	}
+	for _, static := range []string{"--help", "--version"} {
+		if _, err := Parse([]string{"review", "--yes", static}); err == nil || !IsUsageError(err) {
+			t.Fatalf("Parse(review --yes %s) err=%v, want usage", static, err)
 		}
 	}
 }

@@ -2,6 +2,7 @@
 package report
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -45,7 +46,8 @@ func WriteReview(w io.Writer, document review.Document, format Format) error {
 	if format != "" && format != FormatHuman {
 		return fmt.Errorf("unknown report format %q", format)
 	}
-	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
+	var output bytes.Buffer
+	tw := tabwriter.NewWriter(&output, 0, 0, 2, ' ', 0)
 	for _, group := range document.View.Groups {
 		fmt.Fprintf(tw, "GROUP\t%s\n", SafeHumanText(group.Key))
 		fmt.Fprintln(tw, "SELECTED\tHEAD\tPATH\tCLASSIFICATION\tSIZE\tREASON\tEVIDENCE")
@@ -56,12 +58,17 @@ func WriteReview(w io.Writer, document review.Document, format Format) error {
 	if err := tw.Flush(); err != nil {
 		return err
 	}
-	writeReviewTotals(w, document.View.Totals)
+	writeReviewTotals(&output, document.View.Totals)
 	if len(document.Inventory.Errors) > 0 {
-		fmt.Fprintln(w, "Errors:")
+		fmt.Fprintln(&output, "Errors:")
 		for _, errText := range document.Inventory.Errors {
-			fmt.Fprintf(w, "  - %s\n", SafeHumanText(errText))
+			fmt.Fprintf(&output, "  - %s\n", SafeHumanText(errText))
 		}
+	}
+	if written, err := w.Write(output.Bytes()); err != nil {
+		return err
+	} else if written != output.Len() {
+		return io.ErrShortWrite
 	}
 	return nil
 }

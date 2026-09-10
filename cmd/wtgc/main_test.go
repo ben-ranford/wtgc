@@ -190,9 +190,20 @@ func TestRunWritesJSONReportFromInjectedBackend(t *testing.T) {
 }
 
 func TestRunReviewIsReadOnlyAndWritesSeparateDocument(t *testing.T) {
-	backend := &reviewNoMutationGit{mainFakeGit: newMainFakeGit(mainRecord("main"), mainRemovableRecord("feature"))}
+	root := t.TempDir()
+	worktree := filepath.Join(root, "worktree")
+	if err := os.Mkdir(worktree, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	realRoot, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	realWorktree := filepath.Join(realRoot, "worktree")
+	backend := &reviewNoMutationGit{mainFakeGit: newMainFakeGit(model.RegisteredWorktree{Path: realWorktree, Branch: "feature", Head: "def456"})}
+	backend.repositories[0].PrimaryPath = realRoot
 	var stdout, stderr bytes.Buffer
-	code := run(context.Background(), []string{"review", "--json", "--group-by", "classification", "--select", "/worktree"}, processIO{stdin: strings.NewReader(""), stdout: &stdout, stderr: &stderr}, mainCommandDependencies(backend, func() (string, error) { return "/repo", nil }))
+	code := run(context.Background(), []string{"review", "--json", "--group-by", "classification", "--select", realWorktree}, processIO{stdin: strings.NewReader(""), stdout: &stdout, stderr: &stderr}, mainCommandDependencies(backend, func() (string, error) { return root, nil }))
 	if code != 0 || stderr.Len() != 0 {
 		t.Fatalf("code=%d stderr=%q", code, stderr.String())
 	}
@@ -221,8 +232,17 @@ func TestRunReviewIsReadOnlyAndWritesSeparateDocument(t *testing.T) {
 	if err := json.Unmarshal(stdout.Bytes(), &document); err != nil {
 		t.Fatalf("review JSON: %v\n%s", err, stdout.String())
 	}
-	if document.ReviewSchemaVersion != "1.0.0" || document.Inventory.SchemaVersion != "1.1.0" || document.View.Totals.Full.Count != 2 || document.View.Totals.Visible.Count != 2 || document.View.Totals.Selected.Count != 1 {
+	if document.ReviewSchemaVersion != "1.0.0" || document.Inventory.SchemaVersion != "1.1.0" || document.View.Totals.Full.Count != 1 || document.View.Totals.Visible.Count != 1 || document.View.Totals.Selected.Count != 1 {
 		t.Fatalf("document=%+v", document)
+	}
+}
+
+func TestRunReviewRejectsDestructiveFlagsWithStaticInformation(t *testing.T) {
+	for _, args := range [][]string{{"review", "--yes", "--help"}, {"review", "--delete-branch=false", "--version"}} {
+		var stdout, stderr bytes.Buffer
+		if code := run(context.Background(), args, processIO{stdin: strings.NewReader(""), stdout: &stdout, stderr: &stderr}, mainCommandDependencies(nil, func() (string, error) { return "/repo", nil })); code != 2 || !strings.Contains(stderr.String(), "review is read-only") {
+			t.Fatalf("run %v code=%d stderr=%q", args, code, stderr.String())
+		}
 	}
 }
 

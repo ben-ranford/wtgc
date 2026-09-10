@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"io"
 	"strings"
 	"testing"
 	"time"
@@ -88,11 +89,25 @@ func TestWriteReviewShowsEvidenceTotalsAndEscapesText(t *testing.T) {
 	if err := json.Unmarshal(output.Bytes(), &decoded); err != nil || decoded.ReviewSchemaVersion != review.SchemaVersion || decoded.Inventory.SchemaVersion != "1.0.0" {
 		t.Fatalf("review JSON=%s err=%v decoded=%+v", output.String(), err, decoded)
 	}
-	if err := WriteReview(failingReportWriter{}, doc, FormatHuman); err == nil {
-		t.Fatal("WriteReview accepted failing writer")
-	}
 	if err := WriteReview(&output, doc, Format("csv")); err == nil {
 		t.Fatal("WriteReview accepted unknown format")
+	}
+}
+
+func TestWriteReviewReportsCompleteDocumentWriteFailures(t *testing.T) {
+	empty, err := review.Build(model.Inventory{}, review.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := WriteReview(failingReportWriter{}, empty, FormatHuman); err == nil {
+		t.Fatal("WriteReview accepted empty-view writer failure")
+	}
+	doc, err := review.Build(testInventory(), review.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := WriteReview(shortReportWriter{}, doc, FormatHuman); !errors.Is(err, io.ErrShortWrite) {
+		t.Fatalf("WriteReview partial document error=%v, want short write", err)
 	}
 }
 
@@ -209,6 +224,12 @@ type failingReportWriter struct{}
 
 func (failingReportWriter) Write([]byte) (int, error) {
 	return 0, errors.New("report write failed")
+}
+
+type shortReportWriter struct{}
+
+func (shortReportWriter) Write(value []byte) (int, error) {
+	return len(value) - 1, nil
 }
 
 func TestAction(t *testing.T) {

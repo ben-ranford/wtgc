@@ -129,6 +129,12 @@ func Parse(args []string) (Options, error) {
 	if err := fs.Parse(args); err != nil {
 		return Options{}, &UsageError{Message: err.Error()}
 	}
+	if opts.Command == CommandReview {
+		if err := validateReviewExecutionFlags(fs, dryRun); err != nil {
+			return Options{}, err
+		}
+		opts.DryRun = true
+	}
 
 	if opts.Help || opts.Version {
 		return opts, nil
@@ -145,10 +151,6 @@ func Parse(args []string) (Options, error) {
 	}
 
 	if opts.Command == CommandReview {
-		if opts.Yes || opts.Interactive || opts.DeleteBranch || (dryRun.set && !dryRun.value) {
-			return Options{}, &UsageError{Message: "review is read-only and rejects --yes, --interactive, --delete-branch, and --dry-run=false"}
-		}
-		opts.DryRun = true
 	} else if err := validateExecutionMode(&opts, dryRun); err != nil {
 		return Options{}, err
 	}
@@ -182,6 +184,20 @@ func Parse(args []string) (Options, error) {
 	opts.SelectedPaths = append([]string(nil), selectedPaths...)
 
 	return opts, nil
+}
+
+func validateReviewExecutionFlags(fs *flag.FlagSet, dryRun boolOption) error {
+	var destructive string
+	fs.Visit(func(value *flag.Flag) {
+		switch value.Name {
+		case "yes", "y", "interactive", "delete-branch":
+			destructive = value.Name
+		}
+	})
+	if destructive != "" || (dryRun.set && !dryRun.value) {
+		return &UsageError{Message: "review is read-only and rejects --yes, --interactive, --delete-branch, and --dry-run=false"}
+	}
+	return nil
 }
 
 func validateExecutionMode(opts *Options, dryRun boolOption) error {
