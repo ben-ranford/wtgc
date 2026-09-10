@@ -6,13 +6,18 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"os"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/ben-ranford/wtgc/internal/app"
+	"github.com/ben-ranford/wtgc/internal/cli"
 	"github.com/ben-ranford/wtgc/internal/model"
 	"github.com/ben-ranford/wtgc/internal/provider"
+	"github.com/ben-ranford/wtgc/internal/review"
 )
 
 func TestRunHelpAndVersion(t *testing.T) {
@@ -184,6 +189,407 @@ func TestRunWritesJSONReportFromInjectedBackend(t *testing.T) {
 	}
 	if stderr.Len() != 0 {
 		t.Fatalf("stderr = %q, want empty", stderr.String())
+	}
+}
+
+func TestRunReviewIsReadOnlyAndWritesSeparateDocument(t *testing.T) {
+	root := t.TempDir()
+	worktree := filepath.Join(root, "worktree")
+	if err := os.Mkdir(worktree, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	realRoot, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	realWorktree := filepath.Join(realRoot, "worktree")
+	backend := &reviewNoMutationGit{mainFakeGit: newMainFakeGit(model.RegisteredWorktree{Path: realWorktree, Branch: "feature", Head: "def456"})}
+	backend.repositories[0].PrimaryPath = realRoot
+	var stdout, stderr bytes.Buffer
+	code := run(context.Background(), []string{"review", "--json", "--group-by", "classification", "--select", realWorktree}, processIO{stdin: strings.NewReader(""), stdout: &stdout, stderr: &stderr}, mainCommandDependencies(backend, func() (string, error) { return root, nil }))
+	if code != 0 || stderr.Len() != 0 {
+		t.Fatalf("code=%d stderr=%q", code, stderr.String())
+	}
+	if backend.removes != 0 || backend.prunes != 0 || backend.deletes != 0 {
+		t.Fatalf("review mutated repository: %+v", backend)
+	}
+	var document struct {
+		ReviewSchemaVersion string `json:"review_schema_version"`
+		Inventory           struct {
+			SchemaVersion string `json:"schema_version"`
+		} `json:"inventory"`
+		View struct {
+			Totals struct {
+				Full struct {
+					Count int `json:"count"`
+				} `json:"full"`
+				Visible struct {
+					Count int `json:"count"`
+				} `json:"visible"`
+				Selected struct {
+					Count int `json:"count"`
+				} `json:"selected"`
+			} `json:"totals"`
+		} `json:"view"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &document); err != nil {
+		t.Fatalf("review JSON: %v\n%s", err, stdout.String())
+	}
+	if document.ReviewSchemaVersion != "1.0.0" || document.Inventory.SchemaVersion != "1.1.0" || document.View.Totals.Full.Count != 1 || document.View.Totals.Visible.Count != 1 || document.View.Totals.Selected.Count != 1 {
+		t.Fatalf("document=%+v", document)
+	}
+}
+
+func TestRunReviewRejectsDestructiveFlagsWithStaticInformation(t *testing.T) {
+	for _, args := range [][]string{{"review", "--yes", "--help"}, {"review", "--delete-branch=false", "--version"}} {
+		var stdout, stderr bytes.Buffer
+		if code := run(context.Background(), args, processIO{stdin: strings.NewReader(""), stdout: &stdout, stderr: &stderr}, mainCommandDependencies(nil, func() (string, error) { return "/repo", nil })); code != 2 || !strings.Contains(stderr.String(), "review is read-only") {
+			t.Fatalf("run %v code=%d stderr=%q", args, code, stderr.String())
+		}
+	}
+}
+
+func TestRunReviewOnlyCreatesProviderWhenExplicitlyRequested(t *testing.T) {
+	backend := newMainFakeGit(mainRecord("main"), mainRemovableRecord("feature"))
+	providerCalls := 0
+	dependencies := commandDependencies{backend: backend, getwd: func() (string, error) { return "/repo", nil }, newProvider: func() provider.MergeFinder { providerCalls++; return mainProofFinder{} }}
+	for _, args := range [][]string{{"review", "--json"}, {"review", "--provider", "github", "--json"}} {
+		var stdout, stderr bytes.Buffer
+		if code := run(context.Background(), args, processIO{stdin: strings.NewReader(""), stdout: &stdout, stderr: &stderr}, dependencies); code != 0 {
+			t.Fatalf("run %v code=%d stderr=%q", args, code, stderr.String())
+		}
+	}
+	if providerCalls != 1 {
+		t.Fatalf("provider calls=%d, want one explicit opt-in", providerCalls)
+	}
+}
+
+func TestRunReviewNormalizesRelativeAndSymlinkPaths(t *testing.T) {
+	root := t.TempDir()
+	worktree := filepath.Join(root, "worktree")
+	if err := os.Mkdir(worktree, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(worktree, filepath.Join(root, "selected-link")); err != nil {
+		t.Fatal(err)
+	}
+	realRoot, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	backend := newMainFakeGit(model.RegisteredWorktree{Path: filepath.Join(realRoot, "worktree"), Head: "abc", Branch: "feature"})
+	backend.repositories[0].PrimaryPath = realRoot
+	var stdout, stderr bytes.Buffer
+	code := run(context.Background(), []string{"review", "--json", "--repository", ".", "--select", "selected-link"}, processIO{stdin: strings.NewReader(""), stdout: &stdout, stderr: &stderr}, mainCommandDependencies(backend, func() (string, error) { return root, nil }))
+	if code != 0 || stderr.Len() != 0 {
+		t.Fatalf("code=%d stderr=%q", code, stderr.String())
+	}
+	var document struct {
+		View struct {
+			Totals struct {
+				Visible  struct{ Count int } `json:"visible"`
+				Selected struct{ Count int } `json:"selected"`
+			} `json:"totals"`
+		} `json:"view"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &document); err != nil {
+		t.Fatal(err)
+	}
+	if document.View.Totals.Visible.Count != 1 || document.View.Totals.Selected.Count != 1 {
+		t.Fatalf("totals=%+v", document.View.Totals)
+	}
+}
+
+func TestRunReviewReturnsSelectionAndWriteErrors(t *testing.T) {
+	backend := newMainFakeGit(mainRecord("main"))
+	for _, test := range []struct {
+		name       string
+		args       []string
+		stdout     io.Writer
+		wantCode   int
+		wantStderr string
+	}{
+		{name: "unknown selection", args: []string{"review", "--select", "/missing"}, stdout: &bytes.Buffer{}, wantCode: 2, wantStderr: "unknown advisory selection"},
+		{name: "writer failure", args: []string{"review"}, stdout: failingWriter{}, wantCode: 1, wantStderr: "write report: write failed"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			var stderr bytes.Buffer
+			code := run(context.Background(), test.args, processIO{stdin: strings.NewReader(""), stdout: test.stdout, stderr: &stderr}, mainCommandDependencies(backend, func() (string, error) { return "/repo", nil }))
+			if code != test.wantCode || !strings.Contains(stderr.String(), test.wantStderr) {
+				t.Fatalf("code=%d stderr=%q", code, stderr.String())
+			}
+		})
+	}
+}
+
+func TestRunReviewPreservesPartialScanWhenSelectionsAreMissing(t *testing.T) {
+	root := t.TempDir()
+	repository := filepath.Join(root, "repository")
+	worktree := filepath.Join(root, "worktree")
+	lostRepository := filepath.Join(root, "lost")
+	if err := os.MkdirAll(repository, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(worktree, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	failed := model.Repository{CommonDir: filepath.Join(lostRepository, ".git"), PrimaryPath: lostRepository}
+	mainBackend := newMainFakeGit(model.RegisteredWorktree{Path: worktree, Branch: "feature", Head: "def456"})
+	mainBackend.repositories[0] = model.Repository{CommonDir: filepath.Join(repository, ".git"), PrimaryPath: repository}
+	backend := &partialReviewGit{mainFakeGit: mainBackend, failed: failed}
+	for _, test := range []struct {
+		name                 string
+		args                 []string
+		wantSelectionError   bool
+		wantSelectedWorktree int
+	}{
+		{name: "known selection", args: []string{"review", "--json", "--select", worktree}, wantSelectedWorktree: 1},
+		{name: "known and missing selections", args: []string{"review", "--json", "--select", worktree, "--select", filepath.Join(lostRepository, "worktree")}, wantSelectionError: true, wantSelectedWorktree: 1},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			var stdout, stderr bytes.Buffer
+			code := run(context.Background(), test.args, processIO{stdin: strings.NewReader(""), stdout: &stdout, stderr: &stderr}, mainCommandDependencies(backend, func() (string, error) { return repository, nil }))
+			if code != 1 || !strings.Contains(stderr.String(), "completed with 1 error") {
+				t.Fatalf("code=%d stderr=%q", code, stderr.String())
+			}
+			if test.wantSelectionError != strings.Contains(stderr.String(), "unknown advisory selection") {
+				t.Fatalf("selection diagnostic=%q", stderr.String())
+			}
+			var document struct {
+				Inventory struct{ Errors []string } `json:"inventory"`
+				View      struct {
+					Totals struct {
+						Selected struct{ Count int } `json:"selected"`
+					} `json:"totals"`
+				} `json:"view"`
+			}
+			if err := json.Unmarshal(stdout.Bytes(), &document); err != nil {
+				t.Fatalf("partial review JSON: %v\n%s", err, stdout.String())
+			}
+			if len(document.Inventory.Errors) != 1 || document.View.Totals.Selected.Count != test.wantSelectedWorktree {
+				t.Fatalf("document=%+v", document)
+			}
+		})
+	}
+}
+
+func TestNormalizeReviewPathsRejectsBrokenSymlink(t *testing.T) {
+	root := t.TempDir()
+	link := filepath.Join(root, "broken")
+	if err := os.Symlink(filepath.Join(root, "missing"), link); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := normalizeReviewPaths([]string{"broken"}, root); err == nil || !strings.Contains(err.Error(), "resolve review path") {
+		t.Fatalf("error=%v", err)
+	}
+	var stdout, stderr bytes.Buffer
+	code := run(context.Background(), []string{"review", "--select", "broken"}, processIO{stdin: strings.NewReader(""), stdout: &stdout, stderr: &stderr}, mainCommandDependencies(newMainFakeGit(mainRecord("main")), func() (string, error) { return root, nil }))
+	if code != 2 || !strings.Contains(stderr.String(), "resolve review path") {
+		t.Fatalf("code=%d stderr=%q", code, stderr.String())
+	}
+	if _, err := normalizeReviewPaths([]string{"\x00"}, root); err == nil || !strings.Contains(err.Error(), "inspect review path") {
+		t.Fatalf("invalid path error=%v", err)
+	}
+}
+
+func TestCanonicalReviewPathResolvesMissingSuffixBelowSymlink(t *testing.T) {
+	root := t.TempDir()
+	actual := filepath.Join(root, "actual")
+	if err := os.Mkdir(actual, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	alias := filepath.Join(root, "alias")
+	if err := os.Symlink(actual, alias); err != nil {
+		t.Fatal(err)
+	}
+	got, err := canonicalReviewPath(filepath.Join(alias, "missing", "worktree"), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantRoot, err := filepath.EvalSymlinks(actual)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := filepath.Join(wantRoot, "missing", "worktree"); got != want {
+		t.Fatalf("canonical missing path=%q, want %q", got, want)
+	}
+}
+
+func TestReviewPathParentRejectsPathWithoutAncestor(t *testing.T) {
+	if _, err := reviewPathParent("."); err == nil || !strings.Contains(err.Error(), "no existing ancestor") {
+		t.Fatalf("error=%v", err)
+	}
+}
+
+func TestReviewOptionsForInventoryMatchesCanonicalIdentityWithoutChangingPaths(t *testing.T) {
+	root := t.TempDir()
+	repository := filepath.Join(root, "repository")
+	worktrees := filepath.Join(root, "worktrees")
+	if err := os.MkdirAll(worktrees, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(repository, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	alias := filepath.Join(root, "alias")
+	if err := os.Symlink(worktrees, alias); err != nil {
+		t.Fatal(err)
+	}
+	canonicalRepository, err := canonicalReviewPath(repository, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	canonicalWorktree, err := canonicalReviewPath(filepath.Join(alias, "stale"), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	options, err := reviewOptionsForInventory(cli.Options{Repositories: []string{canonicalRepository}, SelectedPaths: []string{canonicalWorktree}}, model.Inventory{Worktrees: []model.Worktree{{Repository: repository, Path: filepath.Join(worktrees, "stale"), Classification: model.Prunable}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := options.Repositories[0]; got != repository {
+		t.Fatalf("repository identity=%q, want raw inventory %q", got, repository)
+	}
+	if got, want := options.SelectedPaths[0], filepath.Join(worktrees, "stale"); got != want {
+		t.Fatalf("selection identity=%q, want raw inventory %q", got, want)
+	}
+}
+
+func TestReviewOptionsForInventoryKeepsUnresolvedErrorRowsVisible(t *testing.T) {
+	root := t.TempDir()
+	selected := filepath.Join(root, "selected")
+	if err := os.Mkdir(selected, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	broken := filepath.Join(root, "broken")
+	if err := os.Symlink(filepath.Join(root, "missing-target"), broken); err != nil {
+		t.Fatal(err)
+	}
+	canonicalSelected, err := canonicalReviewPath(selected, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	inventory := model.Inventory{Worktrees: []model.Worktree{
+		{Path: selected, Repository: root, Classification: model.SafeToRemove},
+		{Path: filepath.Join(broken, "stale"), Repository: root, Classification: model.Error, Error: "inspect stale worktree failed"},
+	}}
+	options, err := reviewOptionsForInventory(cli.Options{SelectedPaths: []string{canonicalSelected}}, inventory)
+	if err != nil {
+		t.Fatalf("review options rejected unrelated error row: %v", err)
+	}
+	document, err := review.Build(inventory, options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if document.View.Totals.Selected.Count != 1 || document.View.Totals.Visible.Count != 2 {
+		t.Fatalf("totals=%+v", document.View.Totals)
+	}
+}
+
+func TestRunReviewRejectsAmbiguousCanonicalSelection(t *testing.T) {
+	root := t.TempDir()
+	real := filepath.Join(root, "real")
+	if err := os.Mkdir(real, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	alias := filepath.Join(root, "alias")
+	if err := os.Symlink(real, alias); err != nil {
+		t.Fatal(err)
+	}
+	backend := newMainFakeGit(
+		model.RegisteredWorktree{Path: real, Branch: "one", Head: "one"},
+		model.RegisteredWorktree{Path: alias, Branch: "two", Head: "two"},
+	)
+	var stdout, stderr bytes.Buffer
+	code := run(context.Background(), []string{"review", "--select", real}, processIO{stdin: strings.NewReader(""), stdout: &stdout, stderr: &stderr}, mainCommandDependencies(backend, func() (string, error) { return root, nil }))
+	if code != 2 || !strings.Contains(stderr.String(), "ambiguous review path") {
+		t.Fatalf("code=%d stderr=%q", code, stderr.String())
+	}
+}
+
+func TestReviewOptionsRejectsAmbiguousCanonicalRepository(t *testing.T) {
+	root := t.TempDir()
+	repository := filepath.Join(root, "repository")
+	if err := os.Mkdir(repository, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	alias := filepath.Join(root, "alias")
+	if err := os.Symlink(repository, alias); err != nil {
+		t.Fatal(err)
+	}
+	canonicalRepository, err := canonicalReviewPath(repository, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = reviewOptionsForInventory(cli.Options{Repositories: []string{canonicalRepository}}, model.Inventory{Worktrees: []model.Worktree{
+		{Repository: repository, Path: filepath.Join(root, "first"), Classification: model.SafeToRemove},
+		{Repository: alias, Path: filepath.Join(root, "second"), Classification: model.SafeToRemove},
+	}})
+	if err == nil || !strings.Contains(err.Error(), "ambiguous review path") {
+		t.Fatalf("error=%v", err)
+	}
+}
+
+func TestReviewOptionsKeepErrorRowsWhenWindowsVolumeIsUnavailable(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("requires Windows volume semantics")
+	}
+	missingRoot := ""
+	for drive := 'Z'; drive >= 'D'; drive-- {
+		candidate := string(drive) + `:\`
+		if _, err := os.Lstat(candidate); os.IsNotExist(err) {
+			missingRoot = candidate
+			break
+		}
+	}
+	if missingRoot == "" {
+		t.Skip("no unused drive letter")
+	}
+	if _, err := canonicalReviewPath(filepath.Join(missingRoot, "stale"), ""); err == nil || !strings.Contains(err.Error(), "no existing ancestor") {
+		t.Fatalf("missing volume error=%v", err)
+	}
+	root := t.TempDir()
+	selected := filepath.Join(root, "selected")
+	if err := os.Mkdir(selected, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	canonicalSelected, err := canonicalReviewPath(selected, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	inventory := model.Inventory{Worktrees: []model.Worktree{
+		{Path: selected, Repository: root, Classification: model.SafeToRemove},
+		{Path: filepath.Join(missingRoot, "stale"), Repository: root, Classification: model.Error, Error: "inspect stale worktree failed"},
+	}}
+	options, err := reviewOptionsForInventory(cli.Options{SelectedPaths: []string{canonicalSelected}}, inventory)
+	if err != nil {
+		t.Fatalf("review options rejected unrelated unavailable volume: %v", err)
+	}
+	document, err := review.Build(inventory, options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if document.View.Totals.Selected.Count != 1 || document.View.Totals.Visible.Count != 2 {
+		t.Fatalf("totals=%+v", document.View.Totals)
+	}
+}
+
+func TestReviewOptionsMatchMissingSuffixCaseOnWindows(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("requires Windows path-case semantics")
+	}
+	root := t.TempDir()
+	candidate := filepath.Join(root, "OldWT")
+	selection, err := canonicalReviewPath(filepath.Join(root, "oldwt"), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	options, err := reviewOptionsForInventory(cli.Options{SelectedPaths: []string{selection}}, model.Inventory{Worktrees: []model.Worktree{{Path: candidate, Repository: root, Classification: model.Prunable}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(options.SelectedPaths) != 1 || options.SelectedPaths[0] != candidate {
+		t.Fatalf("selected paths=%q, want %q", options.SelectedPaths, candidate)
 	}
 }
 
@@ -417,6 +823,37 @@ func TestConfirmerDefaultsToNo(t *testing.T) {
 type mainFakeGit struct {
 	repositories []model.Repository
 	records      []model.RegisteredWorktree
+}
+
+type reviewNoMutationGit struct {
+	*mainFakeGit
+	removes, prunes, deletes int
+}
+
+type partialReviewGit struct {
+	*mainFakeGit
+	failed model.Repository
+}
+
+func (f *partialReviewGit) Discover(context.Context, []string) ([]model.Repository, []error) {
+	return []model.Repository{f.repositories[0], f.failed}, nil
+}
+
+func (f *partialReviewGit) List(ctx context.Context, repo model.Repository) ([]model.RegisteredWorktree, error) {
+	if repo.CommonDir == f.failed.CommonDir {
+		return nil, errors.New("lost repository")
+	}
+	return f.mainFakeGit.List(ctx, repo)
+}
+
+func (f *reviewNoMutationGit) Remove(context.Context, model.Repository, string) error {
+	f.removes++
+	return nil
+}
+func (f *reviewNoMutationGit) Prune(context.Context, model.Repository) error { f.prunes++; return nil }
+func (f *reviewNoMutationGit) DeleteBranch(context.Context, model.Repository, string, string) error {
+	f.deletes++
+	return nil
 }
 
 func mainCommandDependencies(backend app.Git, getwd func() (string, error)) commandDependencies {

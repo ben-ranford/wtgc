@@ -7,6 +7,8 @@ import (
 	"io"
 	"os"
 	"os/signal"
+	"path/filepath"
+	"runtime"
 	"strings"
 	"syscall"
 	"time"
@@ -17,6 +19,7 @@ import (
 	"github.com/ben-ranford/wtgc/internal/model"
 	"github.com/ben-ranford/wtgc/internal/provider"
 	"github.com/ben-ranford/wtgc/internal/report"
+	"github.com/ben-ranford/wtgc/internal/review"
 )
 
 var (
@@ -97,9 +100,19 @@ func run(ctx context.Context, args []string, streams processIO, deps commandDepe
 		fmt.Fprintf(streams.stderr, "resolve current directory: %v\n", err)
 		return 1
 	}
+	if opts.Command == cli.CommandReview {
+		opts.Repositories, err = normalizeReviewPaths(opts.Repositories, workingDirectory)
+		if err == nil {
+			opts.SelectedPaths, err = normalizeReviewPaths(opts.SelectedPaths, workingDirectory)
+		}
+		if err != nil {
+			fmt.Fprintf(streams.stderr, "review: %v\n", err)
+			return 2
+		}
+	}
 	appOptions := app.Options{
 		Roots:          opts.Roots,
-		Execute:        !opts.DryRun,
+		Execute:        opts.Command == cli.CommandClean && !opts.DryRun,
 		Interactive:    opts.Interactive,
 		DeleteBranch:   opts.DeleteBranch,
 		ProtectedPath:  workingDirectory,
@@ -119,7 +132,24 @@ func run(ctx context.Context, args []string, streams processIO, deps commandDepe
 	if opts.JSON {
 		format = report.FormatJSON
 	}
-	if err := report.Write(streams.stdout, inventory, format); err != nil {
+	if opts.Command == cli.CommandReview {
+		reviewOptions, err := reviewOptionsForInventory(opts, inventory)
+		if err != nil {
+			fmt.Fprintf(streams.stderr, "review: %v\n", err)
+			return 2
+		}
+		document, err := review.Build(inventory, reviewOptions)
+		if err != nil {
+			fmt.Fprintf(streams.stderr, "review: %v\n", err)
+			if runErr == nil {
+				return 2
+			}
+		}
+		if err := report.WriteReview(streams.stdout, document, format); err != nil {
+			fmt.Fprintf(streams.stderr, "write report: %v\n", err)
+			return 1
+		}
+	} else if err := report.Write(streams.stdout, inventory, format); err != nil {
 		fmt.Fprintf(streams.stderr, "write report: %v\n", err)
 		return 1
 	}
@@ -128,6 +158,103 @@ func run(ctx context.Context, args []string, streams processIO, deps commandDepe
 		return 1
 	}
 	return 0
+}
+
+func normalizeReviewPaths(paths []string, base string) ([]string, error) {
+	normalized := make([]string, len(paths))
+	for i, path := range paths {
+		resolved, err := canonicalReviewPath(path, base)
+		if err != nil {
+			return nil, err
+		}
+		normalized[i] = resolved
+	}
+	return normalized, nil
+}
+
+func canonicalReviewPath(path, base string) (string, error) {
+	if !filepath.IsAbs(path) {
+		path = filepath.Join(base, path)
+	}
+	path = filepath.Clean(path)
+	missing := []string(nil)
+	for {
+		if _, err := os.Lstat(path); err == nil {
+			resolved, err := filepath.EvalSymlinks(path)
+			if err != nil {
+				return "", fmt.Errorf("resolve review path %q: %w", path, err)
+			}
+			return filepath.Join(append([]string{resolved}, missing...)...), nil
+		} else if !os.IsNotExist(err) {
+			return "", fmt.Errorf("inspect review path %q: %w", path, err)
+		}
+		parent, err := reviewPathParent(path)
+		if err != nil {
+			return "", err
+		}
+		missing = append([]string{filepath.Base(path)}, missing...)
+		path = parent
+	}
+}
+
+func reviewPathParent(path string) (string, error) {
+	parent := filepath.Dir(path)
+	if parent == path {
+		return "", fmt.Errorf("resolve review path %q: no existing ancestor", path)
+	}
+	return parent, nil
+}
+
+func reviewOptionsForInventory(opts cli.Options, inventory model.Inventory) (review.Options, error) {
+	repositories, err := matchReviewPaths(opts.Repositories, inventory.Worktrees, func(worktree model.Worktree) string { return worktree.Repository })
+	if err != nil {
+		return review.Options{}, err
+	}
+	selected, err := matchReviewPaths(opts.SelectedPaths, inventory.Worktrees, func(worktree model.Worktree) string { return worktree.Path })
+	if err != nil {
+		return review.Options{}, err
+	}
+	return review.Options{Repositories: repositories, Classifications: opts.Classifications, GroupBy: opts.GroupBy, SortBy: opts.SortBy, SelectedPaths: selected}, nil
+}
+
+func matchReviewPaths(paths []string, worktrees []model.Worktree, value func(model.Worktree) string) ([]string, error) {
+	matched := make([]string, len(paths))
+	for index, path := range paths {
+		values := make(map[string]struct{})
+		for _, worktree := range worktrees {
+			candidate := value(worktree)
+			if sameReviewPath(candidate, path) {
+				values[candidate] = struct{}{}
+				continue
+			}
+			canonical, err := canonicalReviewPath(candidate, "")
+			if err != nil {
+				continue
+			}
+			if sameReviewPath(canonical, path) {
+				values[candidate] = struct{}{}
+			}
+		}
+		switch len(values) {
+		case 0:
+			matched[index] = path
+		case 1:
+			for value := range values {
+				matched[index] = value
+			}
+		default:
+			return nil, fmt.Errorf("ambiguous review path %q", path)
+		}
+	}
+	return matched, nil
+}
+
+func sameReviewPath(left, right string) bool {
+	left, right = filepath.Clean(left), filepath.Clean(right)
+	// Missing stale suffixes cannot be resolved through the filesystem. Windows
+	// Git paths use the default case-insensitive identity in that situation;
+	// collisions still flow to the caller's ambiguity check.
+	return left == right || (runtime.GOOS == "windows" && strings.EqualFold(left, right))
 }
 
 func confirmer(input io.Reader, output io.Writer, deleteBranch bool) func(model.Worktree) bool {

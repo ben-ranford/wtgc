@@ -37,6 +37,41 @@ func TestParseCleanDefaultsToDryRunCurrentDirectory(t *testing.T) {
 	}
 }
 
+func TestParseReviewFlagsAndReadOnlyContract(t *testing.T) {
+	opts, err := Parse([]string{"review", "--repository", "/repo", "--repository", "/other", "--classification", "kept", "--classification", "error", "--group-by", "repository", "--sort-by", "size", "--select", "/repo/wt", "/scan"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if opts.Command != CommandReview || !opts.DryRun || strings.Join(opts.Repositories, ",") != "/repo,/other" || strings.Join(opts.Classifications, ",") != "kept,error" || opts.GroupBy != "repository" || opts.SortBy != "size" || strings.Join(opts.SelectedPaths, ",") != "/repo/wt" || strings.Join(opts.Roots, ",") != "/scan" {
+		t.Fatalf("opts=%+v", opts)
+	}
+	for _, args := range [][]string{{"review", "--yes"}, {"review", "--yes=false"}, {"review", "-y=false"}, {"review", "--interactive"}, {"review", "--interactive=false"}, {"review", "--delete-branch"}, {"review", "--delete-branch=false"}, {"review", "--dry-run=false"}, {"review", "--group-by", "branch"}, {"review", "--sort-by", "branch"}} {
+		if _, err := Parse(args); err == nil || !IsUsageError(err) {
+			t.Fatalf("Parse(%v) err=%v, want usage", args, err)
+		}
+	}
+	for _, static := range []string{"--help", "--version"} {
+		if _, err := Parse([]string{"review", "--yes", static}); err == nil || !IsUsageError(err) {
+			t.Fatalf("Parse(review --yes %s) err=%v, want usage", static, err)
+		}
+	}
+}
+
+func TestParseReviewClassifications(t *testing.T) {
+	valid := []string{"safe_to_remove", "merged_but_dirty", "unmerged", "stale_orphaned", "kept", "error"}
+	args := []string{"review"}
+	for _, classification := range valid {
+		args = append(args, "--classification", classification)
+	}
+	opts, err := Parse(args)
+	if err != nil || strings.Join(opts.Classifications, ",") != strings.Join(valid, ",") {
+		t.Fatalf("opts=%+v err=%v", opts, err)
+	}
+	if _, err := Parse([]string{"review", "--classification", "safe-to-remove"}); err == nil || !IsUsageError(err) {
+		t.Fatalf("invalid classification error=%v", err)
+	}
+}
+
 func TestParseCleanWithPositionalAndScanRoots(t *testing.T) {
 	opts, err := Parse([]string{"clean", "--scan-root", "../one", "--scan-root=three", "two"})
 	if err != nil {
@@ -147,6 +182,7 @@ func TestParseRejectsUnknownCommandAndFlag(t *testing.T) {
 		{"status"},
 		{"/tmp/scan"},
 		{"--bogus"},
+		{"clean", "--group-by", "repository"},
 	} {
 		_, err := Parse(args)
 		if err == nil {
@@ -163,7 +199,7 @@ func TestUsageMentionsCoreFlags(t *testing.T) {
 	WriteUsage(&b, "wtgc")
 	out := b.String()
 
-	for _, want := range []string{"Usage:", "show help", "clean [flags] [roots...]", "scan when a flag is supplied", "--scan-root", "--dry-run", "--yes", "--interactive", "--delete-branch", "--json", "--version"} {
+	for _, want := range []string{"Usage:", "show help", "clean [flags] [roots...]", "review [flags] [roots...]", "scan when a flag is supplied", "--scan-root", "--dry-run", "--yes", "--interactive", "--delete-branch", "--json", "--repository", "--classification", "--group-by", "--sort-by", "--select", "--version"} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("usage missing %q:\n%s", want, out)
 		}
