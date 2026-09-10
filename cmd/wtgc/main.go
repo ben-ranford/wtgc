@@ -185,10 +185,21 @@ func canonicalReviewPath(path, base string) (string, error) {
 		} else if !os.IsNotExist(err) {
 			return "", fmt.Errorf("inspect review path %q: %w", path, err)
 		}
-		parent := filepath.Dir(path)
+		parent, err := reviewPathParent(path)
+		if err != nil {
+			return "", err
+		}
 		missing = append([]string{filepath.Base(path)}, missing...)
 		path = parent
 	}
+}
+
+func reviewPathParent(path string) (string, error) {
+	parent := filepath.Dir(path)
+	if parent == path {
+		return "", fmt.Errorf("resolve review path %q: no existing ancestor", path)
+	}
+	return parent, nil
 }
 
 func reviewOptionsForInventory(opts cli.Options, inventory model.Inventory) (review.Options, error) {

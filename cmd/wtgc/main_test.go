@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -363,6 +364,12 @@ func TestCanonicalReviewPathResolvesMissingSuffixBelowSymlink(t *testing.T) {
 	}
 }
 
+func TestReviewPathParentRejectsPathWithoutAncestor(t *testing.T) {
+	if _, err := reviewPathParent("."); err == nil || !strings.Contains(err.Error(), "no existing ancestor") {
+		t.Fatalf("error=%v", err)
+	}
+}
+
 func TestReviewOptionsForInventoryMatchesCanonicalIdentityWithoutChangingPaths(t *testing.T) {
 	root := t.TempDir()
 	repository := filepath.Join(root, "repository")
@@ -446,6 +453,73 @@ func TestRunReviewRejectsAmbiguousCanonicalSelection(t *testing.T) {
 	code := run(context.Background(), []string{"review", "--select", real}, processIO{stdin: strings.NewReader(""), stdout: &stdout, stderr: &stderr}, mainCommandDependencies(backend, func() (string, error) { return root, nil }))
 	if code != 2 || !strings.Contains(stderr.String(), "ambiguous review path") {
 		t.Fatalf("code=%d stderr=%q", code, stderr.String())
+	}
+}
+
+func TestReviewOptionsRejectsAmbiguousCanonicalRepository(t *testing.T) {
+	root := t.TempDir()
+	repository := filepath.Join(root, "repository")
+	if err := os.Mkdir(repository, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	alias := filepath.Join(root, "alias")
+	if err := os.Symlink(repository, alias); err != nil {
+		t.Fatal(err)
+	}
+	canonicalRepository, err := canonicalReviewPath(repository, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = reviewOptionsForInventory(cli.Options{Repositories: []string{canonicalRepository}}, model.Inventory{Worktrees: []model.Worktree{
+		{Repository: repository, Path: filepath.Join(root, "first"), Classification: model.SafeToRemove},
+		{Repository: alias, Path: filepath.Join(root, "second"), Classification: model.SafeToRemove},
+	}})
+	if err == nil || !strings.Contains(err.Error(), "ambiguous review path") {
+		t.Fatalf("error=%v", err)
+	}
+}
+
+func TestReviewOptionsKeepErrorRowsWhenWindowsVolumeIsUnavailable(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("requires Windows volume semantics")
+	}
+	missingRoot := ""
+	for drive := 'Z'; drive >= 'D'; drive-- {
+		candidate := string(drive) + `:\`
+		if _, err := os.Lstat(candidate); os.IsNotExist(err) {
+			missingRoot = candidate
+			break
+		}
+	}
+	if missingRoot == "" {
+		t.Skip("no unused drive letter")
+	}
+	if _, err := canonicalReviewPath(filepath.Join(missingRoot, "stale"), ""); err == nil || !strings.Contains(err.Error(), "no existing ancestor") {
+		t.Fatalf("missing volume error=%v", err)
+	}
+	root := t.TempDir()
+	selected := filepath.Join(root, "selected")
+	if err := os.Mkdir(selected, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	canonicalSelected, err := canonicalReviewPath(selected, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	inventory := model.Inventory{Worktrees: []model.Worktree{
+		{Path: selected, Repository: root, Classification: model.SafeToRemove},
+		{Path: filepath.Join(missingRoot, "stale"), Repository: root, Classification: model.Error, Error: "inspect stale worktree failed"},
+	}}
+	options, err := reviewOptionsForInventory(cli.Options{SelectedPaths: []string{canonicalSelected}}, inventory)
+	if err != nil {
+		t.Fatalf("review options rejected unrelated unavailable volume: %v", err)
+	}
+	document, err := review.Build(inventory, options)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if document.View.Totals.Selected.Count != 1 || document.View.Totals.Visible.Count != 2 {
+		t.Fatalf("totals=%+v", document.View.Totals)
 	}
 }
 
