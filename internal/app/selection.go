@@ -199,3 +199,18 @@ func readRegistration(path string) (string, error) {
 	data, err := root.ReadFile(".git")
 	return string(data), err
 }
+
+// The allowlist authorizes removing selected checkouts, not invalidating a
+// shared ref still used by any remaining checkout (including stale records).
+func (a *App) requireUnusedSelectedBranch(ctx context.Context, repo model.Repository, branch string) error {
+	records, err := a.git.List(ctx, repo)
+	if err != nil {
+		return fmt.Errorf("inspect remaining branch checkouts: %w", err)
+	}
+	for _, record := range records {
+		if record.Branch == branch {
+			return fmt.Errorf("branch is still checked out at %s", record.Path)
+		}
+	}
+	return ctx.Err()
+}

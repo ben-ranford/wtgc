@@ -149,3 +149,39 @@ func TestSelectedRealGitProviderProofDrift(t *testing.T) {
 		t.Fatal("branch deleted without fresh proof")
 	}
 }
+
+func TestSelectedRealGitRetainsSharedBranch(t *testing.T) {
+	for _, dirty := range []bool{false, true} {
+		t.Run(map[bool]string{false: "clean", true: "dirty"}[dirty], func(t *testing.T) {
+			repo := testgit.NewRepository(t)
+			selected := repo.CreateMergedWorktree(t, "shared")
+			other := filepath.Join(repo.Worktrees, "unselected-shared")
+			testgit.Run(t, repo.Path, "worktree", "add", "--force", other, "shared")
+			if dirty {
+				testgit.WriteFile(t, filepath.Join(other, "untracked.txt"), "unselected data\n")
+			}
+			head := testgit.Run(t, other, "rev-parse", "HEAD")
+			status := testgit.Run(t, other, "status", "--porcelain")
+			inv, err := New(gitx.New("git")).Run(context.Background(), Options{Roots: []string{repo.Root}, SelectedPaths: []string{selected}, Execute: true, DeleteBranch: true})
+			item := selectedItemByPath(t, inv, selected)
+			if !repo.BranchExists(t, "shared") {
+				t.Fatal("deleted shared branch used by unselected checkout")
+			}
+			if err == nil || !item.Removed || item.BranchDeleted || item.Action != model.ActionRemoved || !strings.Contains(item.Error, "still checked out") {
+				t.Fatalf("err=%v item=%+v", err, item)
+			}
+			if selectedItemByPath(t, inv, other).Action != model.ActionKept || inv.Summary.Removed != 1 {
+				t.Fatalf("inv=%+v", inv)
+			}
+			if _, err := os.Stat(selected); !os.IsNotExist(err) {
+				t.Fatalf("selected path survives: %v", err)
+			}
+			if got := testgit.Run(t, other, "rev-parse", "HEAD"); got != head {
+				t.Fatalf("unselected HEAD changed: %q -> %q", head, got)
+			}
+			if got := testgit.Run(t, other, "status", "--porcelain"); got != status {
+				t.Fatalf("unselected status changed: %q -> %q", status, got)
+			}
+		})
+	}
+}

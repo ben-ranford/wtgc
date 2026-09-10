@@ -217,6 +217,7 @@ type selectionHooks struct {
 	Git
 	afterRemove func()
 	discover    func(context.Context, []string) ([]model.Repository, []error)
+	list        func(context.Context, model.Repository) ([]model.RegisteredWorktree, error)
 }
 
 func (h *selectionHooks) Remove(ctx context.Context, repo model.Repository, path string) error {
@@ -366,4 +367,58 @@ func selectionSymlink(t *testing.T, target, link string) {
 		}
 		t.Fatal(err)
 	}
+}
+
+func TestSelectedBranchDeletionUsesPostRemovalRegistrations(t *testing.T) {
+	for _, state := range []string{"unused", "new checkout", "stale checkout", "list failure", "canceled list"} {
+		t.Run(state, func(t *testing.T) {
+			fake, opts := selectionFixture(t)
+			opts.SelectedPaths, opts.DeleteBranch = opts.SelectedPaths[:1], true
+			selected := fake.records[0]
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			afterRemoval := false
+			backend := &selectionHooks{Git: fake, afterRemove: func() {
+				afterRemoval = true
+				fake.records = fake.records[1:] // Mirror successful removal from Git's live list.
+				switch state {
+				case "new checkout", "stale checkout":
+					fake.records = append(fake.records, model.RegisteredWorktree{Path: "new checkout", Branch: selected.Branch, Head: selected.Head, Prunable: state == "stale checkout"})
+				case "list failure":
+					fake.listErrs = []error{errors.New("registration list unavailable")}
+				}
+			}}
+			backend.list = func(ctx context.Context, repo model.Repository) ([]model.RegisteredWorktree, error) {
+				records, err := fake.List(ctx, repo)
+				if afterRemoval && state == "canceled list" {
+					cancel()
+				}
+				return records, err
+			}
+			inv, err := New(backend).Run(ctx, opts)
+			item := selectedItemByPath(t, inv, selected.Path)
+			if !item.Removed || inv.Summary.Removed != 1 || fake.removeCalls != 1 || fake.pruneCalls != 0 {
+				t.Fatalf("inv=%+v", inv)
+			}
+			if state == "unused" {
+				if err != nil || !item.BranchDeleted || fake.deleteCalls != 1 {
+					t.Fatalf("err=%v item=%+v deletes=%d", err, item, fake.deleteCalls)
+				}
+			} else {
+				if err == nil || item.BranchDeleted || fake.deleteCalls != 0 || item.Action != model.ActionRemoved || !strings.Contains(item.Error, "branch retained") {
+					t.Fatalf("err=%v item=%+v deletes=%d", err, item, fake.deleteCalls)
+				}
+				if state == "list failure" && !strings.Contains(item.Error, "registration list unavailable") {
+					t.Fatalf("lost listing evidence: %+v", item)
+				}
+			}
+		})
+	}
+}
+
+func (h *selectionHooks) List(ctx context.Context, repo model.Repository) ([]model.RegisteredWorktree, error) {
+	if h.list != nil {
+		return h.list(ctx, repo)
+	}
+	return h.Git.List(ctx, repo)
 }

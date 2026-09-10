@@ -544,16 +544,23 @@ func (a *App) removeWorktree(ctx context.Context, repo model.Repository, opts Op
 	item.ReclaimedBytes = item.DiskBytes
 	item.Action = model.ActionRemoved
 	if opts.DeleteBranch && (opts.selection == nil || ctx.Err() == nil) {
-		a.deleteWorktreeBranch(ctx, repo, fresh, item, inv)
+		a.deleteWorktreeBranch(ctx, repo, fresh, item, inv, opts.selection != nil)
 	}
 }
 
-func (a *App) deleteWorktreeBranch(ctx context.Context, repo model.Repository, fresh model.Worktree, item *model.Worktree, inv *model.Inventory) {
+func (a *App) deleteWorktreeBranch(ctx context.Context, repo model.Repository, fresh model.Worktree, item *model.Worktree, inv *model.Inventory, selected bool) {
 	if fresh.WorktreeDetails != nil && fresh.ProviderProof.HeadSHA != "" {
 		item.Error = "worktree removed; branch retained because provider squash proof does not authorize branch deletion"
 		return
 	}
-	if err := a.git.DeleteBranch(ctx, repo, fresh.Branch, fresh.DefaultBranch); err != nil {
+	var err error
+	if selected {
+		err = a.requireUnusedSelectedBranch(ctx, repo, fresh.Branch)
+	}
+	if err == nil {
+		err = a.git.DeleteBranch(ctx, repo, fresh.Branch, fresh.DefaultBranch)
+	}
+	if err != nil {
 		item.Error = fmt.Sprintf("worktree removed; branch retained: %v", err)
 		inv.Errors = append(inv.Errors, fmt.Sprintf("%s: delete branch %s: %v", repo.PrimaryPath, fresh.Branch, err))
 		return
