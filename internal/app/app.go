@@ -39,18 +39,21 @@ type Git interface {
 
 // Options controls one scan and optional cleanup pass.
 type Options struct {
-	Roots          []string
-	Execute        bool
-	Interactive    bool
-	DeleteBranch   bool
-	Confirm        func(model.Worktree) bool
-	ProtectedPath  string
-	Now            func() time.Time
-	Retention      time.Duration
-	CacheThreshold int64
-	Provider       provider.MergeFinder
-	ProviderRemote string
-	CacheScanner   func(context.Context, string, int64) []cache.Warning
+	Roots            []string
+	SelectedPaths    []string
+	ConfirmSelection func(SelectionPreview) bool
+	selection        *selectionIdentity
+	Execute          bool
+	Interactive      bool
+	DeleteBranch     bool
+	Confirm          func(model.Worktree) bool
+	ProtectedPath    string
+	Now              func() time.Time
+	Retention        time.Duration
+	CacheThreshold   int64
+	Provider         provider.MergeFinder
+	ProviderRemote   string
+	CacheScanner     func(context.Context, string, int64) []cache.Warning
 }
 
 // App coordinates Git inspection without weakening Git's own safety checks.
@@ -63,6 +66,8 @@ func New(git Git) *App { return &App{git: git} }
 
 // Run builds an inventory and, when explicitly requested, executes safe actions.
 func (a *App) Run(ctx context.Context, opts Options) (model.Inventory, error) {
+	opts.Roots = slices.Clone(opts.Roots)
+	opts.SelectedPaths = slices.Clone(opts.SelectedPaths)
 	started := time.Now()
 	if opts.Now == nil {
 		opts.Now = time.Now
@@ -98,7 +103,10 @@ func (a *App) Run(ctx context.Context, opts Options) (model.Inventory, error) {
 	})
 	a.summarize(&inv)
 
-	if opts.Execute {
+	if len(opts.SelectedPaths) > 0 {
+		a.cleanSelection(ctx, repositories, opts, &inv)
+		a.summarize(&inv)
+	} else if opts.Execute {
 		for _, repo := range repositories {
 			a.cleanRepository(ctx, repo, opts, &inv)
 		}
@@ -517,9 +525,16 @@ func (a *App) removeWorktree(ctx context.Context, repo model.Repository, opts Op
 		*item = fresh
 		return
 	}
+	if opts.selection != nil && ctx.Err() != nil {
+		item.Action, item.Reason = model.ActionKept, "selected cleanup canceled before removal"
+		return
+	}
 	if err := a.git.Remove(ctx, repo, fresh.Path); err != nil {
 		item.Classification = model.Error
 		item.Reason = "remove failed; worktree kept"
+		if opts.selection != nil {
+			item.Reason = "selected removal failed; completion could not be confirmed"
+		}
 		item.Error = err.Error()
 		item.Action = model.ActionKept
 		inv.Errors = append(inv.Errors, fmt.Sprintf("%s: remove %s: %v", repo.PrimaryPath, fresh.Path, err))
@@ -528,7 +543,7 @@ func (a *App) removeWorktree(ctx context.Context, repo model.Repository, opts Op
 	item.Removed = true
 	item.ReclaimedBytes = item.DiskBytes
 	item.Action = model.ActionRemoved
-	if opts.DeleteBranch {
+	if opts.DeleteBranch && (opts.selection == nil || ctx.Err() == nil) {
 		a.deleteWorktreeBranch(ctx, repo, fresh, item, inv)
 	}
 }
@@ -599,6 +614,11 @@ func (a *App) requireAcceptedPrunableSet(ctx context.Context, repo model.Reposit
 }
 
 func (a *App) revalidate(ctx context.Context, repo model.Repository, opts Options, previous model.Worktree) (model.Worktree, bool) {
+	if opts.selection != nil {
+		if err := a.requireSelectedRepository(ctx, repo, previous.Path, *opts.selection); err != nil {
+			return classificationError(previous, err.Error()), false
+		}
+	}
 	defaultBranch, err := a.git.DefaultBranch(ctx, repo)
 	if err != nil {
 		return classificationError(previous, fmt.Sprintf("revalidate default branch: %v", err)), false
@@ -606,6 +626,11 @@ func (a *App) revalidate(ctx context.Context, repo model.Repository, opts Option
 	records, err := a.git.List(ctx, repo)
 	if err != nil {
 		return classificationError(previous, fmt.Sprintf("revalidate worktree list: %v", err)), false
+	}
+	if opts.selection != nil {
+		if err := requireSelectedRecord(records, previous.Path, *opts.selection); err != nil {
+			return classificationError(previous, err.Error()), false
+		}
 	}
 	record, found := registeredRecord(records, previous.Path)
 	if !found {
@@ -730,7 +755,9 @@ func (a *App) summarize(inv *model.Inventory) {
 		inv.Summary.Scanned++
 		if item.Classification == model.SafeToRemove {
 			inv.Summary.Safe++
-			inv.Summary.PotentialBytes += item.DiskBytes
+			if item.Action != model.ActionKept {
+				inv.Summary.PotentialBytes += item.DiskBytes
+			}
 		}
 		if item.Removed {
 			inv.Summary.Removed++
