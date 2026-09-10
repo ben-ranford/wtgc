@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"github.com/ben-ranford/wtgc/internal/model"
+	"github.com/ben-ranford/wtgc/internal/review"
 	"github.com/ben-ranford/wtgc/internal/testgit"
 )
 
@@ -419,6 +420,47 @@ func TestCleanYesPrunesMissingWorktreeMetadata(t *testing.T) {
 	if strings.Contains(repo.RegisteredWorktrees(t), worktree) {
 		t.Fatal("prunable worktree metadata remains registered after cleanup")
 	}
+}
+
+func TestReviewSelectsStaleWorktreeThroughSymlinkedParent(t *testing.T) {
+	repo := newRepository(t)
+	worktree := repo.CreateMergedWorktree(t, "feature/review-stale")
+	if err := os.RemoveAll(worktree); err != nil {
+		t.Fatalf("remove worktree path to create prunable metadata: %v", err)
+	}
+	alias := filepath.Join(repo.Root, "worktrees-link")
+	if err := os.Symlink(repo.Worktrees, alias); err != nil {
+		t.Skipf("symlink creation requires privileges: %v", err)
+	}
+	repositoryAlias := filepath.Join(repo.Root, "repository-link")
+	if err := os.Symlink(repo.Path, repositoryAlias); err != nil {
+		t.Skipf("symlink creation requires privileges: %v", err)
+	}
+
+	cmd := exec.Command(wtgcBinary(t), "review", "--json", "--scan-root", repo.Root, "--repository", repositoryAlias, "--select", filepath.Join(alias, filepath.Base(worktree)))
+	cmd.Dir = repo.Root
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("review stale selection: %v\n%s", err, out)
+	}
+	var document review.Document
+	if err := json.Unmarshal(out, &document); err != nil {
+		t.Fatalf("decode review JSON: %v\n%s", err, out)
+	}
+	if document.View.Totals.Selected.Count != 1 || document.View.Totals.Visible.Count == 0 {
+		t.Fatalf("review totals=%+v", document.View.Totals)
+	}
+	for _, group := range document.View.Groups {
+		for _, row := range group.Worktrees {
+			if row.Selected {
+				if row.Worktree.Classification != model.Prunable {
+					t.Fatalf("selected classification=%q, want %q", row.Worktree.Classification, model.Prunable)
+				}
+				return
+			}
+		}
+	}
+	t.Fatal("selected stale worktree missing from review view")
 }
 
 func TestCleanYesKeepsDetachedWorktree(t *testing.T) {

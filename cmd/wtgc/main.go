@@ -132,10 +132,12 @@ func run(ctx context.Context, args []string, streams processIO, deps commandDepe
 		format = report.FormatJSON
 	}
 	if opts.Command == cli.CommandReview {
-		document, err := review.Build(inventory, review.Options{
-			Repositories: opts.Repositories, Classifications: opts.Classifications,
-			GroupBy: opts.GroupBy, SortBy: opts.SortBy, SelectedPaths: opts.SelectedPaths,
-		})
+		reviewOptions, err := reviewOptionsForInventory(opts, inventory)
+		if err != nil {
+			fmt.Fprintf(streams.stderr, "review: %v\n", err)
+			return 2
+		}
+		document, err := review.Build(inventory, reviewOptions)
 		if err != nil {
 			fmt.Fprintf(streams.stderr, "review: %v\n", err)
 			return 2
@@ -158,22 +160,79 @@ func run(ctx context.Context, args []string, streams processIO, deps commandDepe
 func normalizeReviewPaths(paths []string, base string) ([]string, error) {
 	normalized := make([]string, len(paths))
 	for i, path := range paths {
-		if !filepath.IsAbs(path) {
-			path = filepath.Join(base, path)
+		resolved, err := canonicalReviewPath(path, base)
+		if err != nil {
+			return nil, err
 		}
-		path = filepath.Clean(path)
+		normalized[i] = resolved
+	}
+	return normalized, nil
+}
+
+func canonicalReviewPath(path, base string) (string, error) {
+	if !filepath.IsAbs(path) {
+		path = filepath.Join(base, path)
+	}
+	path = filepath.Clean(path)
+	missing := []string(nil)
+	for {
 		if _, err := os.Lstat(path); err == nil {
 			resolved, err := filepath.EvalSymlinks(path)
 			if err != nil {
-				return nil, fmt.Errorf("resolve review path %q: %w", paths[i], err)
+				return "", fmt.Errorf("resolve review path %q: %w", path, err)
 			}
-			path = resolved
+			return filepath.Join(append([]string{resolved}, missing...)...), nil
 		} else if !os.IsNotExist(err) {
-			return nil, fmt.Errorf("inspect review path %q: %w", paths[i], err)
+			return "", fmt.Errorf("inspect review path %q: %w", path, err)
 		}
-		normalized[i] = path
+		parent := filepath.Dir(path)
+		missing = append([]string{filepath.Base(path)}, missing...)
+		path = parent
 	}
-	return normalized, nil
+}
+
+func reviewOptionsForInventory(opts cli.Options, inventory model.Inventory) (review.Options, error) {
+	repositories, err := matchReviewPaths(opts.Repositories, inventory.Worktrees, func(worktree model.Worktree) string { return worktree.Repository })
+	if err != nil {
+		return review.Options{}, err
+	}
+	selected, err := matchReviewPaths(opts.SelectedPaths, inventory.Worktrees, func(worktree model.Worktree) string { return worktree.Path })
+	if err != nil {
+		return review.Options{}, err
+	}
+	return review.Options{Repositories: repositories, Classifications: opts.Classifications, GroupBy: opts.GroupBy, SortBy: opts.SortBy, SelectedPaths: selected}, nil
+}
+
+func matchReviewPaths(paths []string, worktrees []model.Worktree, value func(model.Worktree) string) ([]string, error) {
+	matched := make([]string, len(paths))
+	for index, path := range paths {
+		values := make(map[string]struct{})
+		for _, worktree := range worktrees {
+			candidate := value(worktree)
+			if filepath.Clean(candidate) == path {
+				values[candidate] = struct{}{}
+				continue
+			}
+			canonical, err := canonicalReviewPath(candidate, "")
+			if err != nil {
+				continue
+			}
+			if canonical == path {
+				values[candidate] = struct{}{}
+			}
+		}
+		switch len(values) {
+		case 0:
+			matched[index] = path
+		case 1:
+			for value := range values {
+				matched[index] = value
+			}
+		default:
+			return nil, fmt.Errorf("ambiguous review path %q", path)
+		}
+	}
+	return matched, nil
 }
 
 func confirmer(input io.Reader, output io.Writer, deleteBranch bool) func(model.Worktree) bool {
