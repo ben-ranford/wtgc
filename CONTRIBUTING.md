@@ -28,6 +28,18 @@ make test
 make build
 ```
 
+Try the checkout build with a non-mutating preview:
+
+```bash
+./bin/wtgc --version
+./bin/wtgc clean --scan-root "$HOME/Projects/my-repo"
+```
+
+Replace `my-repo` with an existing repository path. Local builds report `dev`
+unless `VERSION` is supplied to `make build`. See the README's
+[first-run guidance](README.md#first-run-options-and-kept-worktrees) for retention,
+optional GitHub proof, cache warnings, and expected kept results.
+
 Install repository-managed hooks:
 
 ```bash
