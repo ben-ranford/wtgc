@@ -11,24 +11,30 @@ import (
 )
 
 const (
-	CommandClean = "clean"
+	CommandClean  = "clean"
+	CommandReview = "review"
 )
 
 // Options is the stable command contract consumed by the application layer.
 type Options struct {
-	Command        string
-	Roots          []string
-	DryRun         bool
-	Yes            bool
-	Interactive    bool
-	DeleteBranch   bool
-	JSON           bool
-	Version        bool
-	Help           bool
-	Provider       string
-	ProviderRemote string
-	Retention      time.Duration
-	CacheThreshold int64
+	Command         string
+	Roots           []string
+	DryRun          bool
+	Yes             bool
+	Interactive     bool
+	DeleteBranch    bool
+	JSON            bool
+	Version         bool
+	Help            bool
+	Provider        string
+	ProviderRemote  string
+	Retention       time.Duration
+	CacheThreshold  int64
+	Repositories    []string
+	Classifications []string
+	GroupBy         string
+	SortBy          string
+	SelectedPaths   []string
 }
 
 // UsageError reports input that should be shown with command usage and a
@@ -83,13 +89,14 @@ func Parse(args []string) (Options, error) {
 		return opts, nil
 	}
 
-	if len(args) > 0 && args[0] == CommandClean {
+	if len(args) > 0 && (args[0] == CommandClean || args[0] == CommandReview) {
+		opts.Command = args[0]
 		args = args[1:]
 	} else if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
 		return Options{}, &UsageError{Message: fmt.Sprintf("unknown command %q", args[0])}
 	}
 
-	var roots stringList
+	var roots, repositories, classifications, selectedPaths stringList
 	dryRun := boolOption{
 		value: true,
 		set:   false,
@@ -111,6 +118,13 @@ func Parse(args []string) (Options, error) {
 	fs.DurationVar(&opts.Retention, "retention", 0, "minimum age before cleanup")
 	fs.Int64Var(&opts.CacheThreshold, "cache-threshold", 100*1024*1024, "report cache directories at or above this byte threshold")
 	fs.Var(&dryRun, "dry-run", "preview cleanup actions without removing anything")
+	if opts.Command == CommandReview {
+		fs.Var(&repositories, "repository", "repository path to include; repeatable")
+		fs.Var(&classifications, "classification", "classification to include; repeatable")
+		fs.StringVar(&opts.GroupBy, "group-by", "none", "review grouping: none, repository, or classification")
+		fs.StringVar(&opts.SortBy, "sort-by", "path", "review sorting: path or size")
+		fs.Var(&selectedPaths, "select", "advisory worktree path to select; repeatable")
+	}
 
 	if err := fs.Parse(args); err != nil {
 		return Options{}, &UsageError{Message: err.Error()}
@@ -130,7 +144,12 @@ func Parse(args []string) (Options, error) {
 		roots = append(roots, root)
 	}
 
-	if err := validateExecutionMode(&opts, dryRun); err != nil {
+	if opts.Command == CommandReview {
+		if opts.Yes || opts.Interactive || opts.DeleteBranch || (dryRun.set && !dryRun.value) {
+			return Options{}, &UsageError{Message: "review is read-only and rejects --yes, --interactive, --delete-branch, and --dry-run=false"}
+		}
+		opts.DryRun = true
+	} else if err := validateExecutionMode(&opts, dryRun); err != nil {
 		return Options{}, err
 	}
 	if opts.Provider != "" && opts.Provider != "github" {
@@ -145,11 +164,22 @@ func Parse(args []string) (Options, error) {
 	if opts.CacheThreshold < 0 {
 		return Options{}, &UsageError{Message: "--cache-threshold must not be negative"}
 	}
+	if opts.Command == CommandReview {
+		if opts.GroupBy != "none" && opts.GroupBy != "repository" && opts.GroupBy != "classification" {
+			return Options{}, &UsageError{Message: "--group-by must be none, repository, or classification"}
+		}
+		if opts.SortBy != "path" && opts.SortBy != "size" {
+			return Options{}, &UsageError{Message: "--sort-by must be path or size"}
+		}
+	}
 
 	if len(roots) == 0 {
 		roots = append(roots, ".")
 	}
 	opts.Roots = append([]string(nil), roots...)
+	opts.Repositories = append([]string(nil), repositories...)
+	opts.Classifications = append([]string(nil), classifications...)
+	opts.SelectedPaths = append([]string(nil), selectedPaths...)
 
 	return opts, nil
 }
@@ -223,10 +253,12 @@ func WriteUsage(w io.Writer, name string) {
 	fmt.Fprintf(w, `Usage:
   %[1]s                         show help
   %[1]s clean [flags] [roots...]
+  %[1]s review [flags] [roots...]
   %[1]s [flags] [roots...]      scan when a flag is supplied
 
 Commands:
   clean              scan registered git worktrees and clean safe candidates
+  review             scan and display a read-only inventory view
 
 Flags:
   --scan-root DIR    root directory to scan; repeatable
@@ -235,10 +267,15 @@ Flags:
   --interactive      prompt before destructive cleanup actions
   --delete-branch    delete branches for removed worktrees when safe
   --json             write machine-readable JSON
-	  --provider github   use explicit GitHub merge proof for squash merges
-	  --provider-remote NAME select the mapped GitHub remote when ambiguous
-	  --retention DURATION keep proven worktrees until this age has elapsed
-	  --cache-threshold BYTES report advisory caches at or above this size
+  --provider github   use explicit GitHub merge proof for squash merges
+  --provider-remote NAME select the mapped GitHub remote when ambiguous
+  --retention DURATION keep proven worktrees until this age has elapsed
+  --cache-threshold BYTES report advisory caches at or above this size
+  --repository PATH   include an exact repository path; repeatable (review)
+  --classification VALUE include a classification; repeatable (review)
+  --group-by VALUE    group review rows by none, repository, or classification
+  --sort-by VALUE     sort review rows by path or size
+  --select PATH       mark an advisory worktree selection; repeatable (review)
   --version          print version and exit
   -h, --help         show help
 `, name)

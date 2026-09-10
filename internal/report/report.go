@@ -10,6 +10,7 @@ import (
 	"text/tabwriter"
 
 	"github.com/ben-ranford/wtgc/internal/model"
+	"github.com/ben-ranford/wtgc/internal/review"
 )
 
 type Format string
@@ -30,6 +31,75 @@ func Write(w io.Writer, inv model.Inventory, format Format) error {
 		return enc.Encode(inv)
 	default:
 		return fmt.Errorf("unknown report format %q", format)
+	}
+}
+
+// WriteReview renders the separate review document without changing clean's
+// established inventory formats.
+func WriteReview(w io.Writer, document review.Document, format Format) error {
+	if format == FormatJSON {
+		enc := json.NewEncoder(w)
+		enc.SetIndent("", "  ")
+		return enc.Encode(document)
+	}
+	if format != "" && format != FormatHuman {
+		return fmt.Errorf("unknown report format %q", format)
+	}
+	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
+	for _, group := range document.View.Groups {
+		fmt.Fprintf(tw, "GROUP\t%s\n", SafeHumanText(group.Key))
+		fmt.Fprintln(tw, "SELECTED\tHEAD\tPATH\tCLASSIFICATION\tSIZE\tREASON\tEVIDENCE")
+		for _, row := range group.Worktrees {
+			writeReviewRow(tw, row)
+		}
+	}
+	if err := tw.Flush(); err != nil {
+		return err
+	}
+	writeReviewTotals(w, document.View.Totals)
+	if len(document.Inventory.Errors) > 0 {
+		fmt.Fprintln(w, "Errors:")
+		for _, errText := range document.Inventory.Errors {
+			fmt.Fprintf(w, "  - %s\n", SafeHumanText(errText))
+		}
+	}
+	return nil
+}
+
+func writeReviewRow(w io.Writer, row review.Row) {
+	worktree := row.Worktree
+	selected := ""
+	if row.Selected {
+		selected = "selected"
+	}
+	evidence := reviewEvidence(worktree)
+	fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n", selected, SafeHumanText(emptyDash(worktree.Head)), SafeHumanText(worktree.Path), worktree.Classification, ByteString(worktree.DiskBytes), SafeHumanText(withError(worktree.Reason, worktree.Error)), SafeHumanText(evidence))
+}
+
+func reviewEvidence(worktree model.Worktree) string {
+	if worktree.WorktreeDetails == nil {
+		return ""
+	}
+	parts := make([]string, 0, 3+len(worktree.CacheWarnings))
+	if worktree.Provider != "" {
+		parts = append(parts, fmt.Sprintf("provider=%s PR #%d %s", worktree.Provider, worktree.ProviderPR, worktree.ProviderURL))
+	}
+	if worktree.RetentionBasis != "" {
+		parts = append(parts, fmt.Sprintf("retention=%s observed=%s eligible=%s remaining=%s", worktree.RetentionBasis, worktree.ObservedAt.UTC(), worktree.EligibleAt.UTC(), worktree.Remaining))
+	}
+	for _, warning := range worktree.CacheWarnings {
+		parts = append(parts, fmt.Sprintf("cache=%s %s: %s", ByteString(warning.Bytes), warning.Path, withError(warning.Reason, warning.Error)))
+	}
+	return strings.Join(parts, "; ")
+}
+
+func writeReviewTotals(w io.Writer, totals review.Totals) {
+	fmt.Fprintln(w, "Totals:")
+	for _, value := range []struct {
+		name  string
+		total review.Total
+	}{{"full", totals.Full}, {"visible", totals.Visible}, {"selected", totals.Selected}} {
+		fmt.Fprintf(w, "  %s: count=%d reclaimable=%s cache=%s\n", value.name, value.total.Count, ByteString(value.total.ReclaimableBytes), ByteString(value.total.CacheBytes))
 	}
 }
 

@@ -37,6 +37,21 @@ func TestParseCleanDefaultsToDryRunCurrentDirectory(t *testing.T) {
 	}
 }
 
+func TestParseReviewFlagsAndReadOnlyContract(t *testing.T) {
+	opts, err := Parse([]string{"review", "--repository", "/repo", "--repository", "/other", "--classification", "kept", "--classification", "error", "--group-by", "repository", "--sort-by", "size", "--select", "/repo/wt", "/scan"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if opts.Command != CommandReview || !opts.DryRun || strings.Join(opts.Repositories, ",") != "/repo,/other" || strings.Join(opts.Classifications, ",") != "kept,error" || opts.GroupBy != "repository" || opts.SortBy != "size" || strings.Join(opts.SelectedPaths, ",") != "/repo/wt" || strings.Join(opts.Roots, ",") != "/scan" {
+		t.Fatalf("opts=%+v", opts)
+	}
+	for _, args := range [][]string{{"review", "--yes"}, {"review", "--interactive"}, {"review", "--delete-branch"}, {"review", "--dry-run=false"}, {"review", "--group-by", "branch"}, {"review", "--sort-by", "branch"}} {
+		if _, err := Parse(args); err == nil || !IsUsageError(err) {
+			t.Fatalf("Parse(%v) err=%v, want usage", args, err)
+		}
+	}
+}
+
 func TestParseCleanWithPositionalAndScanRoots(t *testing.T) {
 	opts, err := Parse([]string{"clean", "--scan-root", "../one", "--scan-root=three", "two"})
 	if err != nil {
@@ -147,6 +162,7 @@ func TestParseRejectsUnknownCommandAndFlag(t *testing.T) {
 		{"status"},
 		{"/tmp/scan"},
 		{"--bogus"},
+		{"clean", "--group-by", "repository"},
 	} {
 		_, err := Parse(args)
 		if err == nil {
@@ -163,7 +179,7 @@ func TestUsageMentionsCoreFlags(t *testing.T) {
 	WriteUsage(&b, "wtgc")
 	out := b.String()
 
-	for _, want := range []string{"Usage:", "show help", "clean [flags] [roots...]", "scan when a flag is supplied", "--scan-root", "--dry-run", "--yes", "--interactive", "--delete-branch", "--json", "--version"} {
+	for _, want := range []string{"Usage:", "show help", "clean [flags] [roots...]", "review [flags] [roots...]", "scan when a flag is supplied", "--scan-root", "--dry-run", "--yes", "--interactive", "--delete-branch", "--json", "--repository", "--classification", "--group-by", "--sort-by", "--select", "--version"} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("usage missing %q:\n%s", want, out)
 		}

@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"syscall"
 	"time"
@@ -17,6 +18,7 @@ import (
 	"github.com/ben-ranford/wtgc/internal/model"
 	"github.com/ben-ranford/wtgc/internal/provider"
 	"github.com/ben-ranford/wtgc/internal/report"
+	"github.com/ben-ranford/wtgc/internal/review"
 )
 
 var (
@@ -97,9 +99,19 @@ func run(ctx context.Context, args []string, streams processIO, deps commandDepe
 		fmt.Fprintf(streams.stderr, "resolve current directory: %v\n", err)
 		return 1
 	}
+	if opts.Command == cli.CommandReview {
+		opts.Repositories, err = normalizeReviewPaths(opts.Repositories, workingDirectory)
+		if err == nil {
+			opts.SelectedPaths, err = normalizeReviewPaths(opts.SelectedPaths, workingDirectory)
+		}
+		if err != nil {
+			fmt.Fprintf(streams.stderr, "review: %v\n", err)
+			return 2
+		}
+	}
 	appOptions := app.Options{
 		Roots:          opts.Roots,
-		Execute:        !opts.DryRun,
+		Execute:        opts.Command == cli.CommandClean && !opts.DryRun,
 		Interactive:    opts.Interactive,
 		DeleteBranch:   opts.DeleteBranch,
 		ProtectedPath:  workingDirectory,
@@ -119,7 +131,20 @@ func run(ctx context.Context, args []string, streams processIO, deps commandDepe
 	if opts.JSON {
 		format = report.FormatJSON
 	}
-	if err := report.Write(streams.stdout, inventory, format); err != nil {
+	if opts.Command == cli.CommandReview {
+		document, err := review.Build(inventory, review.Options{
+			Repositories: opts.Repositories, Classifications: opts.Classifications,
+			GroupBy: opts.GroupBy, SortBy: opts.SortBy, SelectedPaths: opts.SelectedPaths,
+		})
+		if err != nil {
+			fmt.Fprintf(streams.stderr, "review: %v\n", err)
+			return 2
+		}
+		if err := report.WriteReview(streams.stdout, document, format); err != nil {
+			fmt.Fprintf(streams.stderr, "write report: %v\n", err)
+			return 1
+		}
+	} else if err := report.Write(streams.stdout, inventory, format); err != nil {
 		fmt.Fprintf(streams.stderr, "write report: %v\n", err)
 		return 1
 	}
@@ -128,6 +153,27 @@ func run(ctx context.Context, args []string, streams processIO, deps commandDepe
 		return 1
 	}
 	return 0
+}
+
+func normalizeReviewPaths(paths []string, base string) ([]string, error) {
+	normalized := make([]string, len(paths))
+	for i, path := range paths {
+		if !filepath.IsAbs(path) {
+			path = filepath.Join(base, path)
+		}
+		path = filepath.Clean(path)
+		if _, err := os.Lstat(path); err == nil {
+			resolved, err := filepath.EvalSymlinks(path)
+			if err != nil {
+				return nil, fmt.Errorf("resolve review path %q: %w", paths[i], err)
+			}
+			path = resolved
+		} else if !os.IsNotExist(err) {
+			return nil, fmt.Errorf("inspect review path %q: %w", paths[i], err)
+		}
+		normalized[i] = path
+	}
+	return normalized, nil
 }
 
 func confirmer(input io.Reader, output io.Writer, deleteBranch bool) func(model.Worktree) bool {

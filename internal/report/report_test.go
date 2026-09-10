@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/ben-ranford/wtgc/internal/model"
+	"github.com/ben-ranford/wtgc/internal/review"
 )
 
 func testInventory() model.Inventory {
@@ -48,6 +49,50 @@ func testInventory() model.Inventory {
 			PotentialBytes: 1536,
 			Duration:       2 * time.Second,
 		},
+	}
+}
+
+func TestWriteReviewShowsEvidenceTotalsAndEscapesText(t *testing.T) {
+	inv := testInventory()
+	inv.Worktrees[0].Head = "abc123"
+	inv.Worktrees[0].Reason = "merged\nforged"
+	inv.Worktrees[0].Details().Provider = "github"
+	now := time.Now().UTC()
+	inv.Worktrees[0].RetentionBasis = "worktree_mtime"
+	inv.Worktrees[0].ObservedAt = &now
+	inv.Worktrees[0].EligibleAt = &now
+	inv.Worktrees[0].CacheWarnings = []model.CacheWarning{{Path: "/cache\x1b[2J", Bytes: 1024, Reason: "large"}}
+	inv.Errors = []string{"scan warning\nkept visible"}
+	doc, err := review.Build(inv, review.Options{SelectedPaths: []string{"/tmp/repo-wt/feature"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var output bytes.Buffer
+	if err := WriteReview(&output, doc, FormatHuman); err != nil {
+		t.Fatal(err)
+	}
+	got := output.String()
+	for _, want := range []string{"HEAD", "abc123", "provider=github", "retention=worktree_mtime", "cache=1.0 KiB", "Totals:", "full: count=2", "visible: count=2", "selected: count=1", "Errors:", `merged\nforged`, `\x1b`} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("review output missing %q:\n%s", want, got)
+		}
+	}
+	if strings.Contains(got, "merged\nforged") || strings.Contains(got, "\x1b") {
+		t.Fatalf("review output contains unescaped controls:\n%s", got)
+	}
+	output.Reset()
+	if err := WriteReview(&output, doc, FormatJSON); err != nil {
+		t.Fatal(err)
+	}
+	var decoded review.Document
+	if err := json.Unmarshal(output.Bytes(), &decoded); err != nil || decoded.ReviewSchemaVersion != review.SchemaVersion || decoded.Inventory.SchemaVersion != "1.0.0" {
+		t.Fatalf("review JSON=%s err=%v decoded=%+v", output.String(), err, decoded)
+	}
+	if err := WriteReview(failingReportWriter{}, doc, FormatHuman); err == nil {
+		t.Fatal("WriteReview accepted failing writer")
+	}
+	if err := WriteReview(&output, doc, Format("csv")); err == nil {
+		t.Fatal("WriteReview accepted unknown format")
 	}
 }
 

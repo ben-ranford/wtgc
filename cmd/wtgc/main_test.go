@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -184,6 +186,135 @@ func TestRunWritesJSONReportFromInjectedBackend(t *testing.T) {
 	}
 	if stderr.Len() != 0 {
 		t.Fatalf("stderr = %q, want empty", stderr.String())
+	}
+}
+
+func TestRunReviewIsReadOnlyAndWritesSeparateDocument(t *testing.T) {
+	backend := &reviewNoMutationGit{mainFakeGit: newMainFakeGit(mainRecord("main"), mainRemovableRecord("feature"))}
+	var stdout, stderr bytes.Buffer
+	code := run(context.Background(), []string{"review", "--json", "--group-by", "classification", "--select", "/worktree"}, processIO{stdin: strings.NewReader(""), stdout: &stdout, stderr: &stderr}, mainCommandDependencies(backend, func() (string, error) { return "/repo", nil }))
+	if code != 0 || stderr.Len() != 0 {
+		t.Fatalf("code=%d stderr=%q", code, stderr.String())
+	}
+	if backend.removes != 0 || backend.prunes != 0 || backend.deletes != 0 {
+		t.Fatalf("review mutated repository: %+v", backend)
+	}
+	var document struct {
+		ReviewSchemaVersion string `json:"review_schema_version"`
+		Inventory           struct {
+			SchemaVersion string `json:"schema_version"`
+		} `json:"inventory"`
+		View struct {
+			Totals struct {
+				Full struct {
+					Count int `json:"count"`
+				} `json:"full"`
+				Visible struct {
+					Count int `json:"count"`
+				} `json:"visible"`
+				Selected struct {
+					Count int `json:"count"`
+				} `json:"selected"`
+			} `json:"totals"`
+		} `json:"view"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &document); err != nil {
+		t.Fatalf("review JSON: %v\n%s", err, stdout.String())
+	}
+	if document.ReviewSchemaVersion != "1.0.0" || document.Inventory.SchemaVersion != "1.1.0" || document.View.Totals.Full.Count != 2 || document.View.Totals.Visible.Count != 2 || document.View.Totals.Selected.Count != 1 {
+		t.Fatalf("document=%+v", document)
+	}
+}
+
+func TestRunReviewOnlyCreatesProviderWhenExplicitlyRequested(t *testing.T) {
+	backend := newMainFakeGit(mainRecord("main"), mainRemovableRecord("feature"))
+	providerCalls := 0
+	dependencies := commandDependencies{backend: backend, getwd: func() (string, error) { return "/repo", nil }, newProvider: func() provider.MergeFinder { providerCalls++; return mainProofFinder{} }}
+	for _, args := range [][]string{{"review", "--json"}, {"review", "--provider", "github", "--json"}} {
+		var stdout, stderr bytes.Buffer
+		if code := run(context.Background(), args, processIO{stdin: strings.NewReader(""), stdout: &stdout, stderr: &stderr}, dependencies); code != 0 {
+			t.Fatalf("run %v code=%d stderr=%q", args, code, stderr.String())
+		}
+	}
+	if providerCalls != 1 {
+		t.Fatalf("provider calls=%d, want one explicit opt-in", providerCalls)
+	}
+}
+
+func TestRunReviewNormalizesRelativeAndSymlinkPaths(t *testing.T) {
+	root := t.TempDir()
+	worktree := filepath.Join(root, "worktree")
+	if err := os.Mkdir(worktree, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(worktree, filepath.Join(root, "selected-link")); err != nil {
+		t.Fatal(err)
+	}
+	realRoot, err := filepath.EvalSymlinks(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	backend := newMainFakeGit(model.RegisteredWorktree{Path: filepath.Join(realRoot, "worktree"), Head: "abc", Branch: "feature"})
+	backend.repositories[0].PrimaryPath = realRoot
+	var stdout, stderr bytes.Buffer
+	code := run(context.Background(), []string{"review", "--json", "--repository", ".", "--select", "selected-link"}, processIO{stdin: strings.NewReader(""), stdout: &stdout, stderr: &stderr}, mainCommandDependencies(backend, func() (string, error) { return root, nil }))
+	if code != 0 || stderr.Len() != 0 {
+		t.Fatalf("code=%d stderr=%q", code, stderr.String())
+	}
+	var document struct {
+		View struct {
+			Totals struct {
+				Visible  struct{ Count int } `json:"visible"`
+				Selected struct{ Count int } `json:"selected"`
+			} `json:"totals"`
+		} `json:"view"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &document); err != nil {
+		t.Fatal(err)
+	}
+	if document.View.Totals.Visible.Count != 1 || document.View.Totals.Selected.Count != 1 {
+		t.Fatalf("totals=%+v", document.View.Totals)
+	}
+}
+
+func TestRunReviewReturnsSelectionAndWriteErrors(t *testing.T) {
+	backend := newMainFakeGit(mainRecord("main"))
+	for _, test := range []struct {
+		name       string
+		args       []string
+		stdout     io.Writer
+		wantCode   int
+		wantStderr string
+	}{
+		{name: "unknown selection", args: []string{"review", "--select", "/missing"}, stdout: &bytes.Buffer{}, wantCode: 2, wantStderr: "unknown advisory selection"},
+		{name: "writer failure", args: []string{"review"}, stdout: failingWriter{}, wantCode: 1, wantStderr: "write report: write failed"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			var stderr bytes.Buffer
+			code := run(context.Background(), test.args, processIO{stdin: strings.NewReader(""), stdout: test.stdout, stderr: &stderr}, mainCommandDependencies(backend, func() (string, error) { return "/repo", nil }))
+			if code != test.wantCode || !strings.Contains(stderr.String(), test.wantStderr) {
+				t.Fatalf("code=%d stderr=%q", code, stderr.String())
+			}
+		})
+	}
+}
+
+func TestNormalizeReviewPathsRejectsBrokenSymlink(t *testing.T) {
+	root := t.TempDir()
+	link := filepath.Join(root, "broken")
+	if err := os.Symlink(filepath.Join(root, "missing"), link); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := normalizeReviewPaths([]string{"broken"}, root); err == nil || !strings.Contains(err.Error(), "resolve review path") {
+		t.Fatalf("error=%v", err)
+	}
+	var stdout, stderr bytes.Buffer
+	code := run(context.Background(), []string{"review", "--select", "broken"}, processIO{stdin: strings.NewReader(""), stdout: &stdout, stderr: &stderr}, mainCommandDependencies(newMainFakeGit(mainRecord("main")), func() (string, error) { return root, nil }))
+	if code != 2 || !strings.Contains(stderr.String(), "resolve review path") {
+		t.Fatalf("code=%d stderr=%q", code, stderr.String())
+	}
+	if _, err := normalizeReviewPaths([]string{"\x00"}, root); err == nil || !strings.Contains(err.Error(), "inspect review path") {
+		t.Fatalf("invalid path error=%v", err)
 	}
 }
 
@@ -417,6 +548,21 @@ func TestConfirmerDefaultsToNo(t *testing.T) {
 type mainFakeGit struct {
 	repositories []model.Repository
 	records      []model.RegisteredWorktree
+}
+
+type reviewNoMutationGit struct {
+	*mainFakeGit
+	removes, prunes, deletes int
+}
+
+func (f *reviewNoMutationGit) Remove(context.Context, model.Repository, string) error {
+	f.removes++
+	return nil
+}
+func (f *reviewNoMutationGit) Prune(context.Context, model.Repository) error { f.prunes++; return nil }
+func (f *reviewNoMutationGit) DeleteBranch(context.Context, model.Repository, string, string) error {
+	f.deletes++
+	return nil
 }
 
 func mainCommandDependencies(backend app.Git, getwd func() (string, error)) commandDependencies {
