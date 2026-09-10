@@ -294,7 +294,7 @@ Commands:
 
 Flags:
   --scan-root DIR    root directory to scan; repeatable
-  --select PATH      clean only selected live worktrees; repeatable
+  --select PATH      select live clean targets or advisory review rows; repeatable
   --dry-run          preview cleanup actions without removing anything (default)
   --yes, -y          execute cleanup without prompting
   --interactive      prompt before destructive cleanup actions
@@ -308,7 +308,6 @@ Flags:
   --classification VALUE include a classification; repeatable (review)
   --group-by VALUE    group review rows by none, repository, or classification
   --sort-by VALUE     sort review rows by path or size
-  --select PATH       mark an advisory worktree selection; repeatable (review)
   --version          print version and exit
   -h, --help         show help
 `, name)

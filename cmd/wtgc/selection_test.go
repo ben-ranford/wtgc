@@ -19,6 +19,7 @@ import (
 	"github.com/ben-ranford/wtgc/internal/gitx"
 	"github.com/ben-ranford/wtgc/internal/model"
 	"github.com/ben-ranford/wtgc/internal/report"
+	"github.com/ben-ranford/wtgc/internal/review"
 	"github.com/ben-ranford/wtgc/internal/testgit"
 	"go.uber.org/goleak"
 )
@@ -274,4 +275,60 @@ func (w *limitedSelectionOutput) Write(p []byte) (int, error) {
 		return n, errors.New("preview output failed")
 	}
 	return n, nil
+}
+
+func TestReviewAdvisorySelectionAndStrictCleanRemainSeparate(t *testing.T) {
+	repo := testgit.NewRepository(t)
+	dirty := repo.CreateMergedWorktree(t, "dirty")
+	safe := repo.CreateMergedWorktree(t, "safe")
+	testgit.WriteFile(t, filepath.Join(dirty, "untracked.txt"), "keep this data\n")
+	registrations := repo.RegisteredWorktrees(t)
+	deps := mainCommandDependencies(gitx.New("git"), func() (string, error) { return repo.Path, nil })
+	var stdout, stderr bytes.Buffer
+	streams := processIO{stdin: strings.NewReader(""), stdout: &stdout, stderr: &stderr}
+	args := []string{"review", "--json", "--select", dirty, "--classification", "safe_to_remove", "--group-by", "classification", "--sort-by", "size", repo.Root}
+	if code := run(context.Background(), args, streams, deps); code != 0 {
+		t.Fatalf("unsafe advisory review failed: code=%d stderr=%s", code, &stderr)
+	}
+	var doc review.Document
+	if err := json.Unmarshal(stdout.Bytes(), &doc); err != nil {
+		t.Fatal(err)
+	}
+	if doc.ReviewSchemaVersion != "1.0.0" || doc.Inventory.SchemaVersion != "1.1.0" || !doc.Inventory.DryRun || len(doc.Inventory.Errors) != 0 || doc.Inventory.Summary.Removed != 0 || doc.View.Totals.Selected.Count != 1 {
+		t.Fatalf("review=%+v", doc)
+	}
+	selectedDirty := false
+	for _, group := range doc.View.Groups {
+		for _, row := range group.Worktrees {
+			if row.Selected && row.Worktree.Classification == model.MergedButDirty {
+				selectedDirty = true
+			}
+		}
+	}
+	if !selectedDirty || repo.RegisteredWorktrees(t) != registrations {
+		t.Fatal("advisory unsafe row lost or review mutated registrations")
+	}
+	for _, target := range []string{dirty, safe} {
+		stdout.Reset()
+		stderr.Reset()
+		code := run(context.Background(), []string{"clean", "--json", "--yes", "--select", target, repo.Root}, streams, deps)
+		var inv model.Inventory
+		if err := json.Unmarshal(stdout.Bytes(), &inv); err != nil {
+			t.Fatal(err)
+		}
+		if target == dirty {
+			if code != 1 || inv.Summary.Removed != 0 || repo.RegisteredWorktrees(t) != registrations {
+				t.Fatalf("unsafe clean did not fail closed: code=%d inv=%+v", code, inv)
+			}
+		} else if code != 0 || inv.Summary.Removed != 1 {
+			t.Fatalf("usual selected clean failed: code=%d inv=%+v", code, inv)
+		}
+	}
+	if _, err := os.Stat(safe); !os.IsNotExist(err) {
+		t.Fatalf("safe checkout survived cleanup: %v", err)
+	}
+	data, err := os.ReadFile(filepath.Join(dirty, "untracked.txt"))
+	if err != nil || string(data) != "keep this data\n" || !repo.BranchExists(t, "dirty") {
+		t.Fatalf("dirty checkout mutated: data=%q err=%v", data, err)
+	}
 }
