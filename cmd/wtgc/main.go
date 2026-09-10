@@ -26,7 +26,9 @@ var (
 )
 
 func main() {
-	os.Exit(runMain(os.Args[1:], os.Stdin, os.Stdout, os.Stderr, os.Getenv, os.Getwd, newGitBackend, newTimedGitBackend))
+	os.Exit(runMain(os.Args[1:], processIO{stdin: os.Stdin, stdout: os.Stdout, stderr: os.Stderr}, startupDependencies{
+		getenv: os.Getenv, getwd: os.Getwd, newGit: newGitBackend, newGitWithTimeout: newTimedGitBackend,
+	}))
 }
 
 func newGitBackend(binary string) app.Git { return gitx.New(binary) }
@@ -35,77 +37,64 @@ func newTimedGitBackend(binary string, timeout time.Duration) app.Git {
 	return gitx.NewWithTimeout(binary, timeout)
 }
 
+type processIO struct {
+	stdin          io.Reader
+	stdout, stderr io.Writer
+}
+
+type startupDependencies struct {
+	getenv            func(string) string
+	getwd             func() (string, error)
+	newGit            func(string) app.Git
+	newGitWithTimeout func(string, time.Duration) app.Git
+}
+
+type commandDependencies struct {
+	backend     app.Git
+	getwd       func() (string, error)
+	newProvider func() provider.MergeFinder
+}
+
 // runMain wires process dependencies into the command. Keeping this boundary
 // explicit lets tests exercise timeout and static-information startup paths
 // without mutating process-wide arguments or environment.
-func runMain(
-	args []string,
-	stdin io.Reader,
-	stdout, stderr io.Writer,
-	getenv func(string) string,
-	getwd func() (string, error),
-	newGit func(string) app.Git,
-	newGitWithTimeout func(string, time.Duration) app.Git,
-) int {
+func runMain(args []string, streams processIO, deps startupDependencies) int {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	backend := newGit("git")
+	backend := deps.newGit("git")
 	if !staticInfoRequest(args) {
-		timeout, err := gitCommandTimeoutFromEnv(getenv("WTGC_GIT_TIMEOUT"))
+		timeout, err := gitCommandTimeoutFromEnv(deps.getenv("WTGC_GIT_TIMEOUT"))
 		if err != nil {
-			fmt.Fprintf(stderr, "WTGC_GIT_TIMEOUT: %v\n", err)
+			fmt.Fprintf(streams.stderr, "WTGC_GIT_TIMEOUT: %v\n", err)
 			return 2
 		}
-		backend = newGitWithTimeout("git", timeout)
+		backend = deps.newGitWithTimeout("git", timeout)
 	}
-	return run(ctx, args, stdin, stdout, stderr, backend, getwd)
+	return run(ctx, args, streams, commandDependencies{backend: backend, getwd: deps.getwd, newProvider: func() provider.MergeFinder { return provider.NewGitHub(nil) }})
 }
 
-func run(
-	ctx context.Context,
-	args []string,
-	stdin io.Reader,
-	stdout io.Writer,
-	stderr io.Writer,
-	backend app.Git,
-	getwd func() (string, error),
-) int {
-	return runWithProvider(ctx, args, stdin, stdout, stderr, backend, getwd, func() provider.MergeFinder {
-		return provider.NewGitHub(nil)
-	})
-}
-
-func runWithProvider(
-	ctx context.Context,
-	args []string,
-	stdin io.Reader,
-	stdout io.Writer,
-	stderr io.Writer,
-	backend app.Git,
-	getwd func() (string, error),
-	newProvider func() provider.MergeFinder,
-) int {
+func run(ctx context.Context, args []string, streams processIO, deps commandDependencies) int {
 	opts, err := cli.Parse(args)
 	if err != nil {
-		fmt.Fprintln(stderr, err)
+		fmt.Fprintln(streams.stderr, err)
 		// cli.Parse exposes malformed input as UsageError, so every parse
 		// failure receives the same conventional usage response.
-		cli.WriteUsage(stderr, "wtgc")
+		cli.WriteUsage(streams.stderr, "wtgc")
 		return 2
 	}
 	if opts.Help {
-		cli.WriteUsage(stdout, "wtgc")
+		cli.WriteUsage(streams.stdout, "wtgc")
 		return 0
 	}
 	if opts.Version {
-		fmt.Fprintf(stdout, "wtgc %s (commit %s, built %s)\n", version, commit, date)
+		fmt.Fprintf(streams.stdout, "wtgc %s (commit %s, built %s)\n", version, commit, date)
 		return 0
 	}
 
-	workingDirectory, err := getwd()
+	workingDirectory, err := deps.getwd()
 	if err != nil {
-		fmt.Fprintf(stderr, "resolve current directory: %v\n", err)
+		fmt.Fprintf(streams.stderr, "resolve current directory: %v\n", err)
 		return 1
 	}
 	appOptions := app.Options{
@@ -119,23 +108,23 @@ func runWithProvider(
 		ProviderRemote: opts.ProviderRemote,
 	}
 	if opts.Provider == "github" {
-		appOptions.Provider = newProvider()
+		appOptions.Provider = deps.newProvider()
 	}
 	if opts.Interactive {
-		appOptions.Confirm = confirmer(stdin, stderr, opts.DeleteBranch)
+		appOptions.Confirm = confirmer(streams.stdin, streams.stderr, opts.DeleteBranch)
 	}
 
-	inventory, runErr := app.New(backend).Run(ctx, appOptions)
+	inventory, runErr := app.New(deps.backend).Run(ctx, appOptions)
 	format := report.FormatHuman
 	if opts.JSON {
 		format = report.FormatJSON
 	}
-	if err := report.Write(stdout, inventory, format); err != nil {
-		fmt.Fprintf(stderr, "write report: %v\n", err)
+	if err := report.Write(streams.stdout, inventory, format); err != nil {
+		fmt.Fprintf(streams.stderr, "write report: %v\n", err)
 		return 1
 	}
 	if runErr != nil {
-		fmt.Fprintf(stderr, "wtgc: %v\n", runErr)
+		fmt.Fprintf(streams.stderr, "wtgc: %v\n", runErr)
 		return 1
 	}
 	return 0

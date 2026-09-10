@@ -60,12 +60,18 @@ func TestCoverageScannerEntryAndSizeErrors(t *testing.T) {
 		t.Fatal(err)
 	}
 	s := cacheScanner{root: root, filesystem: os.DirFS(root), threshold: 0}
+	assertScannerEntryBoundaries(t, entry[0], &s)
+	assertSizeBoundaries(t, root)
+}
+
+func assertScannerEntryBoundaries(t *testing.T, entry fs.DirEntry, s *cacheScanner) {
+	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	if err := s.entry(ctx, "dist", entry[0], nil); !errors.Is(err, context.Canceled) {
+	if err := s.entry(ctx, "dist", entry, nil); !errors.Is(err, context.Canceled) {
 		t.Fatalf("cancel=%v", err)
 	}
-	if err := s.entry(context.Background(), "bad", entry[0], errors.New("walk")); err != nil || len(s.out) != 1 {
+	if err := s.entry(context.Background(), "bad", entry, errors.New("walk")); err != nil || len(s.out) != 1 {
 		t.Fatalf("walk err=%v out=%+v", err, s.out)
 	}
 	if err := s.entry(context.Background(), ".git", fakeDirEntry{name: ".git", dir: true}, nil); err != filepath.SkipDir {
@@ -80,14 +86,18 @@ func TestCoverageScannerEntryAndSizeErrors(t *testing.T) {
 	if err := s.entry(context.Background(), "other", fakeDirEntry{name: "other", dir: true}, nil); err != nil {
 		t.Fatalf("unknown=%v", err)
 	}
-	failed := cacheScanner{root: root, filesystem: errorFS{}, threshold: 0}
+	failed := cacheScanner{root: s.root, filesystem: errorFS{}, threshold: 0}
 	if err := failed.entry(context.Background(), "node_modules", fakeDirEntry{name: "node_modules", dir: true}, nil); err != filepath.SkipDir || len(failed.out) != 1 || failed.out[0].Reason != "cache size unavailable" {
 		t.Fatalf("size failure err=%v warnings=%+v", err, failed.out)
 	}
 	if _, err := size(context.Background(), errorFS{}, "."); err == nil {
 		t.Fatal("error filesystem accepted")
 	}
-	ctx, cancel = context.WithCancel(context.Background())
+}
+
+func assertSizeBoundaries(t *testing.T, root string) {
+	t.Helper()
+	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	if _, err := size(ctx, os.DirFS(root), "."); !errors.Is(err, context.Canceled) {
 		t.Fatalf("cancelled size=%v", err)

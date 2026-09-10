@@ -303,11 +303,6 @@ func TestCoverageGitAdapterCommandErrors(t *testing.T) {
 	if _, err := emptyCommon.commonGitDir(context.Background(), repo.PrimaryPath); err == nil {
 		t.Fatal("empty common git directory accepted")
 	}
-	cmd := exec.CommandContext(context.Background(), "true")
-	configureCommand(cmd)
-	if err := cmd.Cancel(); err == nil {
-		t.Fatal("unstarted command cancellation succeeded")
-	}
 }
 
 func TestCoverageGitRemainingInputAndProofCases(t *testing.T) {

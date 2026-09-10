@@ -1318,7 +1318,7 @@ func find(value, substring string) bool {
 	return false
 }
 
-func TestProofAndPathValidationHelpersFailClosed(t *testing.T) {
+func TestFullOIDRejectsInvalidValues(t *testing.T) {
 	t.Parallel()
 	for _, value := range []string{
 		strings.Repeat("a", 40), strings.Repeat("B", 64),
@@ -1332,6 +1332,10 @@ func TestProofAndPathValidationHelpersFailClosed(t *testing.T) {
 			t.Fatalf("fullOID(%q)=true", value)
 		}
 	}
+}
+
+func TestGitHubRepositoryValidationHelpersFailClosed(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		raw         string
 		owner, repo string
@@ -1350,6 +1354,10 @@ func TestProofAndPathValidationHelpersFailClosed(t *testing.T) {
 	if !sameGitHubRepository("Owner", "Repo", "owner", "repo") || sameGitHubRepository("Owner", "Repo", "owner", "other") {
 		t.Fatal("repository comparison did not preserve GitHub casing semantics")
 	}
+}
+
+func TestProviderFailureCategoryFailsClosed(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct{ err, want string }{
 		{"HTTP 401", "authentication failed"}, {"HTTP 429", "rate limit failed"}, {"deadline exceeded", "timeout, cancellation, or offline failure"}, {"response exceeds size", "malformed or oversized response"}, {"no exact pull request", "no exact merged pull request"}, {"unexpected", "provider response rejected"},
 	} {
@@ -1357,10 +1365,14 @@ func TestProofAndPathValidationHelpersFailClosed(t *testing.T) {
 			t.Fatalf("providerFailureCategory(%q)=%q", tc.err, got)
 		}
 	}
+}
+
+func TestPathsOverlapFailsClosed(t *testing.T) {
+	t.Parallel()
 	if pathsOverlap("", "/repo") || !pathsOverlap("/repo", "/repo/nested") || pathsOverlap("/repo/a", "/repo/ab") {
 		t.Fatal("path overlap safety boundary failed")
 	}
-	if got := canonicalPath("."); got == "" {
+	if canonicalPath(".") == "" {
 		t.Fatal("canonical path was empty")
 	}
 }

@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"math"
+	"math/big"
 	"os"
 	pathpkg "path"
 	"path/filepath"
@@ -17,9 +18,12 @@ import (
 )
 
 type config struct {
-	TotalMin   float64            `json:"total_min"`
-	PackageMin float64            `json:"package_min"`
-	Packages   map[string]float64 `json:"packages"`
+	TotalMin           float64            `json:"total_min"`
+	PackageMin         float64            `json:"package_min"`
+	Packages           map[string]float64 `json:"packages"`
+	totalExact         *big.Rat
+	packageExact       *big.Rat
+	packageExactByName map[string]*big.Rat
 }
 type counter struct{ covered, total int64 }
 type packageResult struct {
@@ -101,14 +105,18 @@ func evaluate(profile, configPath string) (result, error) {
 		return result{}, err
 	}
 	r := result{Packages: map[string]packageResult{}, Failures: []string{}}
+	packageMinimums := make(map[string]*big.Rat, len(counts))
 	var covered, total int64
 	for p, v := range counts {
 		pct := coverage(v)
 		floor := c.PackageMin
-		if configured, ok := c.Packages[p]; ok && configured > floor {
+		floorExact := c.packageExact
+		if configured, ok := c.Packages[p]; ok && c.packageExactByName[p].Cmp(floorExact) > 0 {
 			floor = configured
+			floorExact = c.packageExactByName[p]
 		}
 		r.Packages[p] = packageResult{Coverage: pct, Minimum: floor}
+		packageMinimums[p] = floorExact
 		if err := addCounter(&covered, v.covered); err != nil {
 			return result{}, err
 		}
@@ -118,7 +126,7 @@ func evaluate(profile, configPath string) (result, error) {
 	}
 	totalPct := coverage(counter{covered, total})
 	r.Total = packageResult{Coverage: totalPct, Minimum: c.TotalMin}
-	if totalPct < c.TotalMin {
+	if !meetsFloor(counter{covered, total}, c.totalExact) {
 		r.Failures = append(r.Failures, fmt.Sprintf("total %.2f%% is below %.2f%%", totalPct, c.TotalMin))
 	}
 	names := make([]string, 0, len(r.Packages))
@@ -128,7 +136,7 @@ func evaluate(profile, configPath string) (result, error) {
 	sort.Strings(names)
 	for _, p := range names {
 		item := r.Packages[p]
-		if item.Coverage < item.Minimum {
+		if !meetsFloor(counts[p], packageMinimums[p]) {
 			r.Failures = append(r.Failures, fmt.Sprintf("%s %.2f%% is below %.2f%%", p, item.Coverage, item.Minimum))
 		}
 	}
@@ -181,22 +189,51 @@ func readConfig(path string) (config, error) {
 	if e != nil {
 		return config{}, fmt.Errorf("read ratchet config: %w", e)
 	}
-	var c config
-	if e = json.Unmarshal(b, &c); e != nil {
-		return c, fmt.Errorf("parse ratchet config: %w", e)
+	var raw struct {
+		TotalMin   json.RawMessage            `json:"total_min"`
+		PackageMin json.RawMessage            `json:"package_min"`
+		Packages   map[string]json.RawMessage `json:"packages"`
 	}
-	if c.TotalMin < 0 || c.TotalMin > 100 || c.PackageMin < 0 || c.PackageMin > 100 {
-		return c, fmt.Errorf("coverage floors must be between 0 and 100")
+	if e = json.Unmarshal(b, &raw); e != nil {
+		return config{}, fmt.Errorf("parse ratchet config: %w", e)
 	}
-	if c.Packages == nil {
-		c.Packages = map[string]float64{}
+	totalMin, totalExact, err := parseFloor(raw.TotalMin)
+	if err != nil {
+		return config{}, fmt.Errorf("coverage floors must be between 0 and 100")
 	}
-	for pkg, floor := range c.Packages {
-		if floor < 0 || floor > 100 {
-			return c, fmt.Errorf("coverage floor for %q must be between 0 and 100", pkg)
+	packageMin, packageExact, err := parseFloor(raw.PackageMin)
+	if err != nil {
+		return config{}, fmt.Errorf("coverage floors must be between 0 and 100")
+	}
+	c := config{
+		TotalMin: totalMin, PackageMin: packageMin, Packages: make(map[string]float64, len(raw.Packages)),
+		totalExact: totalExact, packageExact: packageExact, packageExactByName: make(map[string]*big.Rat, len(raw.Packages)),
+	}
+	for pkg, rawFloor := range raw.Packages {
+		floor, exact, err := parseFloor(rawFloor)
+		if err != nil {
+			return config{}, fmt.Errorf("coverage floor for %q must be between 0 and 100", pkg)
 		}
+		c.Packages[pkg] = floor
+		c.packageExactByName[pkg] = exact
 	}
 	return c, nil
+}
+
+func parseFloor(raw json.RawMessage) (float64, *big.Rat, error) {
+	literal := strings.TrimSpace(string(raw))
+	if literal == "" || literal == "null" {
+		literal = "0"
+	}
+	value, err := strconv.ParseFloat(literal, 64)
+	if err != nil || math.IsNaN(value) || math.IsInf(value, 0) {
+		return 0, nil, fmt.Errorf("invalid coverage floor %q", literal)
+	}
+	exact, ok := new(big.Rat).SetString(literal)
+	if !ok || exact.Sign() < 0 || exact.Cmp(big.NewRat(100, 1)) > 0 {
+		return 0, nil, fmt.Errorf("invalid coverage floor %q", literal)
+	}
+	return value, exact, nil
 }
 func readProfile(path string) (map[string]counter, error) {
 	root, e := os.OpenRoot(filepath.Dir(path))
@@ -269,6 +306,13 @@ func parseProfileRow(row string) (string, int64, int64, error) {
 func coverage(v counter) float64 {
 	return float64(v.covered) * 100 / float64(v.total)
 }
+
+func meetsFloor(v counter, floor *big.Rat) bool {
+	covered := big.NewInt(v.covered)
+	covered.Mul(covered, big.NewInt(100))
+	required := new(big.Rat).Mul(new(big.Rat).SetInt64(v.total), floor)
+	return new(big.Rat).SetInt(covered).Cmp(required) >= 0
+}
 func validateArtifactPaths(profile, configPath, totalOut, packagesOut, failuresOut string) error {
 	paths := []string{profile, configPath, totalOut, packagesOut, failuresOut}
 	canonical := make([]string, len(paths))
@@ -307,10 +351,7 @@ func physicalPath(value string) (string, error) {
 			if err != nil {
 				return "", err
 			}
-			for index := len(suffix) - 1; index >= 0; index-- {
-				resolved = filepath.Join(resolved, suffix[index])
-			}
-			return resolved, nil
+			return appendResolvedPath(resolved, current, suffix)
 		} else if !os.IsNotExist(err) {
 			return "", err
 		}
@@ -322,6 +363,20 @@ func physicalPath(value string) (string, error) {
 		current = parent
 	}
 }
+
+func appendResolvedPath(resolved, ancestor string, suffix []string) (string, error) {
+	if len(suffix) > 0 {
+		info, err := os.Stat(resolved)
+		if err != nil || !info.IsDir() {
+			return "", fmt.Errorf("path ancestor %q is not a directory", ancestor)
+		}
+	}
+	for index := len(suffix) - 1; index >= 0; index-- {
+		resolved = filepath.Join(resolved, suffix[index])
+	}
+	return resolved, nil
+}
+
 func samePhysicalPath(first, second string) bool {
 	if first == second {
 		return true

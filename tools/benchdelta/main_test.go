@@ -24,7 +24,7 @@ func TestRunRejectsMissingAndInvalidInputs(t *testing.T) {
 			t.Fatalf("non-finite threshold %q exit = %d", threshold, code)
 		}
 	}
-	if validThreshold(math.NaN()) || validThreshold(math.Inf(1)) || !validThreshold(0) {
+	if validNonNegativeFinite(math.NaN()) || validNonNegativeFinite(math.Inf(1)) || !validNonNegativeFinite(0) {
 		t.Fatal("threshold validity accepted a non-finite value")
 	}
 }
@@ -46,6 +46,35 @@ func TestParseUsesMedianForDuplicateSamples(t *testing.T) {
 	}
 	if got := values["BenchmarkRun-8"]; got.bytes != 200 || got.allocs != 20 {
 		t.Fatalf("median metric = %#v", got)
+	}
+}
+
+func TestParseRejectsInvalidAllocationMetrics(t *testing.T) {
+	for _, metricName := range []string{"bytes", "allocs"} {
+		for _, value := range []string{"NaN", "+Inf", "-Inf", "-1"} {
+			t.Run(metricName+"/"+value, func(t *testing.T) {
+				bytes, allocs := "1", "1"
+				if metricName == "bytes" {
+					bytes = value
+				} else {
+					allocs = value
+				}
+				_, err := parse(fixture(t, "invalid", "BenchmarkRun-8 1 100 ns/op "+bytes+" B/op "+allocs+" allocs/op\n"), 1)
+				if err == nil || !strings.Contains(err.Error(), metricName+"/op") {
+					t.Fatalf("invalid %s metric accepted: %v", metricName, err)
+				}
+			})
+		}
+	}
+}
+
+func TestParseAcceptsZeroAllocationMetrics(t *testing.T) {
+	values, err := parse(fixture(t, "zero", "BenchmarkRun-8 1 100 ns/op 0 B/op 0 allocs/op\n"), 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := values["BenchmarkRun-8"]; got.bytes != 0 || got.allocs != 0 {
+		t.Fatalf("zero metric = %#v", got)
 	}
 }
 

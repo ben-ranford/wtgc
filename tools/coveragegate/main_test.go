@@ -59,6 +59,53 @@ func TestGateBoundaryAndRegressionProfiles(t *testing.T) {
 	}
 }
 
+func TestGateRejectsRoundedUpMaxIntCoverage(t *testing.T) {
+	root := t.TempDir()
+	profile := file(t, "cover.out", "mode: atomic\ngithub.com/acme/demo/a.go:1.1,1.2 9038904596117680290 1\ngithub.com/acme/demo/b.go:1.1,1.2 184467440737095517 0\n")
+	cfg := file(t, "ratchet.json", `{"total_min":98,"package_min":98}`)
+	err := check(profile, cfg, filepath.Join(root, "total.json"), filepath.Join(root, "packages.json"), filepath.Join(root, "failures.json"))
+	if err == nil || !strings.Contains(err.Error(), "total") || !strings.Contains(err.Error(), "github.com/acme/demo") {
+		t.Fatalf("rounded MaxInt coverage passed: %v", err)
+	}
+}
+
+func TestGateComparesFractionalFloorsExactly(t *testing.T) {
+	root := t.TempDir()
+	paths := []string{filepath.Join(root, "total.json"), filepath.Join(root, "packages.json"), filepath.Join(root, "failures.json")}
+	cfg := file(t, "ratchet.json", `{"total_min":98.1,"package_min":98.1}`)
+	if err := check(file(t, "exact.out", "mode: atomic\ngithub.com/acme/demo/a.go:1.1,1.2 981 1\ngithub.com/acme/demo/b.go:1.1,1.2 19 0\n"), cfg, paths[0], paths[1], paths[2]); err != nil {
+		t.Fatalf("exact fractional floor rejected: %v", err)
+	}
+	err := check(file(t, "below.out", "mode: atomic\ngithub.com/acme/demo/a.go:1.1,1.2 980999 1\ngithub.com/acme/demo/b.go:1.1,1.2 19001 0\n"), cfg, paths[0], paths[1], paths[2])
+	if err == nil || !strings.Contains(err.Error(), "total") || !strings.Contains(err.Error(), "github.com/acme/demo") {
+		t.Fatalf("just-below fractional floor passed: %v", err)
+	}
+}
+
+func TestReadConfigRejectsUnrepresentableExactFloor(t *testing.T) {
+	for _, body := range []string{
+		`{"total_min":100.00000000000000001,"package_min":0}`,
+		`{"total_min":0,"package_min":0,"packages":{"github.com/acme/demo":100.00000000000000001}}`,
+		`{"total_min":0,"package_min":0,"packages":{"github.com/acme/demo":"98"}}`,
+	} {
+		if _, err := readConfig(file(t, "invalid-exact-floor.json", body)); err == nil {
+			t.Fatalf("accepted invalid exact floor %s", body)
+		}
+	}
+}
+
+func TestReadConfigDefaultsMissingAndNullFloors(t *testing.T) {
+	for _, body := range []string{
+		`{}`,
+		`{"total_min":null,"package_min":null,"packages":null}`,
+	} {
+		c, err := readConfig(file(t, "default-floor.json", body))
+		if err != nil || c.TotalMin != 0 || c.PackageMin != 0 || len(c.Packages) != 0 || c.totalExact.Sign() != 0 || c.packageExact.Sign() != 0 {
+			t.Fatalf("default config = %+v, %v", c, err)
+		}
+	}
+}
+
 func TestGateFailsClosedForMissingAndUnseenPackages(t *testing.T) {
 	root := t.TempDir()
 	profile := file(t, "cover.out", "mode: atomic\ngithub.com/acme/known/a.go:1.1,1.2 1 1\ngithub.com/acme/unseen/a.go:1.1,1.2 1 1\ngithub.com/acme/unseen/b.go:1.1,1.2 1 0\n")
@@ -293,9 +340,6 @@ func TestProfilePathsAndPhysicalArtifactAliases(t *testing.T) {
 			t.Fatal("accepted symlinked parent alias")
 		}
 	})
-	if _, err := physicalPath(filepath.Join(config, "child")); err == nil {
-		t.Fatal("physical path accepted a regular-file parent")
-	}
 	t.Run("broken symlink", func(t *testing.T) {
 		broken := filepath.Join(root, "broken")
 		requireSymlink(t, os.Symlink(filepath.Join(root, "missing"), broken))
@@ -303,6 +347,26 @@ func TestProfilePathsAndPhysicalArtifactAliases(t *testing.T) {
 			t.Fatal("physical path accepted a broken symlink")
 		}
 	})
+}
+
+func TestPhysicalPathRejectsChildOfRegularFile(t *testing.T) {
+	root := t.TempDir()
+	file := filepath.Join(root, "regular-file")
+	if err := os.WriteFile(file, []byte("content"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := physicalPath(filepath.Join(file, "child")); err == nil {
+		t.Fatal("physical path accepted a regular-file parent")
+	}
+	if _, err := appendResolvedPath(file, file, []string{"child"}); err == nil {
+		t.Fatal("resolved regular-file ancestor accepted a child suffix")
+	}
+	resolved, err := appendResolvedPath(root, root, []string{"child", "missing"})
+	want := filepath.Join(root, "missing", "child")
+	if err != nil || resolved != want {
+		t.Fatalf("resolved directory ancestor = %q, %v; want %q", resolved, err, want)
+	}
 }
 
 func requireSymlink(t *testing.T, err error) {
