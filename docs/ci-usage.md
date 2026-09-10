@@ -24,7 +24,9 @@
   a 98% total and per-package floor. `make cov` enforces the same 98% total
   and default package floor, with the model package retained at 100%; both
   gates fail for missing configured packages or any newly observed package
-  below the default floor and emit JSON results in `.artifacts`.
+  below the default floor and emit JSON results in `.artifacts`. Artifact
+  output paths must also remain distinct after case folding so the same CI
+  configuration is safe on case-insensitive filesystems.
 - `make automation-check`
 - `make lint`
 - `make security`

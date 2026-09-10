@@ -378,7 +378,7 @@ func appendResolvedPath(resolved, ancestor string, suffix []string) (string, err
 }
 
 func samePhysicalPath(first, second string) bool {
-	if first == second {
+	if strings.EqualFold(first, second) {
 		return true
 	}
 	firstInfo, firstErr := os.Stat(first)

@@ -303,6 +303,25 @@ func TestRunRejectsAliasesAndArtifactWriteFailure(t *testing.T) {
 	}
 }
 
+func TestRunRejectsAbsentCaseFoldedArtifactAliasesBeforeWrites(t *testing.T) {
+	root := t.TempDir()
+	profile := file(t, "cover.out", "mode: atomic\ngithub.com/acme/demo/a.go:1.1,1.2 1 1\n")
+	config := file(t, "config.json", `{"total_min":100,"package_min":100}`)
+	total := filepath.Join(root, "total.json")
+	packages := filepath.Join(root, "Total.json")
+	failures := filepath.Join(root, "failures.json")
+	var stderr bytes.Buffer
+	code := run([]string{"--coverprofile", profile, "--config", config, "--total-out", total, "--packages-out", packages, "--package-failures-out", failures}, &stderr)
+	if code != 1 || !strings.Contains(stderr.String(), "outputs alias each other") {
+		t.Fatalf("case-folded alias run = (%d, %q)", code, stderr.String())
+	}
+	for _, path := range []string{total, packages, failures} {
+		if _, err := os.Stat(path); !errors.Is(err, fs.ErrNotExist) {
+			t.Fatalf("artifact was written before alias rejection: %q, %v", path, err)
+		}
+	}
+}
+
 func TestProfilePathsAndPhysicalArtifactAliases(t *testing.T) {
 	root := t.TempDir()
 	profile := file(t, "cover.out", "mode: atomic\ngithub.com/acme/demo/sub/file.go:1.1,1.2 1 1\n")
