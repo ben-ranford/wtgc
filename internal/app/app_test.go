@@ -1058,8 +1058,10 @@ type fakeGit struct {
 	defaultErr        error
 	defaultBranches   []string
 	ancestor          bool
+	ancestorErr       error
 	ancestorResults   []bool
 	remote            bool
+	remoteErr         error
 	diskErr           error
 	removeErr         error
 	pruneErr          error
@@ -1214,6 +1216,9 @@ func (f *fakeGit) IsClean(_ context.Context, path string) (bool, error) {
 	return value, nil
 }
 func (f *fakeGit) IsAncestor(context.Context, model.Repository, string, string) (bool, error) {
+	if f.ancestorErr != nil {
+		return false, f.ancestorErr
+	}
 	if len(f.ancestorResults) > 0 {
 		value := f.ancestorResults[0]
 		f.ancestorResults = f.ancestorResults[1:]
@@ -1222,6 +1227,9 @@ func (f *fakeGit) IsAncestor(context.Context, model.Repository, string, string) 
 	return f.ancestor, nil
 }
 func (f *fakeGit) RemoteContains(context.Context, model.Repository, string) (bool, error) {
+	if f.remoteErr != nil {
+		return false, f.remoteErr
+	}
 	return f.remote, nil
 }
 func (f *fakeGit) DiskUsage(string) (int64, error) {
@@ -1308,4 +1316,216 @@ func find(value, substring string) bool {
 		}
 	}
 	return false
+}
+
+func TestProofAndPathValidationHelpersFailClosed(t *testing.T) {
+	t.Parallel()
+	for _, value := range []string{
+		strings.Repeat("a", 40), strings.Repeat("B", 64),
+	} {
+		if !fullOID(value) {
+			t.Fatalf("fullOID(%q)=false", value)
+		}
+	}
+	for _, value := range []string{"short", strings.Repeat("g", 40)} {
+		if fullOID(value) {
+			t.Fatalf("fullOID(%q)=true", value)
+		}
+	}
+	for _, tc := range []struct {
+		raw         string
+		owner, repo string
+		ok          bool
+	}{
+		{"https://github.com/Owner/Repo.git", "Owner", "Repo", true},
+		{"git@github.com:Owner/Repo.git", "Owner", "Repo", true},
+		{"https://example.com/Owner/Repo", "", "", false},
+		{"https://github.com/Owner/Repo/extra", "", "", false},
+	} {
+		owner, repo, ok := githubRepo(tc.raw)
+		if owner != tc.owner || repo != tc.repo || ok != tc.ok {
+			t.Fatalf("githubRepo(%q)=(%q,%q,%t)", tc.raw, owner, repo, ok)
+		}
+	}
+	if !sameGitHubRepository("Owner", "Repo", "owner", "repo") || sameGitHubRepository("Owner", "Repo", "owner", "other") {
+		t.Fatal("repository comparison did not preserve GitHub casing semantics")
+	}
+	for _, tc := range []struct{ err, want string }{
+		{"HTTP 401", "authentication failed"}, {"HTTP 429", "rate limit failed"}, {"deadline exceeded", "timeout, cancellation, or offline failure"}, {"response exceeds size", "malformed or oversized response"}, {"no exact pull request", "no exact merged pull request"}, {"unexpected", "provider response rejected"},
+	} {
+		if got := providerFailureCategory(errors.New(tc.err)); got != tc.want {
+			t.Fatalf("providerFailureCategory(%q)=%q", tc.err, got)
+		}
+	}
+	if pathsOverlap("", "/repo") || !pathsOverlap("/repo", "/repo/nested") || pathsOverlap("/repo/a", "/repo/ab") {
+		t.Fatal("path overlap safety boundary failed")
+	}
+	if got := canonicalPath("."); got == "" {
+		t.Fatal("canonical path was empty")
+	}
+}
+
+func TestInventoryFinalizationAndDeduplication(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		item model.Worktree
+		want model.Action
+	}{
+		{model.Worktree{Removed: true, Prunable: true}, model.ActionPruned},
+		{model.Worktree{Removed: true, BranchDeleted: true, DiskBytes: 12}, model.ActionRemovedBranchDeleted},
+		{model.Worktree{Removed: true, DiskBytes: 12}, model.ActionRemoved},
+		{model.Worktree{Classification: model.SafeToRemove}, model.ActionWouldRemove},
+		{model.Worktree{Classification: model.Prunable}, model.ActionWouldPrune},
+		{model.Worktree{Classification: model.Kept, ReclaimedBytes: 9}, model.ActionKept},
+	}
+	for _, tc := range cases {
+		item := tc.item
+		finalizeAction(&item)
+		if item.Action != tc.want {
+			t.Fatalf("finalizeAction(%+v)=%q want=%q", tc.item, item.Action, tc.want)
+		}
+		if (tc.want == model.ActionRemoved || tc.want == model.ActionRemovedBranchDeleted) && item.ReclaimedBytes != item.DiskBytes {
+			t.Fatalf("reclaimed=%d disk=%d", item.ReclaimedBytes, item.DiskBytes)
+		}
+	}
+	if !equalStrings([]string{"a"}, []string{"a"}) || equalStrings([]string{"a"}, []string{"b"}) || equalStrings([]string{"a"}, nil) {
+		t.Fatal("string equality helper incorrect")
+	}
+	values := []string{" first ", "", "first", "second", " second "}
+	if got := uniqueStrings(values); !equalStrings(got, []string{"first", "second"}) {
+		t.Fatalf("uniqueStrings=%v", got)
+	}
+}
+
+func TestRetentionRevalidationRejectsIncompleteOrChangedEvidence(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
+	if got := retentionRevalidationFailure(model.Worktree{}, model.Worktree{}, now); got != "" {
+		t.Fatalf("no retention evidence=%q", got)
+	}
+	previous := model.Worktree{WorktreeDetails: &model.WorktreeDetails{RetentionBasis: "worktree_mtime"}}
+	if got := retentionRevalidationFailure(previous, model.Worktree{}, now); !contains(got, "incomplete") {
+		t.Fatalf("incomplete evidence=%q", got)
+	}
+	observed, eligible := now.Add(-time.Hour), now
+	previous.ObservedAt, previous.EligibleAt = &observed, &eligible
+	fresh := model.Worktree{Path: t.TempDir()}
+	if got := retentionRevalidationFailure(previous, fresh, now); !contains(got, "timestamp changed") {
+		t.Fatalf("changed evidence=%q", got)
+	}
+}
+
+func TestSafetyFailuresDuringRetentionAndRevalidationKeepWorktree(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
+	inv := model.Inventory{Worktrees: []model.Worktree{{Path: "/path/that/does/not/exist", Classification: model.SafeToRemove}}}
+	New(nil).applyRetention(now, time.Hour, &inv)
+	if item := inv.Worktrees[0]; item.Classification != model.Kept || !contains(item.Error, "retention timestamp") {
+		t.Fatalf("retention failure item=%+v", item)
+	}
+	if _, err := latestModTime("/path/that/does/not/exist"); err == nil {
+		t.Fatal("missing worktree mtime was accepted")
+	}
+
+	repo := model.Repository{PrimaryPath: "/repo"}
+	previous := model.Worktree{Path: "/worktree", Branch: "feature", Head: "old"}
+	for _, tc := range []struct {
+		name    string
+		backend *fakeGit
+		want    string
+	}{
+		{"default branch failure", func() *fakeGit { b := newFakeGit(); b.defaultErr = errors.New("no default"); return b }(), "revalidate default branch"},
+		{"list failure", func() *fakeGit { b := newFakeGit(); b.listErrs = []error{errors.New("list failed")}; return b }(), "revalidate worktree list"},
+		{"registration missing", newFakeGit(), "registration changed"},
+		{"head changed", newFakeGit(model.RegisteredWorktree{Path: "/worktree", Branch: "feature", Head: "new"}), "HEAD or branch changed"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			item, ok := New(tc.backend).revalidate(context.Background(), repo, Options{Now: func() time.Time { return now }}, previous)
+			if ok || !contains(item.Reason+item.Error, tc.want) {
+				t.Fatalf("ok=%t item=%+v", ok, item)
+			}
+		})
+	}
+}
+
+func TestCanonicalPathAndExactOverlap(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	if canonicalPath(root) == "" || !pathsOverlap(root, root) {
+		t.Fatal("canonical path or exact overlap not recognized")
+	}
+}
+
+func TestClassificationAndProviderMappingErrorsAreRetained(t *testing.T) {
+	t.Parallel()
+	repo := model.Repository{PrimaryPath: "/repo"}
+	record := branchRecord("feature")
+	for _, tc := range []struct {
+		name    string
+		backend *fakeGit
+		want    string
+	}{
+		{"ancestry error", func() *fakeGit {
+			b := newFakeGit(record)
+			b.clean = []bool{true}
+			b.ancestorErr = errors.New("ancestor failed")
+			return b
+		}(), "check merge ancestry"},
+		{"remote error", func() *fakeGit {
+			b := newFakeGit(record)
+			b.clean = []bool{true}
+			b.ancestor = true
+			b.remoteErr = errors.New("remote failed")
+			return b
+		}(), "check remote reachability"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			item := New(tc.backend).classify(context.Background(), classificationJob{repo: repo, defaultBranch: "main", record: record}, classifyOptions{now: time.Now()})
+			if item.Classification != model.Error || !contains(item.Error, tc.want) {
+				t.Fatalf("item=%+v", item)
+			}
+		})
+	}
+
+	backend := newFakeGit(record)
+	backend.providerUpstreams = []providerMapping{{err: errors.New("ambiguous")}}
+	_, ok, reason := New(backend).providerProof(context.Background(), repo, record, "main", proofProvider{}, "", time.Now())
+	if ok || reason != "mapping unavailable or ambiguous" {
+		t.Fatalf("provider mapping err ok=%t reason=%q", ok, reason)
+	}
+	backend = newFakeGit(record)
+	backend.providerUpstreams = []providerMapping{{remote: "origin", branch: "feature", url: "https://example.invalid/owner/repo"}}
+	_, ok, reason = New(backend).providerProof(context.Background(), repo, record, "main", proofProvider{}, "", time.Now())
+	if ok || reason != "mapping identity is invalid" {
+		t.Fatalf("provider identity ok=%t reason=%q", ok, reason)
+	}
+}
+
+func TestDefaultBranchErrorAndInteractivePrunableChoiceStaySafe(t *testing.T) {
+	t.Parallel()
+	backend := newFakeGit(branchRecord("feature"))
+	backend.diskErr = errors.New("disk unavailable")
+	backend.cleanErr = errors.New("status unavailable")
+	item := New(backend).classifyDefaultBranchError(context.Background(), model.Repository{PrimaryPath: "/repo"}, branchRecord("feature"), "default branch unavailable")
+	if item.Classification != model.Kept || !contains(item.Error, "measure disk usage") || !contains(item.Error, "inspect working tree") {
+		t.Fatalf("default branch item=%+v", item)
+	}
+
+	prunable := model.Worktree{Path: "/missing", Repository: "/repo", Classification: model.Prunable, Prunable: true}
+	inv := model.Inventory{Worktrees: []model.Worktree{prunable}}
+	New(backend).cleanRepository(context.Background(), model.Repository{PrimaryPath: "/repo"}, Options{Interactive: true, Confirm: func(model.Worktree) bool { return false }}, &inv)
+	if inv.Worktrees[0].Classification != model.Kept || inv.Worktrees[0].Action != model.ActionKept || backend.pruneCalls != 0 {
+		t.Fatalf("interactive prunable=%+v prune=%d", inv.Worktrees[0], backend.pruneCalls)
+	}
+}
+
+func TestRetentionRevalidationAcceptsStableElapsedProviderTimestamp(t *testing.T) {
+	t.Parallel()
+	now := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
+	observed, eligible := now.Add(-time.Hour), now
+	previous := model.Worktree{WorktreeDetails: &model.WorktreeDetails{RetentionBasis: "provider_merged_at", ObservedAt: &observed, EligibleAt: &eligible}}
+	fresh := model.Worktree{WorktreeDetails: &model.WorktreeDetails{MergedAt: &observed}}
+	if got := retentionRevalidationFailure(previous, fresh, now); got != "" {
+		t.Fatalf("stable elapsed retention rejected: %q", got)
+	}
 }

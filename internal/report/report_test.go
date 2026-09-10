@@ -3,6 +3,7 @@ package report
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -143,11 +144,26 @@ func TestByteString(t *testing.T) {
 		{1024, "1.0 KiB"},
 		{1536, "1.5 KiB"},
 		{1024 * 1024, "1.0 MiB"},
+		{1024 * 1024 * 1024, "1.0 GiB"},
+		{1024 * 1024 * 1024 * 1024 * 1024 * 1024, "1.0 EiB"},
 	} {
 		if got := ByteString(tc.n); got != tc.want {
 			t.Fatalf("ByteString(%d) = %q, want %q", tc.n, got, tc.want)
 		}
 	}
+}
+
+func TestWriteHumanPropagatesTableWriterFailure(t *testing.T) {
+	err := Write(failingReportWriter{}, testInventory(), FormatHuman)
+	if err == nil || !strings.Contains(err.Error(), "report write failed") {
+		t.Fatalf("Write error=%v", err)
+	}
+}
+
+type failingReportWriter struct{}
+
+func (failingReportWriter) Write([]byte) (int, error) {
+	return 0, errors.New("report write failed")
 }
 
 func TestAction(t *testing.T) {

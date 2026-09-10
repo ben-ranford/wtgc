@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"errors"
 	"strings"
 	"testing"
 )
@@ -122,7 +123,7 @@ func TestParseRejectsConflictingExecuteModes(t *testing.T) {
 }
 
 func TestParseHelpAndVersion(t *testing.T) {
-	for _, args := range [][]string{{"--help"}, {"-h"}} {
+	for _, args := range [][]string{{"--help"}, {"-h"}, {"clean", "--help"}, {"clean", "-h"}} {
 		opts, err := Parse(args)
 		if err != nil {
 			t.Fatalf("Parse(%v) error = %v", args, err)
@@ -181,5 +182,63 @@ func TestProviderRetentionAndCacheFlags(t *testing.T) {
 		if _, err := Parse(args); err == nil || !IsUsageError(err) {
 			t.Fatalf("Parse(%v) err=%v, want usage", args, err)
 		}
+	}
+}
+
+func TestUsageAndFlagHelperContracts(t *testing.T) {
+	t.Parallel()
+	usage := &UsageError{Message: "bad invocation"}
+	if usage.Error() != "bad invocation" || usage.ExitCode() != 2 || !usage.Usage() || !IsUsageError(usage) {
+		t.Fatalf("usage error contract = %#v", usage)
+	}
+	if IsUsageError(errors.New("ordinary")) {
+		t.Fatal("ordinary error reported as usage error")
+	}
+
+	var roots stringList
+	if err := roots.Set(""); err == nil {
+		t.Fatal("empty scan root accepted")
+	}
+	if err := roots.Set("/first"); err != nil {
+		t.Fatal(err)
+	}
+	if got := roots.String(); got != "/first" {
+		t.Fatalf("roots=%q", got)
+	}
+
+	for _, tc := range []struct {
+		input string
+		want  bool
+	}{
+		{"true", true}, {"FALSE", false}, {"yes", true}, {"n", false},
+	} {
+		got, err := parseBoolFlag(tc.input)
+		if err != nil || got != tc.want {
+			t.Fatalf("parseBoolFlag(%q)=(%t,%v), want %t", tc.input, got, err, tc.want)
+		}
+	}
+	if _, err := parseBoolFlag("perhaps"); err == nil {
+		t.Fatal("invalid boolean accepted")
+	}
+
+	value := boolOption{value: true}
+	if err := value.Set("no"); err != nil || value.value || !value.set || value.String() != "false" || !value.IsBoolFlag() {
+		t.Fatalf("bool option=%+v err=%v", value, err)
+	}
+	if err := value.Set("wat"); err == nil {
+		t.Fatal("invalid bool option accepted")
+	}
+
+	var usageOutput strings.Builder
+	WriteUsage(&usageOutput, "")
+	if !strings.Contains(usageOutput.String(), "wtgc clean") {
+		t.Fatalf("default usage=%q", usageOutput.String())
+	}
+}
+
+func TestParseRejectsDashPrefixedPositionalArgument(t *testing.T) {
+	_, err := Parse([]string{"clean", "--", "-looks-like-flag"})
+	if err == nil || !IsUsageError(err) || !strings.Contains(err.Error(), "unknown argument") {
+		t.Fatalf("post -- value err=%v", err)
 	}
 }

@@ -16,7 +16,7 @@ import (
 	"strings"
 )
 
-var benchLine = regexp.MustCompile(`^(Benchmark\S+)\s+\d+\s+\S+\s+ns/op\s+(\d+)\s+B/op\s+(\d+)\s+allocs/op`)
+var benchLine = regexp.MustCompile(`^(Benchmark\S+)\s+\d+\s+\S+\s+ns/op\s+(\S+)\s+B/op\s+(\S+)\s+allocs/op`)
 
 type metric struct{ bytes, allocs float64 }
 

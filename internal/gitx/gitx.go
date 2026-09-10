@@ -233,28 +233,32 @@ func (c *Client) discoverRoot(ctx context.Context, root string, seen map[string]
 
 func (c *Client) walkRepositoryRoot(ctx context.Context, root string, seen map[string]string, errs *[]error) error {
 	return filepath.WalkDir(root, func(path string, d fs.DirEntry, walkErr error) error {
-		if walkErr != nil {
-			*errs = append(*errs, fmt.Errorf("walk %q: %w", path, walkErr))
-			if d != nil && d.IsDir() {
-				return filepath.SkipDir
-			}
-			return nil
-		}
-		if d.Name() != ".git" {
-			return nil
-		}
-		worktreePath := filepath.Dir(path)
-		commonGitDir, err := c.commonGitDir(ctx, worktreePath)
-		if err != nil {
-			*errs = append(*errs, fmt.Errorf("common git dir for %q: %w", worktreePath, err))
-		} else if _, ok := seen[commonGitDir]; !ok {
-			seen[commonGitDir] = worktreePath
-		}
-		if d.IsDir() {
+		return c.walkRepositoryEntry(ctx, path, d, walkErr, seen, errs)
+	})
+}
+
+func (c *Client) walkRepositoryEntry(ctx context.Context, path string, d fs.DirEntry, walkErr error, seen map[string]string, errs *[]error) error {
+	if walkErr != nil {
+		*errs = append(*errs, fmt.Errorf("walk %q: %w", path, walkErr))
+		if d != nil && d.IsDir() {
 			return filepath.SkipDir
 		}
 		return nil
-	})
+	}
+	if d.Name() != ".git" {
+		return nil
+	}
+	worktreePath := filepath.Dir(path)
+	commonGitDir, err := c.commonGitDir(ctx, worktreePath)
+	if err != nil {
+		*errs = append(*errs, fmt.Errorf("common git dir for %q: %w", worktreePath, err))
+	} else if _, ok := seen[commonGitDir]; !ok {
+		seen[commonGitDir] = worktreePath
+	}
+	if d.IsDir() {
+		return filepath.SkipDir
+	}
+	return nil
 }
 
 // List returns raw worktree records for a repository.
@@ -455,26 +459,30 @@ func (c *Client) RemoteContains(ctx context.Context, repo model.Repository, comm
 func DiskUsage(path string) (int64, error) {
 	var total int64
 	err := filepath.WalkDir(path, func(p string, d fs.DirEntry, walkErr error) error {
-		if walkErr != nil {
-			if isTransientWalkNotExist(path, p, walkErr) {
-				return nil
-			}
-			return fmt.Errorf("walk %q: %w", p, walkErr)
-		}
-		info, err := d.Info()
-		if err != nil {
-			if isTransientWalkNotExist(path, p, err) {
-				return nil
-			}
-			return fmt.Errorf("stat %q: %w", p, err)
-		}
-		total += info.Size()
-		return nil
+		return diskUsageEntry(path, &total, p, d, walkErr)
 	})
 	if err != nil {
 		return 0, err
 	}
 	return total, nil
+}
+
+func diskUsageEntry(root string, total *int64, path string, d fs.DirEntry, walkErr error) error {
+	if walkErr != nil {
+		if isTransientWalkNotExist(root, path, walkErr) {
+			return nil
+		}
+		return fmt.Errorf("walk %q: %w", path, walkErr)
+	}
+	info, err := d.Info()
+	if err != nil {
+		if isTransientWalkNotExist(root, path, err) {
+			return nil
+		}
+		return fmt.Errorf("stat %q: %w", path, err)
+	}
+	*total += info.Size()
+	return nil
 }
 
 // isTransientWalkNotExist ignores files that disappear after WalkDir reads a

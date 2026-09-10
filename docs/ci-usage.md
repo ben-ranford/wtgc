@@ -20,10 +20,11 @@
   temporary baseline worktree on exit.
 - `make fuzz-corpus-check` executes each committed porcelain corpus seed once;
   the scheduled fuzz workflow runs a bounded 30-second campaign.
-- `make ci-tools-cov` covers the repository-owned CI validators. `make cov`
-  enforces its preserved 85% total floor and checked-in individual package
-  floors from `.ci/coverage-ratchet.json`
-  and emits JSON results in `.artifacts`.
+- `make ci-tools-cov` covers every repository-owned CI validator and enforces
+  a 98% total and per-package floor. `make cov` enforces the same 98% total
+  and default package floor, with the model package retained at 100%; both
+  gates fail for missing configured packages or any newly observed package
+  below the default floor and emit JSON results in `.artifacts`.
 - `make automation-check`
 - `make lint`
 - `make security`

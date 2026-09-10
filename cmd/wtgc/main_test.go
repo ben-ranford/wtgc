@@ -12,6 +12,7 @@ import (
 
 	"github.com/ben-ranford/wtgc/internal/app"
 	"github.com/ben-ranford/wtgc/internal/model"
+	"github.com/ben-ranford/wtgc/internal/provider"
 )
 
 func TestRunHelpAndVersion(t *testing.T) {
@@ -286,6 +287,102 @@ func TestStaticInfoRequest(t *testing.T) {
 	}
 }
 
+func TestRunMainUsesStaticBackendAndRejectsInvalidTimeout(t *testing.T) {
+	t.Parallel()
+	backend := newMainFakeGit(mainRecord("main"))
+	newGitCalls, timedCalls := 0, 0
+	newGit := func(string) app.Git {
+		newGitCalls++
+		return backend
+	}
+	newTimedGit := func(_ string, timeout time.Duration) app.Git {
+		timedCalls++
+		if timeout != 150*time.Millisecond {
+			t.Fatalf("timeout = %s", timeout)
+		}
+		return backend
+	}
+
+	var stdout, stderr bytes.Buffer
+	if code := runMain([]string{"--help"}, strings.NewReader(""), &stdout, &stderr, func(string) string { return "invalid" }, func() (string, error) { return "/repo", nil }, newGit, newTimedGit); code != 0 {
+		t.Fatalf("static info exit = %d, stderr=%q", code, stderr.String())
+	}
+	if newGitCalls != 1 || timedCalls != 0 || !strings.Contains(stdout.String(), "Usage:") {
+		t.Fatalf("static startup new=%d timed=%d stdout=%q", newGitCalls, timedCalls, stdout.String())
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	if code := runMain([]string{"clean"}, strings.NewReader(""), &stdout, &stderr, func(string) string { return "bad" }, func() (string, error) { return "/repo", nil }, newGit, newTimedGit); code != 2 {
+		t.Fatalf("invalid timeout exit = %d", code)
+	}
+	if !strings.Contains(stderr.String(), "WTGC_GIT_TIMEOUT") || timedCalls != 0 {
+		t.Fatalf("stderr=%q timed=%d", stderr.String(), timedCalls)
+	}
+
+	stdout.Reset()
+	stderr.Reset()
+	if code := runMain([]string{"clean", "--json"}, strings.NewReader(""), &stdout, &stderr, func(string) string { return "150ms" }, func() (string, error) { return "/repo", nil }, newGit, newTimedGit); code != 0 {
+		t.Fatalf("timed startup exit = %d stderr=%q", code, stderr.String())
+	}
+	if timedCalls != 1 || !strings.Contains(stdout.String(), `"schema_version"`) {
+		t.Fatalf("timed startup calls=%d stdout=%q", timedCalls, stdout.String())
+	}
+}
+
+func TestConfirmerPrunableAndEOFDefaultToNo(t *testing.T) {
+	var output bytes.Buffer
+	if confirmer(strings.NewReader(""), &output, false)(model.Worktree{Path: "/stale", Prunable: true}) {
+		t.Fatal("EOF must not confirm")
+	}
+	if !strings.Contains(output.String(), "prune stale metadata for /stale? [y/N] \n") {
+		t.Fatalf("prompt=%q", output.String())
+	}
+}
+
+func TestRunWithProviderBuildsProofBoundary(t *testing.T) {
+	t.Parallel()
+	backend := newMainFakeGit(mainRecord("main"), mainRemovableRecord("feature"))
+	proofCalls := 0
+	finder := mainProofFinder{proof: provider.PullRequest{
+		Number:         1,
+		URL:            "https://github.com/owner/repo/pull/1",
+		MergedAt:       time.Now().Add(-time.Minute),
+		HeadSHA:        "def456",
+		HeadOwner:      "owner",
+		HeadRepo:       "repo",
+		HeadRef:        "feature",
+		BaseOwner:      "owner",
+		BaseRepo:       "repo",
+		BaseRef:        "main",
+		MergeCommitSHA: strings.Repeat("a", 40),
+	}}
+	var stdout, stderr bytes.Buffer
+	code := runWithProvider(context.Background(), []string{"clean", "--provider", "github", "--json"}, strings.NewReader(""), &stdout, &stderr, backend, func() (string, error) { return "/repo", nil }, func() provider.MergeFinder {
+		proofCalls++
+		return finder
+	})
+	if code != 0 || proofCalls != 1 || !strings.Contains(stdout.String(), `"schema_version"`) {
+		t.Fatalf("code=%d calls=%d stdout=%q stderr=%q", code, proofCalls, stdout.String(), stderr.String())
+	}
+}
+
+func TestRunCreatesDefaultGitHubProviderWithoutNetworkWhenGitProofIsSufficient(t *testing.T) {
+	t.Parallel()
+	backend := newMainFakeGit(mainRecord("main"), mainRemovableRecord("feature"))
+	var stdout, stderr bytes.Buffer
+	code := run(context.Background(), []string{"clean", "--provider", "github", "--json"}, strings.NewReader(""), &stdout, &stderr, backend, func() (string, error) { return "/repo", nil })
+	if code != 0 || !strings.Contains(stdout.String(), `"schema_version"`) || stderr.Len() != 0 {
+		t.Fatalf("code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+}
+
+func TestProductionGitFactoriesCreateBoundaries(t *testing.T) {
+	if newGitBackend("git") == nil || newTimedGitBackend("git", time.Second) == nil {
+		t.Fatal("production Git factories returned nil")
+	}
+}
+
 func TestConfirmerDefaultsToNo(t *testing.T) {
 	t.Parallel()
 	var output bytes.Buffer
@@ -381,3 +478,9 @@ func (failingWriter) Write([]byte) (int, error) {
 }
 
 var _ io.Writer = failingWriter{}
+
+type mainProofFinder struct{ proof provider.PullRequest }
+
+func (p mainProofFinder) FindMerged(context.Context, provider.Query) (provider.PullRequest, error) {
+	return p.proof, nil
+}

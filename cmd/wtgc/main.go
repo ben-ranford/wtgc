@@ -26,19 +26,40 @@ var (
 )
 
 func main() {
+	os.Exit(runMain(os.Args[1:], os.Stdin, os.Stdout, os.Stderr, os.Getenv, os.Getwd, newGitBackend, newTimedGitBackend))
+}
+
+func newGitBackend(binary string) app.Git { return gitx.New(binary) }
+
+func newTimedGitBackend(binary string, timeout time.Duration) app.Git {
+	return gitx.NewWithTimeout(binary, timeout)
+}
+
+// runMain wires process dependencies into the command. Keeping this boundary
+// explicit lets tests exercise timeout and static-information startup paths
+// without mutating process-wide arguments or environment.
+func runMain(
+	args []string,
+	stdin io.Reader,
+	stdout, stderr io.Writer,
+	getenv func(string) string,
+	getwd func() (string, error),
+	newGit func(string) app.Git,
+	newGitWithTimeout func(string, time.Duration) app.Git,
+) int {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	backend := gitx.New("git")
-	if !staticInfoRequest(os.Args[1:]) {
-		timeout, err := gitCommandTimeoutFromEnv(os.Getenv("WTGC_GIT_TIMEOUT"))
+	backend := newGit("git")
+	if !staticInfoRequest(args) {
+		timeout, err := gitCommandTimeoutFromEnv(getenv("WTGC_GIT_TIMEOUT"))
 		if err != nil {
-			fmt.Fprintf(os.Stderr, "WTGC_GIT_TIMEOUT: %v\n", err)
-			os.Exit(2)
+			fmt.Fprintf(stderr, "WTGC_GIT_TIMEOUT: %v\n", err)
+			return 2
 		}
-		backend = gitx.NewWithTimeout("git", timeout)
+		backend = newGitWithTimeout("git", timeout)
 	}
-	os.Exit(run(ctx, os.Args[1:], os.Stdin, os.Stdout, os.Stderr, backend, os.Getwd))
+	return run(ctx, args, stdin, stdout, stderr, backend, getwd)
 }
 
 func run(
@@ -50,14 +71,28 @@ func run(
 	backend app.Git,
 	getwd func() (string, error),
 ) int {
+	return runWithProvider(ctx, args, stdin, stdout, stderr, backend, getwd, func() provider.MergeFinder {
+		return provider.NewGitHub(nil)
+	})
+}
+
+func runWithProvider(
+	ctx context.Context,
+	args []string,
+	stdin io.Reader,
+	stdout io.Writer,
+	stderr io.Writer,
+	backend app.Git,
+	getwd func() (string, error),
+	newProvider func() provider.MergeFinder,
+) int {
 	opts, err := cli.Parse(args)
 	if err != nil {
 		fmt.Fprintln(stderr, err)
-		if cli.IsUsageError(err) {
-			cli.WriteUsage(stderr, "wtgc")
-			return 2
-		}
-		return 1
+		// cli.Parse exposes malformed input as UsageError, so every parse
+		// failure receives the same conventional usage response.
+		cli.WriteUsage(stderr, "wtgc")
+		return 2
 	}
 	if opts.Help {
 		cli.WriteUsage(stdout, "wtgc")
@@ -84,7 +119,7 @@ func run(
 		ProviderRemote: opts.ProviderRemote,
 	}
 	if opts.Provider == "github" {
-		appOptions.Provider = provider.NewGitHub(nil)
+		appOptions.Provider = newProvider()
 	}
 	if opts.Interactive {
 		appOptions.Confirm = confirmer(stdin, stderr, opts.DeleteBranch)

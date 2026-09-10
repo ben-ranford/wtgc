@@ -106,6 +106,23 @@ func TestRunValidatesRepositoryMergePolicy(t *testing.T) {
 	}
 }
 
+func TestMergePolicyReportsEmptyValues(t *testing.T) {
+	err := validateRepoMergePolicy(repoMergePolicy{})
+	if err == nil || !strings.Contains(err.Error(), "got empty value") {
+		t.Fatalf("empty policy failure = %v", err)
+	}
+}
+
+func TestRunReportsValidationAndRootReadFailures(t *testing.T) {
+	var stderr bytes.Buffer
+	if code := run([]string{"--title", "invalid"}, mapEnv(nil), &stderr); code != 1 || !strings.Contains(stderr.String(), "PR title") {
+		t.Fatalf("validation failure = (%d, %q)", code, stderr.String())
+	}
+	if _, err := readBody("\x00", mapEnv(nil)); err == nil {
+		t.Fatal("readBody accepted invalid root")
+	}
+}
+
 func TestHelpers(t *testing.T) {
 	if heading, ok := parseH2("### Nested"); ok || heading != "" {
 		t.Fatalf("parseH2 accepted nested heading")
