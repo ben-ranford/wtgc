@@ -3,6 +3,7 @@ package integration_test
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -63,7 +64,7 @@ func TestReviewProjectsLargeRealRepositoryAndRetainsPartialScanErrors(t *testing
 			t.Fatalf("size tie was not resolved by path: %q before %q", rows[i-1].Worktree.Path, row.Worktree.Path)
 		}
 	}
-	if !hasSelectedPath(rows, selected) {
+	if !hasSelectedPath(t, doc.View.Groups, selected) {
 		t.Fatalf("selected path %q was not retained in the projected view", selected)
 	}
 }
@@ -123,6 +124,119 @@ func TestReviewLeavesLegacyCleanJSONContractUntouched(t *testing.T) {
 	}
 }
 
+func TestReviewSelectionOverridesFiltersBeforeExactClean(t *testing.T) {
+	repo := newRepository(t)
+	selected := repo.CreateMergedWorktree(t, "review-selected")
+	unselected := repo.CreateMergedWorktree(t, "review-unselected")
+
+	document, stderr := runReviewJSON(t, repo.Root, 0,
+		"review", "--json", "--scan-root", repo.Root,
+		"--classification", string(model.Kept), "--select", selected,
+	)
+	if stderr != "" || !hasSelectedPath(t, document.View.Groups, selected) {
+		t.Fatalf("review selection disappeared behind its filter: stderr=%q view=%+v", stderr, document.View)
+	}
+
+	inv, prompt := runSelectedClean(t, repo.Root, 0, "yes\n",
+		"clean", "--interactive", "--delete-branch", "--json", "--select", selected, repo.Root,
+	)
+	if inv.Summary.Removed != 1 || strings.Count(prompt, "[y/N]") != 1 || !strings.Contains(prompt, "1 worktrees") {
+		t.Fatalf("selected clean result: inv=%+v prompt=%q", inv.Summary, prompt)
+	}
+	if _, err := os.Stat(selected); !os.IsNotExist(err) {
+		t.Fatalf("selected worktree survives: %v", err)
+	}
+	if _, err := os.Stat(unselected); err != nil || !repo.BranchExists(t, "review-unselected") || repo.BranchExists(t, "review-selected") {
+		t.Fatalf("exact selected cleanup changed unselected checkout or branches: stat=%v", err)
+	}
+}
+
+func TestReviewPartialScanWithMissingSelectionKeepsOperationalDocument(t *testing.T) {
+	repo := newRepository(t)
+	selected := repo.CreateMergedWorktree(t, "review-operational")
+
+	document, stderr := runReviewJSON(t, repo.Root, 1,
+		"review", "--json",
+		"--scan-root", filepath.Join(repo.Root, "missing"), "--scan-root", repo.Root,
+		"--select", selected, "--select", filepath.Join(repo.Root, "missing selection"),
+	)
+	if len(document.Inventory.Worktrees) == 0 || len(document.Inventory.Errors) == 0 || !strings.Contains(stderr, "completed with") {
+		t.Fatalf("missing selection discarded usable scan evidence: inventory=%+v stderr=%q", document.Inventory, stderr)
+	}
+	if !hasSelectedPath(t, document.View.Groups, selected) {
+		t.Fatalf("valid advisory selection missing from operational document: %+v", document.View)
+	}
+}
+
+func TestCleanSelectedSetDeclineAndEOFDoNotMutateAnySelection(t *testing.T) {
+	for _, answer := range []string{"no\n", "yes"} {
+		t.Run(strings.ReplaceAll(answer, "\n", " EOF"), func(t *testing.T) {
+			repo := newRepository(t)
+			a := repo.CreateMergedWorktree(t, "selected-a")
+			b := repo.CreateMergedWorktree(t, "selected-b")
+			other := repo.CreateMergedWorktree(t, "unselected")
+			before := repo.RegisteredWorktrees(t)
+
+			inv, prompt := runSelectedClean(t, repo.Root, 0, answer,
+				"clean", "--interactive", "--json", "--select", a, "--select", b, repo.Root,
+			)
+			if inv.Summary.Removed != 0 || strings.Count(prompt, "[y/N]") != 1 || !strings.Contains(prompt, "2 worktrees") {
+				t.Fatalf("declined whole-set cleanup: inv=%+v prompt=%q", inv.Summary, prompt)
+			}
+			for _, path := range []string{a, b, other} {
+				requireExists(t, path, "whole-set cancellation removed a worktree")
+			}
+			if got := repo.RegisteredWorktrees(t); got != before {
+				t.Fatalf("whole-set cancellation changed registrations:\nbefore=%s\nafter=%s", before, got)
+			}
+		})
+	}
+}
+
+func TestCleanMixedDirtySelectionRefusesEntireSet(t *testing.T) {
+	repo := newRepository(t)
+	clean := repo.CreateMergedWorktree(t, "selected-clean")
+	dirty := repo.CreateMergedWorktree(t, "selected-dirty")
+	other := repo.CreateMergedWorktree(t, "unselected")
+	testgit.WriteFile(t, filepath.Join(dirty, "untracked.txt"), "do not remove\n")
+
+	inv, diagnostics := runSelectedClean(t, repo.Root, 1, "",
+		"clean", "--yes", "--json", "--select", clean, "--select", dirty, repo.Root,
+	)
+	if inv.Summary.Removed != 0 || !strings.Contains(strings.Join(inv.Errors, "\n"), "unsafe or non-live selection") || !strings.Contains(diagnostics, "completed with") {
+		t.Fatalf("mixed selection did not fail closed: inv=%+v diagnostics=%q", inv, diagnostics)
+	}
+	for _, path := range []string{clean, dirty, other} {
+		requireExists(t, path, "mixed selection removed a worktree")
+	}
+}
+
+func TestCleanExactSelectionPreservesUnselectedStaleRegistrationAndBranches(t *testing.T) {
+	repo := newRepository(t)
+	selected := repo.CreateMergedWorktree(t, "selected")
+	unselected := repo.CreateMergedWorktree(t, "unselected")
+	stale := repo.CreateMergedWorktree(t, "stale")
+	if err := os.RemoveAll(stale); err != nil {
+		t.Fatal(err)
+	}
+
+	inv, diagnostics := runSelectedClean(t, repo.Root, 0, "",
+		"clean", "--yes", "--delete-branch", "--json", "--select", selected, repo.Root,
+	)
+	if inv.Summary.Removed != 1 || inv.Summary.Pruned != 0 || diagnostics != "" {
+		t.Fatalf("exact selection result: inv=%+v diagnostics=%q", inv.Summary, diagnostics)
+	}
+	if _, err := os.Stat(selected); !os.IsNotExist(err) {
+		t.Fatalf("selected worktree survives: %v", err)
+	}
+	if _, err := os.Stat(unselected); err != nil || !repo.BranchExists(t, "unselected") || !repo.BranchExists(t, "stale") || repo.BranchExists(t, "selected") {
+		t.Fatalf("exact cleanup changed unselected worktree or branches: stat=%v", err)
+	}
+	if !strings.Contains(repo.RegisteredWorktrees(t), filepath.Clean(stale)) {
+		t.Fatal("selected cleanup pruned an unselected stale registration")
+	}
+}
+
 func runReviewJSON(t *testing.T, dir string, wantExit int, args ...string) (review.Document, string) {
 	t.Helper()
 	output, stderr := runReviewCommand(t, dir, wantExit, nil, args...)
@@ -162,10 +276,40 @@ func runReviewCommand(t *testing.T, dir string, wantExit int, environment []stri
 	return stdout.String(), stderr.String()
 }
 
-func hasSelectedPath(rows []review.Row, path string) bool {
-	for _, row := range rows {
-		if row.Worktree.Path == path && row.Selected {
-			return true
+func runSelectedClean(t *testing.T, dir string, wantExit int, input string, args ...string) (model.Inventory, string) {
+	t.Helper()
+	cmd := exec.Command(wtgcBinary(t), args...)
+	cmd.Dir = dir
+	cmd.Stdin = strings.NewReader(input)
+	var stdout, stderr bytes.Buffer
+	cmd.Stdout, cmd.Stderr = &stdout, &stderr
+	err := cmd.Run()
+	gotExit := 0
+	if err != nil {
+		var exitErr *exec.ExitError
+		if !errors.As(err, &exitErr) {
+			t.Fatalf("run selected clean: %v", err)
+		}
+		gotExit = exitErr.ExitCode()
+	}
+	if gotExit != wantExit {
+		t.Fatalf("selected clean exit = %d, want %d\nstdout:\n%s\nstderr:\n%s", gotExit, wantExit, stdout.String(), stderr.String())
+	}
+	var inventory model.Inventory
+	if err := json.Unmarshal(stdout.Bytes(), &inventory); err != nil {
+		t.Fatalf("decode selected clean: %v\nstdout:\n%s\nstderr:\n%s", err, stdout.String(), stderr.String())
+	}
+	return inventory, stderr.String()
+}
+
+func hasSelectedPath(t *testing.T, groups []review.Group, path string) bool {
+	t.Helper()
+	selected := canonicalPath(t, path)
+	for _, group := range groups {
+		for _, row := range group.Worktrees {
+			if row.Selected && filepath.Clean(canonicalPath(t, row.Worktree.Path)) == filepath.Clean(selected) {
+				return true
+			}
 		}
 	}
 	return false
