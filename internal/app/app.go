@@ -543,8 +543,8 @@ func (a *App) removeWorktree(ctx context.Context, repo model.Repository, opts Op
 	item.Removed = true
 	item.ReclaimedBytes = item.DiskBytes
 	item.Action = model.ActionRemoved
-	if opts.DeleteBranch && (opts.selection == nil || ctx.Err() == nil) {
-		a.deleteWorktreeBranch(ctx, repo, fresh, item, inv, opts.selection != nil)
+	if opts.DeleteBranch && opts.selection == nil {
+		a.deleteWorktreeBranch(ctx, repo, fresh, item, inv, false)
 	}
 }
 

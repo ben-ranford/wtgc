@@ -241,3 +241,37 @@ func TestSelectionConfirmationInputCapabilities(t *testing.T) {
 		t.Fatal("null device accepted confirmation")
 	}
 }
+
+func TestSelectionConfirmerRefusesIncompletePreview(t *testing.T) {
+	preview := app.SelectionPreview{Count: 2, Paths: []string{"/first", "/second"}, ReclaimableBytes: 42}
+	var complete bytes.Buffer
+	if !selectionConfirmer(context.Background(), strings.NewReader("yes\n"), &complete, true)(preview) {
+		t.Fatal("complete preview rejected")
+	}
+	for _, shortOnly := range []bool{false, true} {
+		for limit := 0; limit < complete.Len(); limit++ {
+			input := strings.NewReader("yes\n")
+			output := &limitedSelectionOutput{remaining: limit, shortOnly: shortOnly}
+			if selectionConfirmer(context.Background(), input, output, true)(preview) {
+				t.Fatalf("authorized with truncated preview: limit=%d shortOnly=%t", limit, shortOnly)
+			}
+			if input.Len() != len("yes\n") {
+				t.Fatalf("read answer without complete preview: limit=%d", limit)
+			}
+		}
+	}
+}
+
+type limitedSelectionOutput struct {
+	remaining int
+	shortOnly bool
+}
+
+func (w *limitedSelectionOutput) Write(p []byte) (int, error) {
+	n := min(len(p), w.remaining)
+	w.remaining -= n
+	if n < len(p) && !w.shortOnly {
+		return n, errors.New("preview output failed")
+	}
+	return n, nil
+}

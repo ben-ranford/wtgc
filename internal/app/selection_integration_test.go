@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -181,6 +182,45 @@ func TestSelectedRealGitRetainsSharedBranch(t *testing.T) {
 			}
 			if got := testgit.Run(t, other, "status", "--porcelain"); got != status {
 				t.Fatalf("unselected status changed: %q -> %q", status, got)
+			}
+		})
+	}
+}
+
+func TestSelectedRealGitRemovesBothSharedCheckouts(t *testing.T) {
+	for _, reverse := range []bool{false, true} {
+		t.Run(fmt.Sprint(reverse), func(t *testing.T) {
+			repo := testgit.NewRepository(t)
+			first := repo.CreateMergedWorktree(t, "shared")
+			second := filepath.Join(repo.Worktrees, "second-shared")
+			testgit.Run(t, repo.Path, "worktree", "add", "--force", second, "shared")
+			other := repo.CreateMergedWorktree(t, "unselected")
+			paths := []string{first, second}
+			if reverse {
+				paths[0], paths[1] = paths[1], paths[0]
+			}
+			inv, err := New(gitx.New("git")).Run(context.Background(), Options{Roots: []string{repo.Root}, SelectedPaths: paths, Execute: true, DeleteBranch: true})
+			if err != nil || len(inv.Errors) != 0 || inv.Summary.Removed != 2 || inv.Summary.Pruned != 0 {
+				t.Fatalf("err=%v inv=%+v", err, inv)
+			}
+			deleted := 0
+			for _, path := range paths {
+				item := selectedItemByPath(t, inv, path)
+				if !item.Removed || item.Error != "" {
+					t.Fatalf("contradictory result: %+v", item)
+				}
+				if item.BranchDeleted {
+					deleted++
+				}
+				if _, err := os.Stat(path); !os.IsNotExist(err) {
+					t.Fatalf("selected survives: %v", err)
+				}
+			}
+			if deleted != 1 || repo.BranchExists(t, "shared") {
+				t.Fatalf("branch deleted actions=%d", deleted)
+			}
+			if selectedItemByPath(t, inv, other).Action != model.ActionKept || !repo.BranchExists(t, "unselected") {
+				t.Fatal("changed unselected worktree/branch")
 			}
 		})
 	}

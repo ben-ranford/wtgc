@@ -43,14 +43,18 @@ func selectionConfirmer(ctx context.Context, input io.Reader, output io.Writer, 
 				}
 			}()
 		}
-		fmt.Fprintf(output, "Selected cleanup: %d worktrees, %d reclaimable bytes\n", preview.Count, preview.ReclaimableBytes)
+		var text strings.Builder
+		fmt.Fprintf(&text, "Selected cleanup: %d worktrees, %d reclaimable bytes\n", preview.Count, preview.ReclaimableBytes)
 		for _, path := range preview.Paths {
-			fmt.Fprintf(output, "  %s\n", report.SafeHumanText(path))
+			fmt.Fprintf(&text, "  %s\n", report.SafeHumanText(path))
 		}
 		if deleteBranch {
-			fmt.Fprintln(output, "Local branches will be deleted only when separately proven safe; provider squash branches remain retained.")
+			fmt.Fprintln(&text, "Local branches will be deleted only when separately proven safe; provider squash branches remain retained.")
 		}
-		fmt.Fprint(output, "Remove this entire selected set? [y/N] ")
+		fmt.Fprint(&text, "Remove this entire selected set? [y/N] ")
+		if n, err := io.WriteString(output, text.String()); err != nil || n != text.Len() {
+			return false
+		}
 		answer, err := bufio.NewReader(input).ReadString('\n')
 		if err != nil || ctx.Err() != nil {
 			fmt.Fprintln(output)

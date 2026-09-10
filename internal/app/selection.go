@@ -135,6 +135,9 @@ func (a *App) cleanSelection(ctx context.Context, repositories []model.Repositor
 				inv.Errors = append(inv.Errors, fmt.Sprintf("%s: selected removal refused: %s %s", item.Path, item.Reason, item.Error))
 			}
 		}
+		if opts.DeleteBranch {
+			a.deleteSelectedBranches(ctx, selected, inv)
+		}
 	}
 	if err := ctx.Err(); err != nil {
 		inv.Errors = append(inv.Errors, fmt.Sprintf("selected cleanup stopped: %v; completed removals are not rolled back", err))
@@ -213,4 +216,24 @@ func (a *App) requireUnusedSelectedBranch(ctx context.Context, repo model.Reposi
 		}
 	}
 	return ctx.Err()
+}
+
+// Branch actions follow the entire removal pass: another selected checkout is
+// not a terminal retention failure while it is still waiting for removal.
+func (a *App) deleteSelectedBranches(ctx context.Context, selected []selectedWorktree, inv *model.Inventory) {
+	attempted := make(map[[2]string]bool)
+	for _, bound := range selected {
+		if ctx.Err() != nil {
+			return
+		}
+		item := &inv.Worktrees[bound.index]
+		key := [2]string{bound.identity.CommonDir, bound.identity.Branch}
+		if !item.Removed || attempted[key] {
+			continue
+		}
+		attempted[key] = true
+		// Successful removal revalidated these exact branch/default/proof fields.
+		// The branch guard still freshly lists registrations before ancestry/CAS.
+		a.deleteWorktreeBranch(ctx, bound.repo, *item, item, inv, true)
+	}
 }
