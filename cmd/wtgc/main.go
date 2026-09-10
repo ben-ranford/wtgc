@@ -41,7 +41,7 @@ func newTimedGitBackend(binary string, timeout time.Duration) app.Git {
 }
 
 type processIO struct {
-	stdin          io.Reader
+	stdin          io.Reader // Command-owned; blocking readers must support Close to interrupt confirmation.
 	stdout, stderr io.Writer
 }
 
@@ -120,11 +120,15 @@ func run(ctx context.Context, args []string, streams processIO, deps commandDepe
 		CacheThreshold: opts.CacheThreshold,
 		ProviderRemote: opts.ProviderRemote,
 	}
+	if opts.Command == cli.CommandClean {
+		appOptions.SelectedPaths = opts.SelectedPaths
+	}
 	if opts.Provider == "github" {
 		appOptions.Provider = deps.newProvider()
 	}
 	if opts.Interactive {
 		appOptions.Confirm = confirmer(streams.stdin, streams.stderr, opts.DeleteBranch)
+		appOptions.ConfirmSelection = selectionConfirmer(ctx, streams.stdin, streams.stderr, opts.DeleteBranch)
 	}
 
 	inventory, runErr := app.New(deps.backend).Run(ctx, appOptions)

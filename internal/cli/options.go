@@ -107,6 +107,7 @@ func Parse(args []string) (Options, error) {
 	fs := flag.NewFlagSet("wtgc", flag.ContinueOnError)
 	fs.SetOutput(io.Discard)
 	fs.Var(&roots, "scan-root", "root directory to scan; repeatable")
+	fs.Var(&selectedPaths, "select", "worktree path to select for review or clean; repeatable")
 	fs.BoolVar(&opts.Yes, "yes", false, "execute cleanup without prompting")
 	fs.BoolVar(&opts.Yes, "y", false, "execute cleanup without prompting")
 	fs.BoolVar(&opts.Interactive, "interactive", false, "prompt before destructive cleanup actions")
@@ -125,7 +126,6 @@ func Parse(args []string) (Options, error) {
 		fs.Var(&classifications, "classification", "classification to include; repeatable")
 		fs.StringVar(&opts.GroupBy, "group-by", "none", "review grouping: none, repository, or classification")
 		fs.StringVar(&opts.SortBy, "sort-by", "path", "review sorting: path or size")
-		fs.Var(&selectedPaths, "select", "advisory worktree path to select; repeatable")
 	}
 
 	if err := fs.Parse(args); err != nil {
@@ -294,6 +294,7 @@ Commands:
 
 Flags:
   --scan-root DIR    root directory to scan; repeatable
+  --select PATH      select live clean targets or advisory review rows; repeatable
   --dry-run          preview cleanup actions without removing anything (default)
   --yes, -y          execute cleanup without prompting
   --interactive      prompt before destructive cleanup actions
@@ -307,7 +308,6 @@ Flags:
   --classification VALUE include a classification; repeatable (review)
   --group-by VALUE    group review rows by none, repository, or classification
   --sort-by VALUE     sort review rows by path or size
-  --select PATH       mark an advisory worktree selection; repeatable (review)
   --version          print version and exit
   -h, --help         show help
 `, name)
