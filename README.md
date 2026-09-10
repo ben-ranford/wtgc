@@ -97,6 +97,58 @@ Git commands have no deadline by default. For hooks and scheduled jobs, set
 `WTGC_GIT_TIMEOUT=2m` (or another positive Go duration) to apply a deadline to
 each Git command.
 
+### First-run options and kept worktrees
+
+The default scan uses local Git data only and does not fetch. Start with one
+repository to check its remote/default-branch setup:
+
+```bash
+wtgc --version
+wtgc clean --scan-root "$HOME/Projects/my-repo"
+
+# Keep otherwise safe worktrees for seven days; still a dry-run
+wtgc clean --scan-root "$HOME/Projects/my-repo" --retention 168h
+```
+
+`--retention` takes a non-negative Go duration such as `30m`, `24h`, or `168h`
+(use hours for days; `7d` is not supported). The default `0` adds no waiting
+period. Age uses the provider merge time when available, otherwise the newest
+worktree modification time; missing or unreliable timestamps keep the worktree.
+
+For squash-merge proof, explicitly opt into GitHub access. Supply `GH_TOKEN`
+or `GITHUB_TOKEN` through your shell or secret manager; `GH_TOKEN` takes
+precedence. A login stored by `gh` is not read automatically. If you already
+use an authenticated GitHub CLI, this passes its token only via the environment:
+
+```bash
+GH_TOKEN="$(gh auth token)" wtgc clean --scan-root "$HOME/Projects/my-repo" --provider github
+
+# When multiple remotes track the default branch, select the base remote
+GH_TOKEN="$(gh auth token)" wtgc clean --scan-root "$HOME/Projects/my-repo" --provider github --provider-remote origin
+```
+
+Use the actual base remote name in place of `origin`. The feature branch also
+needs an unambiguous configured upstream; selecting the base remote does not
+replace that mapping. Authentication, mapping, or proof failures retain the
+candidate. See the [provider safety contract](docs/safety.md#provider-confirmation-and-cache-warnings).
+
+Retained work is an expected safety outcome, not a cleanup failure:
+
+| Reason | What to check |
+| --- | --- |
+| Primary, current, default-branch, locked, or detached worktree | These worktrees are protected. |
+| Tracked, staged, or untracked changes | Review and preserve the local work. |
+| Branch tip is not reachable locally or remotely | Check merge status and remote-tracking refs; wtgc does not fetch for you. |
+| Default branch or provider mapping cannot be resolved | Check remote `HEAD` and branch upstream configuration. |
+| Retention window has not elapsed | Wait until the reported eligibility time. |
+
+Cache warnings identify recognized dependency/build directories at or above
+`--cache-threshold` (bytes; default `104857600`, or 100 MiB). `0` reports all
+recognized cache directories. Warnings, including cache scan errors, are
+advisory: they do not change eligibility or authorize cache deletion. wtgc has
+no separate cache-deletion action; removing an eligible worktree removes its
+contents with it.
+
 ## ⬇️ Installation
 
 ### Homebrew (recommended)
@@ -106,15 +158,28 @@ Install the latest stable release from the `wtgc` formula:
 ```bash
 brew tap ben-ranford/tap
 brew install wtgc
+wtgc --version
+wtgc clean --scan-root "$HOME/Projects/my-repo"
 ```
 
 ### Optional: install from source
 
-For development or an unreleased build, install directly with Go:
+With Go `1.26.6+`, install from source. Set an explicit binary directory so the
+next commands can find it:
 
 ```bash
+export GOBIN="$HOME/.local/bin"
+export PATH="$GOBIN:$PATH"
 go install github.com/ben-ranford/wtgc/cmd/wtgc@latest
+wtgc --version
+wtgc clean --scan-root "$HOME/Projects/my-repo"
 ```
+
+Replace `my-repo` with an existing repository path. `@latest` follows Go module
+version resolution and may include unreleased changes from the default branch;
+use Homebrew for the latest stable release. To build a specific local checkout,
+see [development setup](CONTRIBUTING.md#development-setup). Source installations
+may report `dev` because release version metadata is supplied by release builds.
 
 Release automation is configured to publish prebuilt archives for Linux, macOS,
 and Windows on amd64 and arm64. Checksums and an SPDX SBOM will be published
@@ -135,7 +200,7 @@ Runtime requirements:
 
 - Git `2.36+`
 - An unambiguous remote default branch, such as `origin/HEAD -> origin/main`
-- Go `1.26.5+` only when installing from source
+- Go `1.26.6+` only when installing from source
 
 ## 📖 The useful links
 

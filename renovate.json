@@ -36,10 +36,48 @@
       "automerge": true
     },
     {
+      "matchManagers": [
+        "github-actions"
+      ],
+      "matchPackageNames": [
+        "Homebrew/actions"
+      ],
+      "enabled": false
+    },
+    {
+      "matchManagers": [
+        "custom.regex"
+      ],
+      "matchPackageNames": [
+        "Homebrew/actions"
+      ],
+      "matchUpdateTypes": [
+        "minor",
+        "patch",
+        "digest"
+      ],
+      "automerge": true
+    },
+    {
       "matchUpdateTypes": [
         "major"
       ],
       "automerge": false
+    }
+  ],
+  "customManagers": [
+    {
+      "customType": "regex",
+      "managerFilePatterns": [
+        "/^\\.github/workflows/release\\.yml$/"
+      ],
+      "matchStrings": [
+        "uses:\\s*Homebrew/actions/setup-homebrew@(?<currentDigest>[a-f0-9]{40})\\s*#\\s*v?(?<currentValue>\\d{4}\\.\\d{2}\\.\\d{2}\\.\\d+)"
+      ],
+      "depNameTemplate": "Homebrew/actions",
+      "datasourceTemplate": "github-tags",
+      "versioningTemplate": "loose",
+      "autoReplaceStringTemplate": "uses: Homebrew/actions/setup-homebrew@{{{newDigest}}} # {{{newValue}}}"
     }
   ]
 }

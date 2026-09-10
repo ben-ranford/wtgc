@@ -15,6 +15,12 @@ for workflow in .github/workflows/*.yml .github/workflows/*.yaml; do
           failed=1
         fi
         case "$line" in
+          *"uses: Homebrew/actions/setup-homebrew@"*)
+            if ! printf '%s\n' "$line" | grep -Eq '# v?[0-9]{4}\.[0-9]{2}\.[0-9]{2}\.[0-9]+[[:space:]]*$'; then
+              echo "$workflow: pinned Homebrew action is missing a full date version comment: $line" >&2
+              failed=1
+            fi
+            ;;
           *"# v"*) ;;
           *)
             echo "$workflow: pinned action is missing a version comment: $line" >&2

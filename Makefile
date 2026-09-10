@@ -154,6 +154,7 @@ automation-check:
 	@set -e; for script in scripts/*.sh .githooks/pre-commit examples/hooks/*; do sh -n "$$script"; done
 	@command -v ruby >/dev/null 2>&1 || (echo "ruby is required to validate workflow YAML"; exit 1)
 	./scripts/check-github-actions-pinning.sh
+	sh ./scripts/check-github-actions-pinning-test.sh
 	ruby scripts/check-github-actions-runners.rb
 	./scripts/check-automation-examples.sh
 	sh ./scripts/check-release-automation.sh
