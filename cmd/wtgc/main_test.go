@@ -323,20 +323,32 @@ func TestRunReviewReturnsSelectionAndWriteErrors(t *testing.T) {
 }
 
 func TestRunReviewPreservesPartialScanWhenSelectionsAreMissing(t *testing.T) {
-	failed := model.Repository{CommonDir: "/lost/.git", PrimaryPath: "/lost"}
-	backend := &partialReviewGit{mainFakeGit: newMainFakeGit(mainRemovableRecord("feature")), failed: failed}
+	root := t.TempDir()
+	repository := filepath.Join(root, "repository")
+	worktree := filepath.Join(root, "worktree")
+	lostRepository := filepath.Join(root, "lost")
+	if err := os.MkdirAll(repository, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(worktree, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	failed := model.Repository{CommonDir: filepath.Join(lostRepository, ".git"), PrimaryPath: lostRepository}
+	mainBackend := newMainFakeGit(model.RegisteredWorktree{Path: worktree, Branch: "feature", Head: "def456"})
+	mainBackend.repositories[0] = model.Repository{CommonDir: filepath.Join(repository, ".git"), PrimaryPath: repository}
+	backend := &partialReviewGit{mainFakeGit: mainBackend, failed: failed}
 	for _, test := range []struct {
 		name                 string
 		args                 []string
 		wantSelectionError   bool
 		wantSelectedWorktree int
 	}{
-		{name: "known selection", args: []string{"review", "--json", "--select", "/worktree"}, wantSelectedWorktree: 1},
-		{name: "known and missing selections", args: []string{"review", "--json", "--select", "/worktree", "--select", "/lost/worktree"}, wantSelectionError: true, wantSelectedWorktree: 1},
+		{name: "known selection", args: []string{"review", "--json", "--select", worktree}, wantSelectedWorktree: 1},
+		{name: "known and missing selections", args: []string{"review", "--json", "--select", worktree, "--select", filepath.Join(lostRepository, "worktree")}, wantSelectionError: true, wantSelectedWorktree: 1},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			var stdout, stderr bytes.Buffer
-			code := run(context.Background(), test.args, processIO{stdin: strings.NewReader(""), stdout: &stdout, stderr: &stderr}, mainCommandDependencies(backend, func() (string, error) { return "/repo", nil }))
+			code := run(context.Background(), test.args, processIO{stdin: strings.NewReader(""), stdout: &stdout, stderr: &stderr}, mainCommandDependencies(backend, func() (string, error) { return repository, nil }))
 			if code != 1 || !strings.Contains(stderr.String(), "completed with 1 error") {
 				t.Fatalf("code=%d stderr=%q", code, stderr.String())
 			}
@@ -559,6 +571,25 @@ func TestReviewOptionsKeepErrorRowsWhenWindowsVolumeIsUnavailable(t *testing.T) 
 	}
 	if document.View.Totals.Selected.Count != 1 || document.View.Totals.Visible.Count != 2 {
 		t.Fatalf("totals=%+v", document.View.Totals)
+	}
+}
+
+func TestReviewOptionsMatchMissingSuffixCaseOnWindows(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("requires Windows path-case semantics")
+	}
+	root := t.TempDir()
+	candidate := filepath.Join(root, "OldWT")
+	selection, err := canonicalReviewPath(filepath.Join(root, "oldwt"), "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	options, err := reviewOptionsForInventory(cli.Options{SelectedPaths: []string{selection}}, model.Inventory{Worktrees: []model.Worktree{{Path: candidate, Repository: root, Classification: model.Prunable}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(options.SelectedPaths) != 1 || options.SelectedPaths[0] != candidate {
+		t.Fatalf("selected paths=%q, want %q", options.SelectedPaths, candidate)
 	}
 }
 

@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"syscall"
 	"time"
@@ -222,7 +223,7 @@ func matchReviewPaths(paths []string, worktrees []model.Worktree, value func(mod
 		values := make(map[string]struct{})
 		for _, worktree := range worktrees {
 			candidate := value(worktree)
-			if filepath.Clean(candidate) == path {
+			if sameReviewPath(candidate, path) {
 				values[candidate] = struct{}{}
 				continue
 			}
@@ -230,7 +231,7 @@ func matchReviewPaths(paths []string, worktrees []model.Worktree, value func(mod
 			if err != nil {
 				continue
 			}
-			if canonical == path {
+			if sameReviewPath(canonical, path) {
 				values[candidate] = struct{}{}
 			}
 		}
@@ -246,6 +247,14 @@ func matchReviewPaths(paths []string, worktrees []model.Worktree, value func(mod
 		}
 	}
 	return matched, nil
+}
+
+func sameReviewPath(left, right string) bool {
+	left, right = filepath.Clean(left), filepath.Clean(right)
+	// Missing stale suffixes cannot be resolved through the filesystem. Windows
+	// Git paths use the default case-insensitive identity in that situation;
+	// collisions still flow to the caller's ambiguity check.
+	return left == right || (runtime.GOOS == "windows" && strings.EqualFold(left, right))
 }
 
 func confirmer(input io.Reader, output io.Writer, deleteBranch bool) func(model.Worktree) bool {

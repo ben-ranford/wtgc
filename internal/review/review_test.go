@@ -1,6 +1,7 @@
 package review
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
 	"testing"
@@ -102,6 +103,20 @@ func TestBuildKeepsSelectedRowsVisibleThroughFilters(t *testing.T) {
 		}
 	}
 	t.Fatal("selected row was filtered from the view")
+}
+
+func TestBuildEncodesEmptyGroupsAsArray(t *testing.T) {
+	doc, err := Build(model.Inventory{Worktrees: []model.Worktree{worktree("/kept", "/repository", model.Kept, 1)}}, Options{Classifications: []string{string(model.SafeToRemove)}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	encoded, err := json.Marshal(doc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(encoded), `"groups":[]`) {
+		t.Fatalf("document=%s", encoded)
+	}
 }
 
 func worktree(path, repository string, classification model.Classification, size int64) model.Worktree {
