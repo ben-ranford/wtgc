@@ -359,10 +359,11 @@ func TestCoverageGitRemainingInputAndProofCases(t *testing.T) {
 }
 
 func TestCoverageWalkCallbacksWithoutFilesystemRaces(t *testing.T) {
-	client := New(scriptedGit(t, fixture{Responses: []response{
-		reply([]string{"rev-parse", "--git-common-dir"}, "/common", 0),
-	}}))
 	workRoot := t.TempDir()
+	commonDir := filepath.Join(workRoot, "common")
+	client := New(scriptedGit(t, fixture{Responses: []response{
+		reply([]string{"rev-parse", "--git-common-dir"}, commonDir, 0),
+	}}))
 	seen := map[string]string{}
 	var errs []error
 	if got := client.walkRepositoryEntry(context.Background(), "/root/missing", nil, errors.New("walk"), seen, &errs); got != nil || len(errs) != 1 {
@@ -374,7 +375,7 @@ func TestCoverageWalkCallbacksWithoutFilesystemRaces(t *testing.T) {
 	if got := client.walkRepositoryEntry(context.Background(), "/root/plain", gitxEntry{name: "plain"}, nil, seen, &errs); got != nil {
 		t.Fatalf("plain=%v", got)
 	}
-	if got := client.walkRepositoryEntry(context.Background(), filepath.Join(workRoot, ".git"), gitxEntry{name: ".git", dir: true}, nil, seen, &errs); got != filepath.SkipDir || seen["/common"] != workRoot {
+	if got := client.walkRepositoryEntry(context.Background(), filepath.Join(workRoot, ".git"), gitxEntry{name: ".git", dir: true}, nil, seen, &errs); got != filepath.SkipDir || canonicalTestPath(seen[commonDir]) != canonicalTestPath(workRoot) {
 		t.Fatalf("git directory=%v seen=%v", got, seen)
 	}
 	failing := New(scriptedGit(t, all(2)))
