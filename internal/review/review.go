@@ -123,61 +123,84 @@ func buildProposal(inv model.Inventory, opts Options) *Proposal {
 		Authorization:  "advisory only; cleanup requires explicit paths and fresh validation",
 		EstimatedBytes: big.NewInt(0), ExcessBytes: big.NewInt(0), ShortfallBytes: big.NewInt(0),
 	}
-	eligible := make([]model.Worktree, 0, len(inv.Worktrees))
-	unknown := 0
-	for _, worktree := range inv.Worktrees {
+	eligible, uncertain := proposalScope(inv.Worktrees, opts)
+	addProposalCandidates(proposal, eligible)
+	setProposalResult(proposal)
+	addProposalUncertainties(proposal, inv, uncertain)
+	return proposal
+}
+
+func proposalScope(worktrees []model.Worktree, opts Options) ([]model.Worktree, int) {
+	eligible := make([]model.Worktree, 0, len(worktrees))
+	uncertain := 0
+	for _, worktree := range worktrees {
 		if !matches(worktree, opts) || worktree.Classification != model.SafeToRemove {
 			continue
 		}
 		if eligibleForProposal(worktree) {
 			eligible = append(eligible, worktree)
 		} else if uncertainSafeWorktree(worktree) {
-			unknown++
+			uncertain++
 		}
 	}
 	sort.Slice(eligible, func(i, j int) bool {
 		if eligible[i].DiskBytes != eligible[j].DiskBytes {
 			return eligible[i].DiskBytes > eligible[j].DiskBytes
 		}
-		left, right := proposalIdentity(eligible[i]), proposalIdentity(eligible[j])
-		return left < right
+		return proposalIdentity(eligible[i]) < proposalIdentity(eligible[j])
 	})
-	target := big.NewInt(opts.ReclaimTarget)
+	return eligible, uncertain
+}
+
+func addProposalCandidates(proposal *Proposal, eligible []model.Worktree) {
+	target := big.NewInt(proposal.TargetBytes)
 	for _, worktree := range eligible {
 		if proposal.EstimatedBytes.Cmp(target) >= 0 {
-			break
+			return
 		}
 		proposal.Candidates = append(proposal.Candidates, Candidate{Repository: worktree.Repository, Path: worktree.Path, Bytes: worktree.DiskBytes})
 		proposal.EstimatedBytes.Add(proposal.EstimatedBytes, big.NewInt(worktree.DiskBytes))
 	}
+}
+
+func setProposalResult(proposal *Proposal) {
+	target := big.NewInt(proposal.TargetBytes)
 	proposal.TargetMet = proposal.EstimatedBytes.Cmp(target) >= 0
 	if proposal.TargetMet {
 		proposal.ExcessBytes.Sub(proposal.EstimatedBytes, target)
-	} else {
-		proposal.ShortfallBytes.Sub(target, proposal.EstimatedBytes)
+		return
 	}
+	proposal.ShortfallBytes.Sub(target, proposal.EstimatedBytes)
+}
+
+func addProposalUncertainties(proposal *Proposal, inv model.Inventory, uncertain int) {
 	if len(inv.Errors) > 0 {
 		proposal.Uncertainties = append(proposal.Uncertainties, fmt.Sprintf("inventory has %d scan error(s); unobserved worktrees are not proposed", len(inv.Errors)))
 	}
-	if unknown > 0 {
-		proposal.Uncertainties = append(proposal.Uncertainties, fmt.Sprintf("%d scoped safe worktree(s) have an unknown, non-positive, excluded, stale, or failed measurement and were not proposed", unknown))
+	if uncertain > 0 {
+		proposal.Uncertainties = append(proposal.Uncertainties, fmt.Sprintf("%d scoped safe worktree(s) have an unknown, non-positive, excluded, stale, or failed measurement and were not proposed", uncertain))
 	}
 	if len(inv.ExcludedPaths) > 0 {
 		proposal.Uncertainties = append(proposal.Uncertainties, "excluded invocation paths were not inspected or proposed")
 	}
 	proposal.Uncertainties = append(proposal.Uncertainties, "estimated bytes do not promise actual free disk space")
-	return proposal
 }
 
 func eligibleForProposal(worktree model.Worktree) bool {
 	return worktree.Path != "" && worktree.Repository != "" && worktree.DiskBytes > 0 &&
-		(worktree.DiskBytesMeasured == nil || *worktree.DiskBytesMeasured) &&
-		!worktree.Excluded && !worktree.Prunable && !worktree.Removed && worktree.Error == ""
+		!unmeasured(worktree) && !excluded(worktree) && !worktree.Prunable && !worktree.Removed && worktree.Error == ""
 }
 
 func uncertainSafeWorktree(worktree model.Worktree) bool {
-	return worktree.Excluded || worktree.Prunable || worktree.Error != "" || worktree.DiskBytes <= 0 ||
-		(worktree.DiskBytesMeasured != nil && !*worktree.DiskBytesMeasured)
+	return excluded(worktree) || worktree.Prunable || worktree.Error != "" || worktree.DiskBytes <= 0 || unmeasured(worktree)
+}
+
+func unmeasured(worktree model.Worktree) bool {
+	return worktree.WorktreeDetails != nil && worktree.DiskBytesMeasured != nil && !*worktree.DiskBytesMeasured
+}
+
+func excluded(worktree model.Worktree) bool {
+	return worktree.WorktreeDetails != nil && worktree.Excluded
 }
 
 func proposalIdentity(worktree model.Worktree) string {

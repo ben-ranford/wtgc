@@ -146,8 +146,8 @@ func TestBuildReclaimProposalQualifiesUnmetAndIneligibleRows(t *testing.T) {
 	inv := model.Inventory{Errors: []string{"scan interrupted"}, ExcludedPaths: []string{"/protected"}, Worktrees: []model.Worktree{
 		worktree("/eligible", "/repo", model.SafeToRemove, 5),
 		worktree("/zero", "/repo", model.SafeToRemove, 0),
-		{Path: "/unknown", Repository: "/repo", Classification: model.SafeToRemove, DiskBytesMeasured: &measured},
-		{Path: "/excluded", Repository: "/repo", Classification: model.SafeToRemove, DiskBytes: 100, Excluded: true},
+		{Path: "/unknown", Repository: "/repo", Classification: model.SafeToRemove, WorktreeDetails: &model.WorktreeDetails{DiskBytesMeasured: &measured}},
+		{Path: "/excluded", Repository: "/repo", Classification: model.SafeToRemove, DiskBytes: 100, WorktreeDetails: &model.WorktreeDetails{Excluded: true}},
 		{Path: "/stale", Repository: "/repo", Classification: model.SafeToRemove, DiskBytes: 100, Prunable: true},
 		{Path: "/failed", Repository: "/repo", Classification: model.SafeToRemove, DiskBytes: 100, Error: "disk read failed"},
 	}}
