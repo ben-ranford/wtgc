@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -216,6 +217,10 @@ func writeExplain(streams processIO, inventory model.Inventory, opts cli.Options
 	matches, err := matchReviewPaths([]string{opts.ExplainPath}, inventory.Worktrees, func(worktree model.Worktree) string { return worktree.Path })
 	if err != nil {
 		if runErr != nil {
+			if explainUsageError(runErr) {
+				fmt.Fprintf(streams.stderr, "explain: %v\n", runErr)
+				return 2
+			}
 			return writeOperationalExplain(streams, opts.ExplainPath, inventory.Errors, format)
 		}
 		fmt.Fprintf(streams.stderr, "explain: %v\n", err)
@@ -224,6 +229,10 @@ func writeExplain(streams processIO, inventory model.Inventory, opts cli.Options
 	found, err := findExplainedWorktree(inventory.Worktrees, matches[0], opts.ExplainPath)
 	if err != nil {
 		if runErr != nil {
+			if explainUsageError(runErr) {
+				fmt.Fprintf(streams.stderr, "explain: %v\n", runErr)
+				return 2
+			}
 			return writeOperationalExplain(streams, opts.ExplainPath, inventory.Errors, format)
 		}
 		fmt.Fprintf(streams.stderr, "explain: %v\n", err)
@@ -235,6 +244,11 @@ func writeExplain(streams processIO, inventory model.Inventory, opts cli.Options
 		return 1
 	}
 	return 0
+}
+
+func explainUsageError(err error) bool {
+	var usage interface{ ExplainUsage() bool }
+	return errors.As(err, &usage) && usage.ExplainUsage()
 }
 
 func writeOperationalExplain(streams processIO, path string, errors []string, format report.Format) int {

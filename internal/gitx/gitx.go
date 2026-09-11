@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 	"time"
@@ -297,24 +298,47 @@ func (c *Client) ResolveExplain(ctx context.Context, path string) (model.Reposit
 		root = parent
 	}
 	commonDir, err := c.commonGitDir(ctx, root)
-	if err != nil {
-		return model.Repository{}, model.RegisteredWorktree{}, false, err
+	if err == nil {
+		return c.resolveExplainRecords(ctx, []model.Repository{{CommonDir: commonDir, PrimaryPath: root}}, path)
 	}
-	repo := model.Repository{CommonDir: commonDir, PrimaryPath: root}
-	records, err := c.List(ctx, repo)
-	if err != nil {
-		return model.Repository{}, model.RegisteredWorktree{}, false, err
+	repos, discoveryErrors := c.Discover(ctx, []string{root})
+	if len(discoveryErrors) > 0 {
+		return model.Repository{}, model.RegisteredWorktree{}, false, discoveryErrors[0]
 	}
-	if len(records) > 0 {
-		repo.PrimaryPath = records[0].Path
-	}
-	for _, record := range records {
-		if sameResolvedPath(record.Path, path) {
-			return repo, record, true, nil
+	return c.resolveExplainRecords(ctx, repos, path)
+}
+
+func (c *Client) resolveExplainRecords(ctx context.Context, repos []model.Repository, path string) (model.Repository, model.RegisteredWorktree, bool, error) {
+	var matchedRepo model.Repository
+	var matchedRecord model.RegisteredWorktree
+	found := false
+	for _, repo := range repos {
+		records, err := c.List(ctx, repo)
+		if err != nil {
+			return model.Repository{}, model.RegisteredWorktree{}, false, err
+		}
+		if len(records) > 0 {
+			repo.PrimaryPath = records[0].Path
+		}
+		for _, record := range records {
+			if !sameResolvedPath(record.Path, path) {
+				continue
+			}
+			if found {
+				return model.Repository{}, model.RegisteredWorktree{}, false, explainAmbiguousError{path: path}
+			}
+			matchedRepo, matchedRecord, found = repo, record, true
 		}
 	}
-	return repo, model.RegisteredWorktree{}, false, nil
+	return matchedRepo, matchedRecord, found, nil
 }
+
+type explainAmbiguousError struct{ path string }
+
+func (e explainAmbiguousError) Error() string {
+	return fmt.Sprintf("ambiguous registered worktree %q", e.path)
+}
+func (e explainAmbiguousError) ExplainUsage() bool { return true }
 
 func sameResolvedPath(left, right string) bool {
 	leftResolved, leftErr := filepath.EvalSymlinks(left)
@@ -322,7 +346,24 @@ func sameResolvedPath(left, right string) bool {
 	if leftErr == nil && rightErr == nil {
 		return filepath.Clean(leftResolved) == filepath.Clean(rightResolved)
 	}
-	return filepath.Clean(left) == filepath.Clean(right)
+	left, right = canonicalExistingPrefix(left), canonicalExistingPrefix(right)
+	return left == right || (runtime.GOOS == "windows" && strings.EqualFold(left, right))
+}
+
+func canonicalExistingPrefix(path string) string {
+	path = filepath.Clean(path)
+	var suffix []string
+	for {
+		if resolved, err := filepath.EvalSymlinks(path); err == nil {
+			return filepath.Join(append([]string{resolved}, suffix...)...)
+		}
+		parent := filepath.Dir(path)
+		if parent == path {
+			return filepath.Join(append([]string{path}, suffix...)...)
+		}
+		suffix = append([]string{filepath.Base(path)}, suffix...)
+		path = parent
+	}
 }
 
 // ParseWorktreeListPorcelainZ parses `git worktree list --porcelain -z`.
