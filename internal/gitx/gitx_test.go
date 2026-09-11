@@ -64,8 +64,40 @@ func TestResolveExplainCanonicalizesMissingAliasAndRejectsAmbiguity(t *testing.T
 	}
 	_, _, _, err = New("git").ResolveExplain(context.Background(), shared)
 	var usage interface{ ExplainUsage() bool }
-	if !errors.As(err, &usage) || !usage.ExplainUsage() {
+	if !errors.As(err, &usage) || !usage.ExplainUsage() || !strings.Contains(err.Error(), "ambiguous registered worktree") {
 		t.Fatalf("ambiguity err=%v", err)
+	}
+}
+
+func TestResolveExplainRejectsStatFailuresAndFallsBackFromNonRepositoryParent(t *testing.T) {
+	client := New(scriptedGit(t, all(2)))
+	if _, _, _, err := client.ResolveExplain(context.Background(), "\x00"); err == nil {
+		t.Fatal("invalid path stat failure was accepted")
+	}
+	file := filepath.Join(t.TempDir(), "not-a-directory")
+	if err := os.WriteFile(file, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, found, err := client.ResolveExplain(context.Background(), file); err != nil || found {
+		t.Fatalf("fallback found=%t err=%v", found, err)
+	}
+}
+
+func TestResolveExplainFallsBackAfterAnUnknownRegistrationInAGitRepository(t *testing.T) {
+	repo := testgit.NewRepository(t)
+	_, _, found, err := New("git").ResolveExplain(context.Background(), filepath.Join(repo.Root, "unknown-registration"))
+	if err != nil || found {
+		t.Fatalf("unknown registration found=%t err=%v", found, err)
+	}
+}
+
+func TestResolveExplainRecordFailureAndFilesystemRootCanonicalization(t *testing.T) {
+	client := New("git")
+	if _, _, _, err := client.resolveExplainRecords(context.Background(), []model.Repository{{PrimaryPath: t.TempDir()}}, "/repo/worktree"); err == nil {
+		t.Fatal("invalid repository record lookup was accepted")
+	}
+	if got := canonicalExistingPrefix(string(filepath.Separator)); got != string(filepath.Separator) {
+		t.Fatalf("root canonical path=%q", got)
 	}
 }
 

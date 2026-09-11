@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -334,6 +335,48 @@ func TestExplainResolvesTargetBeforeUnrelatedRepositoryInspection(t *testing.T) 
 	}
 	if len(inv.Errors) != 0 {
 		t.Fatalf("unrelated errors leaked into explain: %v", inv.Errors)
+	}
+}
+
+func TestExplainTargetResolutionPreservesUnavailableAndUnknownOutcomes(t *testing.T) {
+	target := branchRecord("feature")
+	target.Path = "/repo/worktree"
+	tests := []struct {
+		name    string
+		backend Git
+		wantErr string
+		wantOps []string
+	}{
+		{
+			name:    "resolver unavailable",
+			backend: nonResolvingGit{Git: newFakeGit(target)},
+			wantErr: "resolution is unavailable",
+			wantOps: []string{"explain target resolution is unavailable for this Git backend"},
+		},
+		{
+			name:    "resolver failure",
+			backend: explainResolutionFailureGit{fakeGit: newFakeGit(target), err: context.Canceled},
+			wantErr: "context canceled",
+			wantOps: []string{"/repo/missing: resolve requested worktree: context canceled"},
+		},
+		{
+			name:    "unknown registration",
+			backend: newFakeGit(target),
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			inv, err := New(test.backend).Run(context.Background(), Options{Roots: []string{"/scan"}, ExplainPath: "/repo/missing", ExplainEvidence: true})
+			if test.wantErr == "" {
+				if err != nil || len(inv.Worktrees) != 0 || len(inv.Errors) != 0 {
+					t.Fatalf("inventory=%+v err=%v", inv, err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), test.wantErr) || !slices.Equal(inv.Errors, test.wantOps) {
+				t.Fatalf("inventory=%+v err=%v", inv, err)
+			}
+		})
 	}
 }
 
@@ -1139,6 +1182,17 @@ type fakeGit struct {
 	deleteCalls       int
 	providerUpstreams []providerMapping
 	providerDefaults  []providerMapping
+}
+
+type nonResolvingGit struct{ Git }
+
+type explainResolutionFailureGit struct {
+	*fakeGit
+	err error
+}
+
+func (f explainResolutionFailureGit) ResolveExplain(context.Context, string) (model.Repository, model.RegisteredWorktree, bool, error) {
+	return model.Repository{}, model.RegisteredWorktree{}, false, f.err
 }
 
 type providerMapping struct {

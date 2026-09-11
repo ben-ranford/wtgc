@@ -1,6 +1,7 @@
 package explain
 
 import (
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -46,6 +47,18 @@ func TestWithOperationalErrorsCopiesDiagnostics(t *testing.T) {
 	document := WithOperationalErrors(Build(model.Worktree{Path: "/repo/wt"}, false, 0), []string{"scan failed"})
 	if len(document.OperationalErrors) != 1 || document.OperationalErrors[0] != "scan failed" {
 		t.Fatalf("operational errors=%+v", document.OperationalErrors)
+	}
+}
+
+func TestOperationalBuildsUnavailableDiagnosticForUninspectedTarget(t *testing.T) {
+	document := Operational("/repo/missing", []string{"context canceled"})
+	if document.Worktree.Path != "/repo/missing" || document.Worktree.Classification != model.Error || document.Worktree.Reason != "requested worktree could not be inspected" || !slices.Equal(document.OperationalErrors, []string{"context canceled"}) {
+		t.Fatalf("document=%+v", document)
+	}
+	for _, check := range document.Checks {
+		if check.Status != model.ExplainUnavailable {
+			t.Fatalf("check=%+v", check)
+		}
 	}
 }
 

@@ -282,10 +282,30 @@ func TestRunExplainRejectsUnknownPath(t *testing.T) {
 }
 
 func TestRunExplainReturnsStructuredOperationalFailure(t *testing.T) {
-	backend := &explainFailureGit{mainFakeGit: newMainFakeGit(mainRecord("main")), err: errors.New("target list failed")}
+	for _, test := range []struct {
+		name string
+		err  error
+		want string
+	}{
+		{name: "target inspection", err: errors.New("target list failed"), want: "target list failed"},
+		{name: "canceled target inspection", err: context.Canceled, want: "context canceled"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			backend := &explainFailureGit{mainFakeGit: newMainFakeGit(mainRecord("main")), err: test.err}
+			var stdout, stderr bytes.Buffer
+			code := run(context.Background(), []string{"explain", "--json", "/repo"}, processIO{stdin: strings.NewReader(""), stdout: &stdout, stderr: &stderr}, mainCommandDependencies(backend, func() (string, error) { return "/repo", nil }))
+			if code != 1 || !strings.Contains(stdout.String(), `"operational_errors"`) || !strings.Contains(stdout.String(), test.want) {
+				t.Fatalf("code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+			}
+		})
+	}
+}
+
+func TestRunExplainReturnsUsageForAmbiguousResolverResult(t *testing.T) {
+	backend := &explainFailureGit{mainFakeGit: newMainFakeGit(mainRecord("main")), err: explainUsageFailure{message: "ambiguous registered worktree /repo/wt"}}
 	var stdout, stderr bytes.Buffer
-	code := run(context.Background(), []string{"explain", "--json", "/repo"}, processIO{stdin: strings.NewReader(""), stdout: &stdout, stderr: &stderr}, mainCommandDependencies(backend, func() (string, error) { return "/repo", nil }))
-	if code != 1 || !strings.Contains(stdout.String(), `"operational_errors"`) || !strings.Contains(stdout.String(), "target list failed") {
+	code := run(context.Background(), []string{"explain", "--json", "/repo/wt"}, processIO{stdin: strings.NewReader(""), stdout: &stdout, stderr: &stderr}, mainCommandDependencies(backend, func() (string, error) { return "/repo", nil }))
+	if code != 2 || !strings.Contains(stderr.String(), "ambiguous registered worktree") || stdout.Len() != 0 {
 		t.Fatalf("code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
 	}
 }
@@ -315,6 +335,21 @@ func TestExplainHelpersReportOperationalAndWriterFailures(t *testing.T) {
 	stderr.Reset()
 	if code := writeExplain(processIO{stdout: io.Discard, stderr: &stderr}, model.Inventory{Worktrees: []model.Worktree{worktree, {Path: worktree.Path + "/", Repository: "/repo", Classification: model.Kept}}}, options, report.FormatJSON, nil); code != 2 || !strings.Contains(stderr.String(), "ambiguous review path") {
 		t.Fatalf("ambiguous match code=%d stderr=%q", code, stderr.String())
+	}
+	operational := model.Inventory{Worktrees: []model.Worktree{worktree, {Path: worktree.Path + "/", Repository: "/repo", Classification: model.Kept}}, Errors: []string{"target inspection failed"}}
+	stdout := &bytes.Buffer{}
+	stderr.Reset()
+	if code := writeExplain(processIO{stdout: stdout, stderr: &stderr}, operational, options, report.FormatJSON, errors.New("target inspection failed")); code != 1 || !strings.Contains(stdout.String(), `"operational_errors"`) || !strings.Contains(stdout.String(), "target inspection failed") {
+		t.Fatalf("operational ambiguity code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+	stdout.Reset()
+	stderr.Reset()
+	if code := writeExplain(processIO{stdout: stdout, stderr: &stderr}, operational, options, report.FormatJSON, explainUsageFailure{message: "ambiguous registered worktree"}); code != 2 || !strings.Contains(stderr.String(), "ambiguous registered worktree") || stdout.Len() != 0 {
+		t.Fatalf("usage ambiguity code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+	stderr.Reset()
+	if code := writeOperationalExplain(processIO{stdout: failingWriter{}, stderr: &stderr}, options.ExplainPath, []string{"target inspection failed"}, report.FormatJSON); code != 1 || !strings.Contains(stderr.String(), "write report") {
+		t.Fatalf("operational writer failure code=%d stderr=%q", code, stderr.String())
 	}
 }
 
@@ -917,6 +952,11 @@ type explainFailureGit struct {
 	*mainFakeGit
 	err error
 }
+
+type explainUsageFailure struct{ message string }
+
+func (e explainUsageFailure) Error() string      { return e.message }
+func (e explainUsageFailure) ExplainUsage() bool { return true }
 
 func (f *explainFailureGit) ResolveExplain(context.Context, string) (model.Repository, model.RegisteredWorktree, bool, error) {
 	return model.Repository{}, model.RegisteredWorktree{}, false, f.err
