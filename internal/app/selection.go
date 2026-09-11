@@ -142,6 +142,8 @@ func (a *App) cleanPicked(ctx context.Context, repositories []model.Repository, 
 			row.Number, row.Selectable = len(choices)+1, true
 			row.Unavailable = ""
 			choices = append(choices, bound)
+		} else {
+			row.Unavailable = err.Error()
 		}
 		rows = append(rows, row)
 	}

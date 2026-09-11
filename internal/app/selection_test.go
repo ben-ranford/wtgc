@@ -488,6 +488,47 @@ func TestPickerEmptyAndInvalidSelectionsDoNotAuthorizeRemoval(t *testing.T) {
 }
 
 func TestPickerBindingAndPreflightRefusalsKeepWorktrees(t *testing.T) {
+	t.Run("unavailable rows retain binding errors", func(t *testing.T) {
+		for _, test := range []struct {
+			name         string
+			breakBinding func(*fakeGit)
+			want         string
+		}{
+			{
+				name: "registration disappeared",
+				breakBinding: func(backend *fakeGit) {
+					if err := os.Remove(filepath.Join(backend.records[0].Path, ".git")); err != nil {
+						t.Fatal(err)
+					}
+				},
+				want: "registration:",
+			},
+			{
+				name: "repository match ambiguous",
+				breakBinding: func(backend *fakeGit) {
+					backend.repositories = append(backend.repositories, backend.repositories[0])
+				},
+				want: "ambiguous repository",
+			},
+		} {
+			t.Run(test.name, func(t *testing.T) {
+				backend, opts := selectionFixture(t)
+				test.breakBinding(backend)
+				opts.SelectedPaths = nil
+				opts.Pick = func(preview PickPreview) PickResult {
+					if len(preview.Rows) == 0 || preview.Rows[0].Selectable || !strings.Contains(preview.Rows[0].Unavailable, test.want) {
+						t.Fatalf("picker row=%+v", preview.Rows)
+					}
+					return PickResult{}
+				}
+				inv, err := New(backend).Run(context.Background(), opts)
+				if err != nil || backend.removeCalls != 0 || inv.Summary.Removed != 0 {
+					t.Fatalf("err=%v removes=%d inventory=%+v", err, backend.removeCalls, inv)
+				}
+			})
+		}
+	})
+
 	t.Run("common directory unavailable", func(t *testing.T) {
 		backend, opts := selectionFixture(t)
 		inv, err := New(backend).Run(context.Background(), Options{Roots: opts.Roots})

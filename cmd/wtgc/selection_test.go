@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -127,6 +128,31 @@ func TestNumberedPickerReportsUnmeasuredBytesHonestly(t *testing.T) {
 	text := formatPickRows(app.PickPreview{Rows: []app.PickRow{{Worktree: model.Worktree{Path: "/excluded", WorktreeDetails: &model.WorktreeDetails{DiskBytesMeasured: &measured}}}}})
 	if !strings.Contains(text, "bytes=unmeasured") || strings.Contains(text, "bytes=0") {
 		t.Fatalf("picker bytes=%q", text)
+	}
+}
+
+func TestPickerFieldsEscapeWideAndCombiningUnicodeWithinTerminalWidth(t *testing.T) {
+	invalidUTF8 := string([]byte{'/', 'b', 'a', 'd', 0xff})
+	text := formatPickRows(app.PickPreview{Rows: []app.PickRow{{
+		Number: 1, Selectable: true,
+		Worktree: model.Worktree{Repository: "/repo/界", Branch: "e\u0301", Path: "/worktrees/😀" + invalidUTF8},
+	}}})
+	for _, want := range []string{`repository=/repo/\u754c`, `branch=e\u0301`, `path=/worktrees/\U0001f600/bad\xff`} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("picker text missing %q: %q", want, text)
+		}
+	}
+	for _, original := range []string{"/repo/界", "e\u0301", "/worktrees/😀" + invalidUTF8} {
+		escaped := pickerFieldText(original)
+		restored, err := strconv.Unquote(`"` + escaped + `"`)
+		if err != nil || restored != original {
+			t.Fatalf("original=%q escaped=%q restored=%q err=%v", original, escaped, restored, err)
+		}
+	}
+	for _, line := range strings.Split(strings.TrimSuffix(text, "\n"), "\n") {
+		if len(line) > 80 {
+			t.Fatalf("line exceeds terminal width (%d): %q", len(line), line)
+		}
 	}
 }
 

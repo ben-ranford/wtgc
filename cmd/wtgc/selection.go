@@ -159,19 +159,27 @@ func formatPickRows(preview app.PickPreview) string {
 		if row.Selectable {
 			prefix = strconv.Itoa(row.Number)
 		}
-		writePickField(&text, "  "+prefix+"  ", "repository=", report.SafeHumanText(worktree.Repository))
-		writePickField(&text, "     ", "branch=", report.SafeHumanText(worktree.Branch))
+		writePickField(&text, "  "+prefix+"  ", "repository=", pickerFieldText(worktree.Repository))
+		writePickField(&text, "     ", "branch=", pickerFieldText(worktree.Branch))
 		writePickField(&text, "     ", "bytes=", pickBytes(worktree))
-		writePickField(&text, "     ", "path=", report.SafeHumanText(worktree.Path))
+		writePickField(&text, "     ", "path=", pickerFieldText(worktree.Path))
 		if !row.Selectable {
 			reason := row.Unavailable
 			if reason == "" {
 				reason = worktree.Error
 			}
-			writePickField(&text, "     ", "unavailable: ", report.SafeHumanText(reason))
+			writePickField(&text, "     ", "unavailable: ", pickerFieldText(reason))
 		}
 	}
 	return text.String()
+}
+
+// pickerFieldText makes every displayed identity ASCII so byte width equals
+// terminal-cell width. It also keeps controls inert and every original rune
+// inspectable without splitting combining sequences or wide characters.
+func pickerFieldText(value string) string {
+	quoted := strconv.QuoteToASCII(value)
+	return quoted[1 : len(quoted)-1]
 }
 
 func pickBytes(worktree model.Worktree) string {
