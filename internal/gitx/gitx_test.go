@@ -91,6 +91,23 @@ func TestResolveExplainFallsBackAfterAnUnknownRegistrationInAGitRepository(t *te
 	}
 }
 
+func TestResolveExplainPreservesCanceledFallbackDiscovery(t *testing.T) {
+	root := t.TempDir()
+	target := filepath.Join(root, "target")
+	if err := os.Mkdir(target, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(root, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, _, found, err := New("git").ResolveExplain(ctx, target)
+	if found || err == nil || !errors.Is(err, context.Canceled) {
+		t.Fatalf("found=%t err=%v", found, err)
+	}
+}
+
 func TestResolveExplainRecordFailureAndFilesystemRootCanonicalization(t *testing.T) {
 	client := New("git")
 	if _, _, _, err := client.resolveExplainRecords(context.Background(), []model.Repository{{PrimaryPath: t.TempDir()}}, "/repo/worktree"); err == nil {
