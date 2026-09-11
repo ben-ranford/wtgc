@@ -166,7 +166,7 @@ func writeCommandOutput(streams processIO, inventory model.Inventory, opts cli.O
 		format = report.FormatJSON
 	}
 	if opts.Command == cli.CommandExplain {
-		return writeExplain(streams, inventory, opts, format)
+		return writeExplain(streams, inventory, opts, format, runErr)
 	}
 	if opts.Command == cli.CommandReview {
 		return writeReview(streams, inventory, opts, format, runErr)
@@ -212,14 +212,20 @@ func explainScanRoot(path string) string {
 	}
 }
 
-func writeExplain(streams processIO, inventory model.Inventory, opts cli.Options, format report.Format) int {
+func writeExplain(streams processIO, inventory model.Inventory, opts cli.Options, format report.Format, runErr error) int {
 	matches, err := matchReviewPaths([]string{opts.ExplainPath}, inventory.Worktrees, func(worktree model.Worktree) string { return worktree.Path })
 	if err != nil {
+		if runErr != nil {
+			return writeOperationalExplain(streams, opts.ExplainPath, inventory.Errors, format)
+		}
 		fmt.Fprintf(streams.stderr, "explain: %v\n", err)
 		return 2
 	}
 	found, err := findExplainedWorktree(inventory.Worktrees, matches[0], opts.ExplainPath)
 	if err != nil {
+		if runErr != nil {
+			return writeOperationalExplain(streams, opts.ExplainPath, inventory.Errors, format)
+		}
 		fmt.Fprintf(streams.stderr, "explain: %v\n", err)
 		return 2
 	}
@@ -229,6 +235,13 @@ func writeExplain(streams processIO, inventory model.Inventory, opts cli.Options
 		return 1
 	}
 	return 0
+}
+
+func writeOperationalExplain(streams processIO, path string, errors []string, format report.Format) int {
+	if err := report.WriteExplain(streams.stdout, explain.Operational(path, errors), format); err != nil {
+		fmt.Fprintf(streams.stderr, "write report: %v\n", err)
+	}
+	return 1
 }
 
 func findExplainedWorktree(worktrees []model.Worktree, matched, requested string) (model.Worktree, error) {

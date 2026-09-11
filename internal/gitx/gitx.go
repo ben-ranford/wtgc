@@ -280,6 +280,51 @@ func (c *Client) List(ctx context.Context, repo model.Repository) ([]model.Regis
 	return worktrees, nil
 }
 
+// ResolveExplain finds a single registered worktree from its own nearest
+// existing directory, avoiding discovery and inspection of sibling repositories.
+func (c *Client) ResolveExplain(ctx context.Context, path string) (model.Repository, model.RegisteredWorktree, bool, error) {
+	root := filepath.Clean(path)
+	for {
+		if info, err := os.Stat(root); err == nil && info.IsDir() {
+			break
+		} else if err != nil && !os.IsNotExist(err) {
+			return model.Repository{}, model.RegisteredWorktree{}, false, err
+		}
+		parent := filepath.Dir(root)
+		if parent == root {
+			return model.Repository{}, model.RegisteredWorktree{}, false, nil
+		}
+		root = parent
+	}
+	commonDir, err := c.commonGitDir(ctx, root)
+	if err != nil {
+		return model.Repository{}, model.RegisteredWorktree{}, false, err
+	}
+	repo := model.Repository{CommonDir: commonDir, PrimaryPath: root}
+	records, err := c.List(ctx, repo)
+	if err != nil {
+		return model.Repository{}, model.RegisteredWorktree{}, false, err
+	}
+	if len(records) > 0 {
+		repo.PrimaryPath = records[0].Path
+	}
+	for _, record := range records {
+		if sameResolvedPath(record.Path, path) {
+			return repo, record, true, nil
+		}
+	}
+	return repo, model.RegisteredWorktree{}, false, nil
+}
+
+func sameResolvedPath(left, right string) bool {
+	leftResolved, leftErr := filepath.EvalSymlinks(left)
+	rightResolved, rightErr := filepath.EvalSymlinks(right)
+	if leftErr == nil && rightErr == nil {
+		return filepath.Clean(leftResolved) == filepath.Clean(rightResolved)
+	}
+	return filepath.Clean(left) == filepath.Clean(right)
+}
+
 // ParseWorktreeListPorcelainZ parses `git worktree list --porcelain -z`.
 func ParseWorktreeListPorcelainZ(data []byte) ([]model.RegisteredWorktree, error) {
 	if len(data) == 0 {

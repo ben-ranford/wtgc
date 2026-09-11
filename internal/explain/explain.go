@@ -69,6 +69,12 @@ func WithOperationalErrors(document Document, errors []string) Document {
 	return document
 }
 
+// Operational builds a machine-readable explain result when target inspection
+// failed before a registered worktree could be classified.
+func Operational(path string, errors []string) Document {
+	return WithOperationalErrors(Build(model.Worktree{Path: path, Classification: model.Error, Reason: "requested worktree could not be inspected"}, false, 0), errors)
+}
+
 func project(w model.Worktree) Worktree {
 	v := Worktree{Path: w.Path, Branch: w.Branch, Head: w.Head, Repository: w.Repository, DefaultBranch: w.DefaultBranch, Classification: w.Classification, Reason: w.Reason, Error: w.Error, Dirty: w.Dirty, DiskBytes: w.DiskBytes}
 	if w.WorktreeDetails == nil {

@@ -37,6 +37,13 @@ type Git interface {
 	ProviderDefaultTracking(context.Context, model.Repository, string, string) (remote, branch, remoteURL string, err error)
 }
 
+// ExplainTargetResolver resolves one requested registration without scanning
+// other repositories. It is optional so existing non-explain Git adapters keep
+// the general inventory contract.
+type ExplainTargetResolver interface {
+	ResolveExplain(context.Context, string) (model.Repository, model.RegisteredWorktree, bool, error)
+}
+
 // Options controls one scan and optional cleanup pass.
 type Options struct {
 	Roots            []string
@@ -85,6 +92,14 @@ func (a *App) Run(ctx context.Context, opts Options) (model.Inventory, error) {
 		Roots:         append([]string(nil), opts.Roots...),
 		Worktrees:     []model.Worktree{},
 	}
+	if opts.ExplainPath != "" {
+		a.runExplainTarget(ctx, opts, now, &inv)
+		inv.Summary.Duration = time.Since(started)
+		if len(inv.Errors) > 0 {
+			return inv, fmt.Errorf("completed with %d error(s)", len(inv.Errors))
+		}
+		return inv, nil
+	}
 
 	repositories, discoveryErrors := a.git.Discover(ctx, opts.Roots)
 	for _, err := range discoveryErrors {
@@ -121,6 +136,34 @@ func (a *App) Run(ctx context.Context, opts Options) (model.Inventory, error) {
 		return inv, fmt.Errorf("completed with %d error(s)", len(inv.Errors))
 	}
 	return inv, nil
+}
+
+func (a *App) runExplainTarget(ctx context.Context, opts Options, now time.Time, inv *model.Inventory) {
+	resolver, ok := a.git.(ExplainTargetResolver)
+	if !ok {
+		inv.Errors = append(inv.Errors, "explain target resolution is unavailable for this Git backend")
+		return
+	}
+	repo, record, found, err := resolver.ResolveExplain(ctx, opts.ExplainPath)
+	if err != nil {
+		inv.Errors = append(inv.Errors, fmt.Sprintf("%s: resolve requested worktree: %v", opts.ExplainPath, err))
+		return
+	}
+	if !found {
+		return
+	}
+	inv.Summary.Repositories = 1
+	options := scanOptions{protectedPath: opts.ProtectedPath, provider: opts.Provider, providerRemote: opts.ProviderRemote, now: now, explainEvidence: opts.ExplainEvidence}
+	defaultBranch, err := a.git.DefaultBranch(ctx, repo)
+	if err != nil {
+		inv.Errors = append(inv.Errors, fmt.Sprintf("%s: default branch: %v", repo.CommonDir, err))
+		item := a.classifyDefaultBranchError(ctx, repo, record, fmt.Sprintf("default branch: %v", err), opts.ExplainEvidence)
+		inv.Worktrees = append(inv.Worktrees, item)
+	} else {
+		a.classifyJobs(ctx, []classificationJob{{repo: repo, defaultBranch: defaultBranch, protectedPath: opts.ProtectedPath, record: record}}, options.provider, options.providerRemote, options.now, options.explainEvidence, inv)
+	}
+	a.applyRetention(now, opts.Retention, opts.ExplainEvidence, inv)
+	a.summarize(inv)
 }
 
 func (a *App) addCacheWarnings(ctx context.Context, threshold int64, scanner func(context.Context, string, int64) []cache.Warning, inv *model.Inventory) {

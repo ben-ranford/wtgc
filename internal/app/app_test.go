@@ -318,6 +318,25 @@ func TestFilterExplainJobsUsesOnlyTheResolvedTarget(t *testing.T) {
 	}
 }
 
+func TestExplainResolvesTargetBeforeUnrelatedRepositoryInspection(t *testing.T) {
+	targetRepo := model.Repository{CommonDir: "/target/.git", PrimaryPath: "/target"}
+	otherRepo := model.Repository{CommonDir: "/other/.git", PrimaryPath: "/other"}
+	target := model.RegisteredWorktree{Path: "/target/worktree", Branch: "feature", Head: "abc123"}
+	backend := newFakeGit()
+	backend.repositories = []model.Repository{targetRepo, otherRepo}
+	backend.recordsByRepo = map[string][]model.RegisteredWorktree{targetRepo.PrimaryPath: {target}, otherRepo.PrimaryPath: {branchRecord("other")}}
+	backend.cleanByPath = map[string]bool{target.Path: true}
+	backend.ancestor, backend.remote = true, true
+	backend.defaultErrByRepo = map[string]error{otherRepo.PrimaryPath: errors.New("unrelated default branch failure")}
+	inv, err := New(backend).Run(context.Background(), Options{Roots: []string{"/scan"}, ExplainPath: target.Path, ExplainEvidence: true})
+	if err != nil || len(inv.Worktrees) != 1 || inv.Worktrees[0].Path != target.Path {
+		t.Fatalf("inventory=%+v err=%v", inv, err)
+	}
+	if len(inv.Errors) != 0 {
+		t.Fatalf("unrelated errors leaked into explain: %v", inv.Errors)
+	}
+}
+
 func TestProviderFailureCategoriesAreSanitized(t *testing.T) {
 	for _, test := range []struct {
 		err  string
@@ -1104,6 +1123,7 @@ type fakeGit struct {
 	maxCleanCalls     int
 	cleanErr          error
 	defaultErr        error
+	defaultErrByRepo  map[string]error
 	defaultBranches   []string
 	ancestor          bool
 	ancestorErr       error
@@ -1203,9 +1223,12 @@ func (f *fakeGit) List(_ context.Context, repo model.Repository) ([]model.Regist
 	}
 	return append([]model.RegisteredWorktree(nil), f.records...), nil
 }
-func (f *fakeGit) DefaultBranch(context.Context, model.Repository) (string, error) {
+func (f *fakeGit) DefaultBranch(_ context.Context, repo model.Repository) (string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if err := f.defaultErrByRepo[repo.PrimaryPath]; err != nil {
+		return "", err
+	}
 	if f.defaultErr != nil {
 		return "", f.defaultErr
 	}
@@ -1217,6 +1240,24 @@ func (f *fakeGit) DefaultBranch(context.Context, model.Repository) (string, erro
 		return value, nil
 	}
 	return "main", nil
+}
+
+func (f *fakeGit) ResolveExplain(_ context.Context, path string) (model.Repository, model.RegisteredWorktree, bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for _, repo := range f.repositories {
+		for _, record := range f.recordsByRepo[repo.PrimaryPath] {
+			if filepath.Clean(record.Path) == filepath.Clean(path) {
+				return repo, record, true, nil
+			}
+		}
+	}
+	for _, record := range f.records {
+		if filepath.Clean(record.Path) == filepath.Clean(path) {
+			return f.repository, record, true, nil
+		}
+	}
+	return model.Repository{}, model.RegisteredWorktree{}, false, nil
 }
 func (f *fakeGit) IsClean(_ context.Context, path string) (bool, error) {
 	f.mu.Lock()

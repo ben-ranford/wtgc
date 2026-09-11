@@ -17,6 +17,7 @@ import (
 	"github.com/ben-ranford/wtgc/internal/cli"
 	"github.com/ben-ranford/wtgc/internal/model"
 	"github.com/ben-ranford/wtgc/internal/provider"
+	"github.com/ben-ranford/wtgc/internal/report"
 	"github.com/ben-ranford/wtgc/internal/review"
 )
 
@@ -280,6 +281,15 @@ func TestRunExplainRejectsUnknownPath(t *testing.T) {
 	}
 }
 
+func TestRunExplainReturnsStructuredOperationalFailure(t *testing.T) {
+	backend := &explainFailureGit{mainFakeGit: newMainFakeGit(mainRecord("main")), err: errors.New("target list failed")}
+	var stdout, stderr bytes.Buffer
+	code := run(context.Background(), []string{"explain", "--json", "/repo"}, processIO{stdin: strings.NewReader(""), stdout: &stdout, stderr: &stderr}, mainCommandDependencies(backend, func() (string, error) { return "/repo", nil }))
+	if code != 1 || !strings.Contains(stdout.String(), `"operational_errors"`) || !strings.Contains(stdout.String(), "target list failed") {
+		t.Fatalf("code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+}
+
 func TestExplainHelpersReportOperationalAndWriterFailures(t *testing.T) {
 	root := t.TempDir()
 	if got := explainScanRoot(filepath.Join(root, "missing", "worktree")); got != root {
@@ -290,20 +300,20 @@ func TestExplainHelpersReportOperationalAndWriterFailures(t *testing.T) {
 	}
 	options := cli.Options{ExplainPath: "/missing", Retention: time.Hour}
 	var stderr bytes.Buffer
-	if code := writeExplain(processIO{stdout: io.Discard, stderr: &stderr}, model.Inventory{}, options, "json"); code != 2 || !strings.Contains(stderr.String(), "unknown registered worktree") {
+	if code := writeExplain(processIO{stdout: io.Discard, stderr: &stderr}, model.Inventory{}, options, report.FormatJSON, nil); code != 2 || !strings.Contains(stderr.String(), "unknown registered worktree") {
 		t.Fatalf("unknown path code=%d stderr=%q", code, stderr.String())
 	}
 	worktree := model.Worktree{Path: "/repo/wt", Repository: "/repo", Classification: model.Kept}
 	options.ExplainPath = worktree.Path
 	stderr.Reset()
-	if code := writeExplain(processIO{stdout: failingWriter{}, stderr: &stderr}, model.Inventory{Worktrees: []model.Worktree{worktree}}, options, "human"); code != 1 || !strings.Contains(stderr.String(), "write report") {
+	if code := writeExplain(processIO{stdout: failingWriter{}, stderr: &stderr}, model.Inventory{Worktrees: []model.Worktree{worktree}}, options, report.FormatHuman, nil); code != 1 || !strings.Contains(stderr.String(), "write report") {
 		t.Fatalf("writer failure code=%d stderr=%q", code, stderr.String())
 	}
 	if _, err := findExplainedWorktree([]model.Worktree{worktree, worktree}, worktree.Path, worktree.Path); err == nil || !strings.Contains(err.Error(), "ambiguous") {
 		t.Fatalf("ambiguous worktree error=%v", err)
 	}
 	stderr.Reset()
-	if code := writeExplain(processIO{stdout: io.Discard, stderr: &stderr}, model.Inventory{Worktrees: []model.Worktree{worktree, {Path: worktree.Path + "/", Repository: "/repo", Classification: model.Kept}}}, options, "json"); code != 2 || !strings.Contains(stderr.String(), "ambiguous review path") {
+	if code := writeExplain(processIO{stdout: io.Discard, stderr: &stderr}, model.Inventory{Worktrees: []model.Worktree{worktree, {Path: worktree.Path + "/", Repository: "/repo", Classification: model.Kept}}}, options, report.FormatJSON, nil); code != 2 || !strings.Contains(stderr.String(), "ambiguous review path") {
 		t.Fatalf("ambiguous match code=%d stderr=%q", code, stderr.String())
 	}
 }
@@ -903,6 +913,15 @@ type partialReviewGit struct {
 	failed model.Repository
 }
 
+type explainFailureGit struct {
+	*mainFakeGit
+	err error
+}
+
+func (f *explainFailureGit) ResolveExplain(context.Context, string) (model.Repository, model.RegisteredWorktree, bool, error) {
+	return model.Repository{}, model.RegisteredWorktree{}, false, f.err
+}
+
 func (f *partialReviewGit) Discover(context.Context, []string) ([]model.Repository, []error) {
 	return []model.Repository{f.repositories[0], f.failed}, nil
 }
@@ -945,6 +964,24 @@ func (f *mainFakeGit) Discover(context.Context, []string) ([]model.Repository, [
 
 func (f *mainFakeGit) List(context.Context, model.Repository) ([]model.RegisteredWorktree, error) {
 	return append([]model.RegisteredWorktree(nil), f.records...), nil
+}
+
+func (f *mainFakeGit) ResolveExplain(_ context.Context, path string) (model.Repository, model.RegisteredWorktree, bool, error) {
+	for _, record := range f.records {
+		if sameMainPath(record.Path, path) {
+			return f.repositories[0], record, true, nil
+		}
+	}
+	return f.repositories[0], model.RegisteredWorktree{}, false, nil
+}
+
+func sameMainPath(left, right string) bool {
+	leftResolved, leftErr := filepath.EvalSymlinks(left)
+	rightResolved, rightErr := filepath.EvalSymlinks(right)
+	if leftErr == nil && rightErr == nil {
+		return filepath.Clean(leftResolved) == filepath.Clean(rightResolved)
+	}
+	return filepath.Clean(left) == filepath.Clean(right)
 }
 
 func (*mainFakeGit) DefaultBranch(context.Context, model.Repository) (string, error) {
