@@ -108,9 +108,13 @@ func TestCoverageDiscoveryDiskAndCommandBoundaries(t *testing.T) {
 }
 
 func TestCoverageConfigureCommandStopsAChildGroup(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	// Fixture creation copies the scripted binary on Windows and can take long
+	// enough to consume a one-second cancellation budget. Keep that setup out
+	// of the manual-cancellation assertion below.
+	binary := scriptedGit(t, fixture{Default: response{Hang: true}})
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, scriptedGit(t, fixture{Default: response{Hang: true}}))
+	cmd := exec.CommandContext(ctx, binary)
 	configureCommand(cmd)
 	if err := cmd.Start(); err != nil {
 		t.Fatal(err)
