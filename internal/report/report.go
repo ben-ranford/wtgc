@@ -9,7 +9,9 @@ import (
 	"strconv"
 	"strings"
 	"text/tabwriter"
+	"time"
 
+	"github.com/ben-ranford/wtgc/internal/explain"
 	"github.com/ben-ranford/wtgc/internal/model"
 	"github.com/ben-ranford/wtgc/internal/review"
 )
@@ -33,6 +35,41 @@ func Write(w io.Writer, inv model.Inventory, format Format) error {
 	default:
 		return fmt.Errorf("unknown report format %q", format)
 	}
+}
+
+// WriteExplain renders the versioned single-worktree diagnostic without
+// changing inventory or review output contracts.
+func WriteExplain(w io.Writer, document explain.Document, format Format) error {
+	if format == FormatJSON {
+		enc := json.NewEncoder(w)
+		enc.SetIndent("", "  ")
+		return enc.Encode(document)
+	}
+	if format != "" && format != FormatHuman {
+		return fmt.Errorf("unknown report format %q", format)
+	}
+	var output bytes.Buffer
+	fmt.Fprintf(&output, "Worktree: %s\nRepository: %s\nHEAD: %s\nClassification: %s\nReason: %s\n", SafeHumanText(document.Worktree.Path), SafeHumanText(document.Worktree.Repository), SafeHumanText(emptyDash(document.Worktree.Head)), document.Worktree.Classification, SafeHumanText(withError(document.Worktree.Reason, document.Worktree.Error)))
+	if document.Worktree.RetentionBasis != "" && document.Worktree.ObservedAt != nil && document.Worktree.EligibleAt != nil {
+		fmt.Fprintf(&output, "Retention: basis=%s observed=%s eligible=%s remaining=%s\n", SafeHumanText(document.Worktree.RetentionBasis), document.Worktree.ObservedAt.UTC().Format(time.RFC3339), document.Worktree.EligibleAt.UTC().Format(time.RFC3339), document.Worktree.Remaining)
+	}
+	if document.Worktree.Provider != "" {
+		fmt.Fprintf(&output, "Provider proof: %s PR #%d %s\n", SafeHumanText(document.Worktree.Provider), document.Worktree.ProviderPR, SafeHumanText(document.Worktree.ProviderURL))
+	}
+	fmt.Fprintln(&output, "Checks:")
+	for _, check := range document.Checks {
+		fmt.Fprintf(&output, "  %s\t%s\t%s\n", check.ID, check.Status, SafeHumanText(check.Detail))
+	}
+	fmt.Fprintln(&output, "Safe next checks:")
+	for _, next := range document.NextChecks {
+		fmt.Fprintf(&output, "  - %s\n", SafeHumanText(next))
+	}
+	if written, err := w.Write(output.Bytes()); err != nil {
+		return err
+	} else if written != output.Len() {
+		return io.ErrShortWrite
+	}
+	return nil
 }
 
 // WriteReview renders the separate review document without changing clean's

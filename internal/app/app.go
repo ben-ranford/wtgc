@@ -54,6 +54,9 @@ type Options struct {
 	Provider         provider.MergeFinder
 	ProviderRemote   string
 	CacheScanner     func(context.Context, string, int64) []cache.Warning
+	// ExplainEvidence requests classifier trace data for wtgc explain only.
+	// Normal inventory/review scans retain their allocation and output contract.
+	ExplainEvidence bool
 }
 
 // App coordinates Git inspection without weakening Git's own safety checks.
@@ -92,7 +95,7 @@ func (a *App) Run(ctx context.Context, opts Options) (model.Inventory, error) {
 		return inv, errors.New("no Git repositories with registered worktrees found")
 	}
 
-	a.scanRepositories(ctx, repositories, opts.ProtectedPath, opts.Provider, opts.ProviderRemote, now, &inv)
+	a.scanRepositories(ctx, repositories, scanOptions{protectedPath: opts.ProtectedPath, provider: opts.Provider, providerRemote: opts.ProviderRemote, now: now, explainEvidence: opts.ExplainEvidence}, &inv)
 	a.addCacheWarnings(ctx, opts.CacheThreshold, opts.CacheScanner, &inv)
 	a.applyRetention(now, opts.Retention, &inv)
 	sort.Slice(inv.Worktrees, func(i, j int) bool {
@@ -195,17 +198,26 @@ type classificationJob struct {
 }
 
 type classifyOptions struct {
-	provider       provider.MergeFinder
-	providerRemote string
-	now            time.Time
+	provider        provider.MergeFinder
+	providerRemote  string
+	now             time.Time
+	explainEvidence bool
 }
 
-func (a *App) scanRepositories(ctx context.Context, repositories []model.Repository, protectedPath string, p provider.MergeFinder, providerRemote string, now time.Time, inv *model.Inventory) {
-	jobs := a.collectClassificationJobs(ctx, repositories, protectedPath, inv)
+type scanOptions struct {
+	protectedPath   string
+	provider        provider.MergeFinder
+	providerRemote  string
+	now             time.Time
+	explainEvidence bool
+}
+
+func (a *App) scanRepositories(ctx context.Context, repositories []model.Repository, options scanOptions, inv *model.Inventory) {
+	jobs := a.collectClassificationJobs(ctx, repositories, options.protectedPath, inv)
 	if len(jobs) == 0 {
 		return
 	}
-	a.classifyJobs(ctx, jobs, p, providerRemote, now, inv)
+	a.classifyJobs(ctx, jobs, options.provider, options.providerRemote, options.now, options.explainEvidence, inv)
 }
 
 func (a *App) collectClassificationJobs(ctx context.Context, repositories []model.Repository, protectedPath string, inv *model.Inventory) []classificationJob {
@@ -240,7 +252,7 @@ func (a *App) collectClassificationJobs(ctx context.Context, repositories []mode
 	return jobs
 }
 
-func (a *App) classifyJobs(ctx context.Context, jobs []classificationJob, p provider.MergeFinder, providerRemote string, now time.Time, inv *model.Inventory) {
+func (a *App) classifyJobs(ctx context.Context, jobs []classificationJob, p provider.MergeFinder, providerRemote string, now time.Time, explainEvidence bool, inv *model.Inventory) {
 	inv.Worktrees = slices.Grow(inv.Worktrees, len(jobs))
 	jobCh := make(chan classificationJob)
 	resultCh := make(chan model.Worktree, len(jobs))
@@ -254,7 +266,7 @@ func (a *App) classifyJobs(ctx context.Context, jobs []classificationJob, p prov
 		go func() {
 			defer group.Done()
 			for job := range jobCh {
-				resultCh <- a.classify(ctx, job, classifyOptions{provider: p, providerRemote: providerRemote, now: now})
+				resultCh <- a.classify(ctx, job, classifyOptions{provider: p, providerRemote: providerRemote, now: now, explainEvidence: explainEvidence})
 			}
 		}()
 	}
@@ -288,59 +300,91 @@ func (a *App) classify(ctx context.Context, job classificationJob, options class
 	}
 	if record.Prunable {
 		item.Classification, item.Reason = model.Prunable, "worktree path is missing and Git marks its metadata prunable"
+		traceCheck(&item, options, "registration", model.ExplainBlocked, "Git marks the missing registration prunable")
 		return item
 	}
+	traceCheck(&item, options, "registration", model.ExplainPassed, "Git registered a live worktree")
 	if size, err := a.git.DiskUsage(record.Path); err == nil {
 		item.DiskBytes = size
+		traceCheck(&item, options, "disk_usage", model.ExplainPassed, "disk usage was measured")
 	} else {
+		traceCheck(&item, options, "disk_usage", model.ExplainUnavailable, fmt.Sprintf("measure disk usage: %v", err))
 		return classificationError(item, fmt.Sprintf("measure disk usage: %v", err))
 	}
 	clean, err := a.git.IsClean(ctx, record.Path)
 	if err != nil {
+		traceCheck(&item, options, "working_tree", model.ExplainUnavailable, fmt.Sprintf("inspect working tree: %v", err))
 		return classificationError(item, fmt.Sprintf("inspect working tree: %v", err))
 	}
 	item.Dirty = boolPtr(!clean)
+	if clean {
+		traceCheck(&item, options, "working_tree", model.ExplainPassed, "working tree is clean")
+	} else {
+		traceCheck(&item, options, "working_tree", model.ExplainBlocked, "tracked, staged, or untracked changes exist")
+	}
 	if classified, kept := keepProtectedWorktree(item, record, defaultBranch, protectedPath); kept {
+		traceCheck(&classified, options, "protection", model.ExplainBlocked, classified.Reason)
 		return classified
 	}
+	traceCheck(&item, options, "protection", model.ExplainPassed, "no protected-worktree condition was observed")
 	merged, err := a.git.IsAncestor(ctx, repo, record.Head, defaultBranch)
 	if err != nil {
+		traceCheck(&item, options, "local_default_reachability", model.ExplainUnavailable, fmt.Sprintf("check merge ancestry: %v", err))
 		return classificationError(item, fmt.Sprintf("check merge ancestry: %v", err))
 	}
 	if !merged {
-		if !clean {
-			item.Classification, item.Reason = model.Kept, "dirty worktree branch tip is not reachable from the local default branch"
-			return item
-		}
-		if options.provider != nil {
-			proof, ok, category := a.providerProof(ctx, repo, record, defaultBranch, options.provider, options.providerRemote, options.now)
-			if ok {
-				item.Classification, item.Reason = model.SafeToRemove, "clean squash-merged pull request has exact provider and selected-default reachability proof"
-				details := item.Details()
-				details.Provider, details.ProviderPR, details.ProviderURL, details.MergedAt = "github", proof.Number, proof.URL, &proof.MergedAt
-				details.ProviderProof = providerProofIdentity(proof)
-				return item
-			}
-			item.Classification, item.Reason = model.Unmerged, "provider confirmation "+category+"; clean worktree retained because branch tip is not reachable from the local default branch"
-			return item
-		}
-		item.Classification, item.Reason = model.Unmerged, "branch tip is not reachable from the local default branch"
-		return item
+		traceCheck(&item, options, "local_default_reachability", model.ExplainBlocked, "branch tip is not reachable from the local default branch")
+		return a.classifyUnmerged(ctx, item, repo, record, defaultBranch, clean, options)
 	}
+	traceCheck(&item, options, "local_default_reachability", model.ExplainPassed, "branch tip is reachable from the local default branch")
 	if !clean {
 		item.Classification, item.Reason = model.MergedButDirty, "branch is merged but tracked, staged, or untracked changes exist"
 		return item
 	}
 	remote, err := a.git.RemoteContains(ctx, repo, record.Head)
 	if err != nil {
+		traceCheck(&item, options, "remote_tracking_reachability", model.ExplainUnavailable, fmt.Sprintf("check remote reachability: %v", err))
 		return classificationError(item, fmt.Sprintf("check remote reachability: %v", err))
 	}
 	if !remote {
+		traceCheck(&item, options, "remote_tracking_reachability", model.ExplainBlocked, "branch tip is not reachable from local remote-tracking refs")
 		item.Classification, item.Reason = model.Unmerged, "branch tip is not reachable from any local remote-tracking ref"
 		return item
 	}
+	traceCheck(&item, options, "remote_tracking_reachability", model.ExplainPassed, "branch tip is reachable from local remote-tracking refs")
 	item.Classification, item.Reason = model.SafeToRemove, "clean branch tip is reachable from both the default branch and a remote-tracking ref"
 	return item
+}
+
+func (a *App) classifyUnmerged(ctx context.Context, item model.Worktree, repo model.Repository, record model.RegisteredWorktree, defaultBranch string, clean bool, options classifyOptions) model.Worktree {
+	if !clean {
+		item.Classification, item.Reason = model.Kept, "dirty worktree branch tip is not reachable from the local default branch"
+		return item
+	}
+	if options.provider == nil {
+		item.Classification, item.Reason = model.Unmerged, "branch tip is not reachable from the local default branch"
+		return item
+	}
+	proof, ok, category := a.providerProof(ctx, repo, record, defaultBranch, options.provider, options.providerRemote, options.now)
+	if !ok {
+		traceCheck(&item, options, "provider_proof", model.ExplainBlocked, "provider confirmation "+category)
+		item.Classification, item.Reason = model.Unmerged, "provider confirmation "+category+"; clean worktree retained because branch tip is not reachable from the local default branch"
+		return item
+	}
+	traceCheck(&item, options, "provider_proof", model.ExplainPassed, "explicit provider merge proof was accepted")
+	item.Classification, item.Reason = model.SafeToRemove, "clean squash-merged pull request has exact provider and selected-default reachability proof"
+	details := item.Details()
+	details.Provider, details.ProviderPR, details.ProviderURL, details.MergedAt = "github", proof.Number, proof.URL, &proof.MergedAt
+	details.ProviderProof = providerProofIdentity(proof)
+	return item
+}
+
+func traceCheck(item *model.Worktree, options classifyOptions, id string, status model.ExplainCheckStatus, detail string) {
+	if !options.explainEvidence {
+		return
+	}
+	details := item.Details()
+	details.ExplainChecks = append(details.ExplainChecks, model.ExplainCheck{ID: id, Status: status, Detail: detail})
 }
 
 func providerProofIdentity(proof provider.PullRequest) model.ProviderProof {

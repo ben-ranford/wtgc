@@ -15,6 +15,7 @@ import (
 
 	"github.com/ben-ranford/wtgc/internal/app"
 	"github.com/ben-ranford/wtgc/internal/cli"
+	"github.com/ben-ranford/wtgc/internal/explain"
 	"github.com/ben-ranford/wtgc/internal/gitx"
 	"github.com/ben-ranford/wtgc/internal/model"
 	"github.com/ben-ranford/wtgc/internal/provider"
@@ -100,10 +101,13 @@ func run(ctx context.Context, args []string, streams processIO, deps commandDepe
 		fmt.Fprintf(streams.stderr, "resolve current directory: %v\n", err)
 		return 1
 	}
-	if opts.Command == cli.CommandReview {
+	if opts.Command == cli.CommandReview || opts.Command == cli.CommandExplain {
 		opts.Repositories, err = normalizeReviewPaths(opts.Repositories, workingDirectory)
-		if err == nil {
+		if err == nil && opts.Command == cli.CommandReview {
 			opts.SelectedPaths, err = normalizeReviewPaths(opts.SelectedPaths, workingDirectory)
+		}
+		if err == nil && opts.Command == cli.CommandExplain {
+			opts.ExplainPath, err = canonicalReviewPath(opts.ExplainPath, workingDirectory)
 		}
 		if err != nil {
 			fmt.Fprintf(streams.stderr, "review: %v\n", err)
@@ -111,14 +115,15 @@ func run(ctx context.Context, args []string, streams processIO, deps commandDepe
 		}
 	}
 	appOptions := app.Options{
-		Roots:          opts.Roots,
-		Execute:        opts.Command == cli.CommandClean && !opts.DryRun,
-		Interactive:    opts.Interactive,
-		DeleteBranch:   opts.DeleteBranch,
-		ProtectedPath:  workingDirectory,
-		Retention:      opts.Retention,
-		CacheThreshold: opts.CacheThreshold,
-		ProviderRemote: opts.ProviderRemote,
+		Roots:           opts.Roots,
+		Execute:         opts.Command == cli.CommandClean && !opts.DryRun,
+		Interactive:     opts.Interactive,
+		DeleteBranch:    opts.DeleteBranch,
+		ProtectedPath:   workingDirectory,
+		Retention:       opts.Retention,
+		CacheThreshold:  opts.CacheThreshold,
+		ProviderRemote:  opts.ProviderRemote,
+		ExplainEvidence: opts.Command == cli.CommandExplain,
 	}
 	if opts.Command == cli.CommandClean {
 		appOptions.SelectedPaths = opts.SelectedPaths
@@ -153,6 +158,10 @@ func run(ctx context.Context, args []string, streams processIO, deps commandDepe
 			fmt.Fprintf(streams.stderr, "write report: %v\n", err)
 			return 1
 		}
+	} else if opts.Command == cli.CommandExplain {
+		if code := writeExplain(streams, inventory, opts, format); code != 0 {
+			return code
+		}
 	} else if err := report.Write(streams.stdout, inventory, format); err != nil {
 		fmt.Fprintf(streams.stderr, "write report: %v\n", err)
 		return 1
@@ -162,6 +171,40 @@ func run(ctx context.Context, args []string, streams processIO, deps commandDepe
 		return 1
 	}
 	return 0
+}
+
+func writeExplain(streams processIO, inventory model.Inventory, opts cli.Options, format report.Format) int {
+	matches, err := matchReviewPaths([]string{opts.ExplainPath}, inventory.Worktrees, func(worktree model.Worktree) string { return worktree.Path })
+	if err != nil {
+		fmt.Fprintf(streams.stderr, "explain: %v\n", err)
+		return 2
+	}
+	found, err := findExplainedWorktree(inventory.Worktrees, matches[0], opts.ExplainPath)
+	if err != nil {
+		fmt.Fprintf(streams.stderr, "explain: %v\n", err)
+		return 2
+	}
+	if err := report.WriteExplain(streams.stdout, explain.Build(found, opts.Provider == "github", opts.Retention), format); err != nil {
+		fmt.Fprintf(streams.stderr, "write report: %v\n", err)
+		return 1
+	}
+	return 0
+}
+
+func findExplainedWorktree(worktrees []model.Worktree, matched, requested string) (model.Worktree, error) {
+	var found *model.Worktree
+	for i := range worktrees {
+		if sameReviewPath(worktrees[i].Path, matched) {
+			if found != nil {
+				return model.Worktree{}, fmt.Errorf("ambiguous worktree path %q", requested)
+			}
+			found = &worktrees[i]
+		}
+	}
+	if found == nil {
+		return model.Worktree{}, fmt.Errorf("unknown registered worktree %q", requested)
+	}
+	return *found, nil
 }
 
 func normalizeReviewPaths(paths []string, base string) ([]string, error) {

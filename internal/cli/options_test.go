@@ -57,6 +57,18 @@ func TestParseReviewFlagsAndReadOnlyContract(t *testing.T) {
 	}
 }
 
+func TestParseExplainRequiresOnePathAndRejectsDestructiveFlags(t *testing.T) {
+	opts, err := Parse([]string{"explain", "--retention", "24h", "/repo/worktree"})
+	if err != nil || opts.Command != CommandExplain || opts.ExplainPath != "/repo/worktree" || !opts.DryRun {
+		t.Fatalf("opts=%+v err=%v", opts, err)
+	}
+	for _, args := range [][]string{{"explain"}, {"explain", "/one", "/two"}, {"explain", "--yes=false", "/one"}, {"explain", "--interactive=false", "/one"}, {"explain", "--delete-branch=false", "/one"}, {"explain", "--dry-run=false", "/one"}} {
+		if _, err := Parse(args); err == nil || !IsUsageError(err) {
+			t.Fatalf("Parse(%v) err=%v, want usage", args, err)
+		}
+	}
+}
+
 func TestParseReviewClassifications(t *testing.T) {
 	valid := []string{"safe_to_remove", "merged_but_dirty", "unmerged", "stale_orphaned", "kept", "error"}
 	args := []string{"review"}

@@ -87,6 +87,26 @@ type WorktreeDetails struct {
 	ProviderURL    string         `json:"provider_url,omitempty"`
 	MergedAt       *time.Time     `json:"merged_at,omitempty"`
 	ProviderProof  ProviderProof  `json:"-"`
+	ExplainChecks  []ExplainCheck `json:"-"`
+}
+
+// ExplainCheckStatus records what a read-only classifier check established.
+// It is deliberately emitted only by the explain command, so inventory 1.1
+// remains byte-for-byte compatible for unchanged invocations.
+type ExplainCheckStatus string
+
+const (
+	ExplainPassed       ExplainCheckStatus = "passed"
+	ExplainBlocked      ExplainCheckStatus = "blocked"
+	ExplainNotEvaluated ExplainCheckStatus = "not_evaluated"
+	ExplainUnavailable  ExplainCheckStatus = "unavailable"
+)
+
+// ExplainCheck is classifier evidence, not a rendering of the human reason.
+type ExplainCheck struct {
+	ID     string             `json:"id"`
+	Status ExplainCheckStatus `json:"status"`
+	Detail string             `json:"detail"`
 }
 
 // ProviderProof is retained only for mutation revalidation; it is never emitted.

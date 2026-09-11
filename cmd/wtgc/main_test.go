@@ -240,6 +240,46 @@ func TestRunReviewIsReadOnlyAndWritesSeparateDocument(t *testing.T) {
 	}
 }
 
+func TestRunExplainIsReadOnlyAndEmitsStructuredTrace(t *testing.T) {
+	root := t.TempDir()
+	worktree := filepath.Join(root, "worktree")
+	if err := os.Mkdir(worktree, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	backend := &reviewNoMutationGit{mainFakeGit: newMainFakeGit(model.RegisteredWorktree{Path: worktree, Branch: "feature", Head: "def456"})}
+	backend.repositories[0].PrimaryPath = root
+	var stdout, stderr bytes.Buffer
+	code := run(context.Background(), []string{"explain", "--json", worktree}, processIO{stdin: strings.NewReader(""), stdout: &stdout, stderr: &stderr}, mainCommandDependencies(backend, func() (string, error) { return root, nil }))
+	if code != 0 || stderr.Len() != 0 || backend.removes != 0 || backend.prunes != 0 || backend.deletes != 0 {
+		t.Fatalf("code=%d stderr=%q backend=%+v", code, stderr.String(), backend)
+	}
+	var document struct {
+		ExplainSchemaVersion string                        `json:"explain_schema_version"`
+		Checks               []struct{ ID, Status string } `json:"checks"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &document); err != nil {
+		t.Fatalf("explain JSON: %v\n%s", err, stdout.String())
+	}
+	if document.ExplainSchemaVersion != "1.0.0" {
+		t.Fatalf("schema=%q", document.ExplainSchemaVersion)
+	}
+	checks := map[string]string{}
+	for _, check := range document.Checks {
+		checks[check.ID] = check.Status
+	}
+	if checks["local_default_reachability"] != "passed" || checks["remote_tracking_reachability"] != "passed" || checks["provider_proof"] != "not_evaluated" {
+		t.Fatalf("checks=%v", checks)
+	}
+}
+
+func TestRunExplainRejectsUnknownPath(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	code := run(context.Background(), []string{"explain", "/missing"}, processIO{stdin: strings.NewReader(""), stdout: &stdout, stderr: &stderr}, mainCommandDependencies(newMainFakeGit(mainRecord("main")), func() (string, error) { return "/repo", nil }))
+	if code != 2 || !strings.Contains(stderr.String(), "unknown registered worktree") {
+		t.Fatalf("code=%d stderr=%q", code, stderr.String())
+	}
+}
+
 func TestRunReviewRejectsDestructiveFlagsWithStaticInformation(t *testing.T) {
 	for _, args := range [][]string{{"review", "--yes", "--help"}, {"review", "--delete-branch=false", "--version"}} {
 		var stdout, stderr bytes.Buffer
