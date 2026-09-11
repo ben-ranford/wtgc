@@ -357,7 +357,7 @@ func reviewOptionsForInventory(opts cli.Options, inventory model.Inventory) (rev
 	if err != nil {
 		return review.Options{}, err
 	}
-	return review.Options{Repositories: repositories, Classifications: opts.Classifications, GroupBy: opts.GroupBy, SortBy: opts.SortBy, SelectedPaths: selected}, nil
+	return review.Options{Repositories: repositories, Classifications: opts.Classifications, GroupBy: opts.GroupBy, SortBy: opts.SortBy, SelectedPaths: selected, ReclaimTarget: opts.ReclaimTarget, HasReclaimTarget: opts.HasReclaimTarget}, nil
 }
 
 func matchReviewPaths(paths []string, worktrees []model.Worktree, value func(model.Worktree) string) ([]string, error) {

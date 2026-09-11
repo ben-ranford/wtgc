@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"math"
+	"math/big"
 	"strings"
 	"testing"
 	"time"
@@ -131,6 +133,44 @@ func TestWriteReviewReportsCompleteDocumentWriteFailures(t *testing.T) {
 	}
 	if err := WriteReview(shortReportWriter{}, doc, FormatHuman); !errors.Is(err, io.ErrShortWrite) {
 		t.Fatalf("WriteReview partial document error=%v, want short write", err)
+	}
+}
+
+func TestWriteReviewRendersAdvisoryReclaimProposal(t *testing.T) {
+	inv := testInventory()
+	doc, err := review.Build(inv, review.Options{HasReclaimTarget: true, ReclaimTarget: 2048})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var output bytes.Buffer
+	if err := WriteReview(&output, doc, FormatHuman); err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"Reclaim proposal", "advisory only", "target: 2.0 KiB", "target met: false", "estimated shortfall: 512 B", "estimated bytes do not promise"} {
+		if !strings.Contains(output.String(), want) {
+			t.Fatalf("output missing %q:\n%s", want, output.String())
+		}
+	}
+	output.Reset()
+	if err := WriteReview(&output, doc, FormatJSON); err != nil {
+		t.Fatal(err)
+	}
+	var decoded review.Document
+	if err := json.Unmarshal(output.Bytes(), &decoded); err != nil || decoded.Proposal == nil || decoded.Proposal.SchemaVersion != "1.0.0" || decoded.Inventory.SchemaVersion != "1.0.0" {
+		t.Fatalf("JSON=%s err=%v decoded=%+v", output.String(), err, decoded)
+	}
+}
+
+func TestWriteReviewRendersMetProposalAndLargeTotals(t *testing.T) {
+	proposal := &review.Proposal{SchemaVersion: "1.0.0", Advisory: true, TargetBytes: 1, TargetMet: true, EstimatedBytes: new(big.Int).Add(big.NewInt(math.MaxInt64), big.NewInt(1)), ExcessBytes: big.NewInt(math.MaxInt64), ShortfallBytes: big.NewInt(0), Candidates: []review.Candidate{}, SelectionRule: "count", Authorization: "fresh validation"}
+	var output bytes.Buffer
+	if err := WriteReview(&output, review.Document{View: review.View{Groups: []review.Group{}}, Proposal: proposal}, FormatHuman); err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{"target met: true", "estimated excess", "9223372036854775808 B"} {
+		if !strings.Contains(output.String(), want) {
+			t.Fatalf("output missing %q: %s", want, output.String())
+		}
 	}
 }
 

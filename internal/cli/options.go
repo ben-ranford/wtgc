@@ -6,6 +6,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"math"
 	"strings"
 	"time"
 
@@ -20,27 +21,29 @@ const (
 
 // Options is the stable command contract consumed by the application layer.
 type Options struct {
-	Command         string
-	Roots           []string
-	DryRun          bool
-	Yes             bool
-	Interactive     bool
-	Pick            bool
-	DeleteBranch    bool
-	JSON            bool
-	Version         bool
-	Help            bool
-	Provider        string
-	ProviderRemote  string
-	Retention       time.Duration
-	CacheThreshold  int64
-	Repositories    []string
-	Classifications []string
-	GroupBy         string
-	SortBy          string
-	SelectedPaths   []string
-	ExplainPath     string
-	ExcludePaths    []string
+	Command          string
+	Roots            []string
+	DryRun           bool
+	Yes              bool
+	Interactive      bool
+	Pick             bool
+	DeleteBranch     bool
+	JSON             bool
+	Version          bool
+	Help             bool
+	Provider         string
+	ProviderRemote   string
+	Retention        time.Duration
+	CacheThreshold   int64
+	Repositories     []string
+	Classifications  []string
+	GroupBy          string
+	SortBy           string
+	SelectedPaths    []string
+	ExplainPath      string
+	ExcludePaths     []string
+	ReclaimTarget    int64
+	HasReclaimTarget bool
 }
 
 // UsageError reports input that should be shown with command usage and a
@@ -103,6 +106,7 @@ func Parse(args []string) (Options, error) {
 	}
 
 	var roots, repositories, classifications, selectedPaths, excludePaths stringList
+	var reclaimTarget reclaimTargetOption
 	dryRun := boolOption{
 		value: true,
 		set:   false,
@@ -132,6 +136,7 @@ func Parse(args []string) (Options, error) {
 		fs.Var(&classifications, "classification", "classification to include; repeatable")
 		fs.StringVar(&opts.GroupBy, "group-by", "none", "review grouping: none, repository, or classification")
 		fs.StringVar(&opts.SortBy, "sort-by", "path", "review sorting: path or size")
+		fs.Var(&reclaimTarget, "reclaim-target", "advisory bytes to reclaim using eligible review rows")
 	}
 
 	if err := fs.Parse(args); err != nil {
@@ -200,6 +205,9 @@ func Parse(args []string) (Options, error) {
 				return Options{}, &UsageError{Message: fmt.Sprintf("unknown review classification %q", classification)}
 			}
 		}
+		if reclaimTarget.set && len(selectedPaths) > 0 {
+			return Options{}, &UsageError{Message: "--reclaim-target cannot be combined with --select"}
+		}
 	}
 	if opts.Command == CommandExplain && len(selectedPaths) > 0 {
 		return Options{}, &UsageError{Message: "explain does not accept --select"}
@@ -213,8 +221,62 @@ func Parse(args []string) (Options, error) {
 	opts.Classifications = append([]string(nil), classifications...)
 	opts.SelectedPaths = append([]string(nil), selectedPaths...)
 	opts.ExcludePaths = append([]string(nil), excludePaths...)
+	opts.ReclaimTarget = reclaimTarget.value
+	opts.HasReclaimTarget = reclaimTarget.set
 
 	return opts, nil
+}
+
+type reclaimTargetOption struct {
+	value int64
+	set   bool
+}
+
+func (r *reclaimTargetOption) String() string {
+	if !r.set {
+		return ""
+	}
+	return fmt.Sprintf("%d", r.value)
+}
+
+func (r *reclaimTargetOption) Set(value string) error {
+	parsed, err := parseReclaimTarget(value)
+	if err != nil {
+		return err
+	}
+	r.value, r.set = parsed, true
+	return nil
+}
+
+func parseReclaimTarget(value string) (int64, error) {
+	multiplier := int64(1)
+	for suffix, scale := range map[string]int64{"KiB": 1 << 10, "MiB": 1 << 20, "GiB": 1 << 30, "TiB": 1 << 40} {
+		if strings.HasSuffix(value, suffix) {
+			value, multiplier = strings.TrimSuffix(value, suffix), scale
+			break
+		}
+	}
+	if value == "" {
+		return 0, errors.New("--reclaim-target must be a positive integer bytes value or integer KiB, MiB, GiB, or TiB value")
+	}
+	result := int64(0)
+	for _, character := range value {
+		if character < '0' || character > '9' {
+			return 0, errors.New("--reclaim-target must be a positive integer bytes value or integer KiB, MiB, GiB, or TiB value")
+		}
+		digit := int64(character - '0')
+		if result > (math.MaxInt64-digit)/10 {
+			return 0, errors.New("--reclaim-target overflows bytes")
+		}
+		result = result*10 + digit
+	}
+	if result == 0 {
+		return 0, errors.New("--reclaim-target must be greater than zero")
+	}
+	if result > math.MaxInt64/multiplier {
+		return 0, errors.New("--reclaim-target overflows bytes")
+	}
+	return result * multiplier, nil
 }
 
 func isReviewClassification(value string) bool {
@@ -358,6 +420,7 @@ Flags:
   --classification VALUE include a classification; repeatable (review)
   --group-by VALUE    group review rows by none, repository, or classification
   --sort-by VALUE     sort review rows by path or size
+  --reclaim-target BYTES propose an advisory safe subset for this target (review)
   --version          print version and exit
   -h, --help         show help
 `, name)

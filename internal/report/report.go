@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math/big"
 	"strconv"
 	"strings"
 	"text/tabwriter"
@@ -103,6 +104,7 @@ func WriteReview(w io.Writer, document review.Document, format Format) error {
 	}
 	writeReviewTotals(&output, document.View.Totals)
 	writeExclusionScope(&output, document.Inventory)
+	writeReclaimProposal(&output, document.Proposal)
 	if len(document.Inventory.Errors) > 0 {
 		fmt.Fprintln(&output, "Errors:")
 		for _, errText := range document.Inventory.Errors {
@@ -115,6 +117,30 @@ func WriteReview(w io.Writer, document review.Document, format Format) error {
 		return io.ErrShortWrite
 	}
 	return nil
+}
+
+func writeReclaimProposal(w io.Writer, proposal *review.Proposal) {
+	if proposal == nil {
+		return
+	}
+	fmt.Fprintln(w, "Reclaim proposal (advisory only; not cleanup authorization):")
+	fmt.Fprintf(w, "  target: %s\n  target met: %t\n  proposed: %d worktree(s)\n  estimated total: %s\n", ByteString(proposal.TargetBytes), proposal.TargetMet, len(proposal.Candidates), byteStringBig(proposal.EstimatedBytes))
+	if proposal.TargetMet {
+		fmt.Fprintf(w, "  estimated excess: %s\n", byteStringBig(proposal.ExcessBytes))
+	} else {
+		fmt.Fprintf(w, "  estimated shortfall: %s\n", byteStringBig(proposal.ShortfallBytes))
+	}
+	fmt.Fprintln(w, "  candidates:")
+	for _, candidate := range proposal.Candidates {
+		fmt.Fprintf(w, "    - %s (%s; repository %s)\n", SafeHumanText(candidate.Path), ByteString(candidate.Bytes), SafeHumanText(candidate.Repository))
+	}
+	fmt.Fprintf(w, "  selection: %s\n  cleanup: %s\n", SafeHumanText(proposal.SelectionRule), SafeHumanText(proposal.Authorization))
+	if len(proposal.Uncertainties) > 0 {
+		fmt.Fprintln(w, "  uncertainties:")
+		for _, uncertainty := range proposal.Uncertainties {
+			fmt.Fprintf(w, "    - %s\n", SafeHumanText(uncertainty))
+		}
+	}
 }
 
 func writeReviewRow(w io.Writer, row review.Row) {
@@ -296,4 +322,14 @@ func ByteString(n int64) string {
 		}
 	}
 	return fmt.Sprintf("%.1f EiB", value/1024)
+}
+
+func byteStringBig(n *big.Int) string {
+	if n == nil {
+		return "0 B"
+	}
+	if n.IsInt64() {
+		return ByteString(n.Int64())
+	}
+	return n.String() + " B"
 }

@@ -77,6 +77,52 @@ func TestParseExplainRequiresOnePathAndRejectsDestructiveFlags(t *testing.T) {
 	}
 }
 
+func TestParseReclaimTarget(t *testing.T) {
+	for _, tc := range []struct {
+		args []string
+		want int64
+	}{
+		{[]string{"review", "--reclaim-target", "10"}, 10},
+		{[]string{"review", "--reclaim-target", "10KiB"}, 10 << 10},
+		{[]string{"review", "--reclaim-target", "10MiB"}, 10 << 20},
+		{[]string{"review", "--reclaim-target", "10GiB"}, 10 << 30},
+		{[]string{"review", "--reclaim-target", "1TiB"}, 1 << 40},
+	} {
+		opts, err := Parse(tc.args)
+		if err != nil || !opts.HasReclaimTarget || opts.ReclaimTarget != tc.want {
+			t.Fatalf("Parse(%v) options=%+v err=%v", tc.args, opts, err)
+		}
+	}
+	for _, args := range [][]string{
+		{"review", "--reclaim-target", "0"}, {"review", "--reclaim-target", "+1"},
+		{"review", "--reclaim-target", "-1"}, {"review", "--reclaim-target", "1.5GiB"},
+		{"review", "--reclaim-target", "1GB"}, {"review", "--reclaim-target", "999999999999999999999TiB"},
+		{"review", "--reclaim-target", "1", "--select", "/worktree"},
+	} {
+		if _, err := Parse(args); err == nil || !IsUsageError(err) {
+			t.Fatalf("Parse(%v) err=%v, want usage error", args, err)
+		}
+	}
+}
+
+func TestReclaimTargetOptionHelpersAndParseEdges(t *testing.T) {
+	option := reclaimTargetOption{}
+	if option.String() != "" {
+		t.Fatalf("unset String=%q", option.String())
+	}
+	if err := option.Set("2KiB"); err != nil || option.String() != "2048" {
+		t.Fatalf("option=%+v err=%v", option, err)
+	}
+	for _, input := range []string{"", "KiB", "9000000TiB"} {
+		if _, err := parseReclaimTarget(input); err == nil {
+			t.Fatalf("parseReclaimTarget(%q) accepted invalid value", input)
+		}
+	}
+	if _, err := Parse([]string{"review", ""}); err == nil || !IsUsageError(err) {
+		t.Fatalf("empty root error=%v", err)
+	}
+}
+
 func TestParseReviewClassifications(t *testing.T) {
 	valid := []string{"safe_to_remove", "merged_but_dirty", "unmerged", "stale_orphaned", "kept", "error"}
 	args := []string{"review"}
