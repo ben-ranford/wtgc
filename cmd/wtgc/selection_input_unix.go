@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"sync"
 	"syscall"
 	"time"
@@ -94,7 +95,24 @@ func openResolvedTerminalSelectionInput(supplied *os.File, path string) (io.Read
 }
 
 var openOwnedSelectionTerminal = func(path string) (*os.File, error) {
-	return os.OpenFile(path, os.O_RDONLY|syscall.O_NOCTTY|syscall.O_NONBLOCK, 0)
+	name, err := selectionTerminalName(path)
+	if err != nil {
+		return nil, err
+	}
+	root, err := os.OpenRoot("/dev")
+	if err != nil {
+		return nil, err
+	}
+	defer root.Close()
+	return root.OpenFile(name, os.O_RDONLY|syscall.O_NOCTTY|syscall.O_NONBLOCK, 0)
+}
+
+func selectionTerminalName(path string) (string, error) {
+	name, err := filepath.Rel("/dev", path)
+	if err != nil || !filepath.IsAbs(path) || name == "." || !filepath.IsLocal(name) {
+		return "", fmt.Errorf("resolved selection terminal is outside /dev")
+	}
+	return name, nil
 }
 
 func sameTerminal(supplied, reopened *os.File) error {

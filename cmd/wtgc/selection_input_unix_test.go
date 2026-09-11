@@ -21,6 +21,7 @@ import (
 )
 
 const terminalFlagsProbe = "WTGC_SELECTION_TERMINAL_FLAGS_PROBE"
+const terminalNoControllingProbe = "WTGC_SELECTION_TERMINAL_NO_CONTROLLING_PROBE"
 
 func TestSelectionInputRestoresOriginalMode(t *testing.T) {
 	defer goleak.VerifyNone(t, goleak.IgnoreCurrent())
@@ -97,6 +98,59 @@ func TestTerminalSelectionInputPreservesInheritedFlags(t *testing.T) {
 	output, err := exec.Command("script", args...).CombinedOutput()
 	if err != nil {
 		t.Fatalf("PTY flags probe: %v output=%q", err, output)
+	}
+}
+
+func TestTerminalSelectionInputWorksWithoutControllingTerminal(t *testing.T) {
+	switch os.Getenv(terminalNoControllingProbe) {
+	case "child":
+		if terminal, err := os.Open("/dev/tty"); err == nil {
+			terminal.Close()
+			t.Fatal("child unexpectedly acquired a controlling terminal")
+		}
+		reader, release, err := prepareSelectionInput(os.Stdin)
+		if err != nil {
+			t.Fatal(err)
+		}
+		owned, ok := reader.(*terminalSelectionInput)
+		if !ok {
+			t.Fatalf("prepared terminal input type=%T", reader)
+		}
+		if err := sameTerminal(os.Stdin, owned.file); err != nil {
+			t.Fatalf("prepared input did not reopen supplied terminal: %v", err)
+		}
+		if err := release(); err != nil {
+			t.Fatal(err)
+		}
+		return
+	case "parent":
+		command := exec.Command(os.Args[0], "-test.run=^TestTerminalSelectionInputWorksWithoutControllingTerminal$")
+		command.Env = append(os.Environ(), terminalNoControllingProbe+"=child")
+		command.Stdin = os.Stdin
+		command.Stdout = os.Stdout
+		command.Stderr = os.Stderr
+		command.SysProcAttr = &syscall.SysProcAttr{Setsid: true}
+		if err := command.Run(); err != nil {
+			t.Fatal(err)
+		}
+		return
+	}
+	if _, err := exec.LookPath("script"); err != nil {
+		t.Skip("script is unavailable; no native PTY launcher")
+	}
+	args := []string{"-test.run=^TestTerminalSelectionInputWorksWithoutControllingTerminal$"}
+	if runtime.GOOS == "darwin" {
+		args = append([]string{"-q", "/dev/null", "env", terminalNoControllingProbe + "=parent", os.Args[0]}, args...)
+	} else {
+		command := "env " + terminalNoControllingProbe + "=parent " + quoteSelectionProbe(os.Args[0])
+		for _, arg := range args {
+			command += " " + quoteSelectionProbe(arg)
+		}
+		args = []string{"-q", "-e", "-c", command, "/dev/null"}
+	}
+	output, err := exec.Command("script", args...).CombinedOutput()
+	if err != nil {
+		t.Fatalf("PTY no-controlling-terminal probe: %v output=%q", err, output)
 	}
 }
 
@@ -334,6 +388,79 @@ func TestOpenResolvedTerminalSelectionInputRejectsIdentityMismatch(t *testing.T)
 	}
 }
 
+func TestOpenResolvedTerminalSelectionInputReturnsOpenFailure(t *testing.T) {
+	supplied, err := os.CreateTemp(t.TempDir(), "supplied")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer supplied.Close()
+	originalOpen := openOwnedSelectionTerminal
+	t.Cleanup(func() { openOwnedSelectionTerminal = originalOpen })
+	want := errors.New("open owned terminal")
+	openOwnedSelectionTerminal = func(string) (*os.File, error) { return nil, want }
+	if _, _, err := openResolvedTerminalSelectionInput(supplied, supplied.Name()); !errors.Is(err, want) {
+		t.Fatalf("open failure err=%v want %v", err, want)
+	}
+}
+
+func TestOpenOwnedSelectionTerminalUsesDeviceRoot(t *testing.T) {
+	terminal, err := openOwnedSelectionTerminal(os.DevNull)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if terminal == nil {
+		t.Fatal("root opener returned nil terminal")
+	}
+	if err := terminal.Close(); err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{"relative", "/etc/passwd"} {
+		if _, err := openOwnedSelectionTerminal(path); err == nil {
+			t.Fatalf("root opener accepted unsafe path %q", path)
+		}
+	}
+	if _, err := openOwnedSelectionTerminal("/dev/wtgc-terminal-does-not-exist"); err == nil {
+		t.Fatal("root opener accepted unavailable terminal")
+	}
+}
+
+func TestSameTerminalRejectsClosedDescriptors(t *testing.T) {
+	file, err := os.CreateTemp(t.TempDir(), "closed")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := sameTerminal(file, file); err == nil {
+		t.Fatal("closed supplied terminal accepted")
+	}
+	open, err := os.CreateTemp(t.TempDir(), "open")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer open.Close()
+	if err := sameTerminal(open, file); err == nil {
+		t.Fatal("closed reopened terminal accepted")
+	}
+}
+
+func TestTerminalPathAndOpenerRejectClosedSuppliedDescriptor(t *testing.T) {
+	file, err := os.CreateTemp(t.TempDir(), "closed")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := terminalPath(file); err == nil {
+		t.Fatal("closed descriptor path resolved")
+	}
+	if _, _, err := openTerminalSelectionInput(file); err == nil {
+		t.Fatal("closed descriptor opened as terminal")
+	}
+}
+
 func TestTerminalPathResolvesSuppliedDescriptor(t *testing.T) {
 	supplied, err := os.CreateTemp(t.TempDir(), "supplied")
 	if err != nil {
@@ -351,6 +478,26 @@ func TestTerminalPathResolvesSuppliedDescriptor(t *testing.T) {
 	defer reopened.Close()
 	if err := sameTerminal(supplied, reopened); err != nil {
 		t.Fatalf("resolved path did not reopen supplied descriptor: %v", err)
+	}
+}
+
+func TestSelectionTerminalNameRestrictsDeviceRoot(t *testing.T) {
+	for _, test := range []struct {
+		path string
+		want string
+	}{
+		{path: "/dev/tty", want: "tty"},
+		{path: "/dev/pts/42", want: "pts/42"},
+	} {
+		got, err := selectionTerminalName(test.path)
+		if err != nil || got != test.want {
+			t.Fatalf("selectionTerminalName(%q) = %q, %v; want %q, nil", test.path, got, err, test.want)
+		}
+	}
+	for _, path := range []string{"", "tty", "/dev", "/dev/../etc/passwd", "/etc/passwd"} {
+		if _, err := selectionTerminalName(path); err == nil {
+			t.Fatalf("unsafe terminal path accepted: %q", path)
+		}
 	}
 }
 
