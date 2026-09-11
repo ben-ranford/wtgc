@@ -106,6 +106,48 @@ func TestCompareIdenticalUnknownSizeIsUnchanged(t *testing.T) {
 	}
 }
 
+func TestCompareLegacyPositiveMeasurementsSurviveUnrelatedErrors(t *testing.T) {
+	when := time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC)
+	beforeRow := row("/measured", 10)
+	beforeRow.Error = "default branch unavailable"
+	afterRow := row("/measured", 17)
+	afterRow.Error = "retention check unavailable"
+	before, err := Load(fixture(t, when, []model.Worktree{beforeRow}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	after, err := Load(fixture(t, when.Add(time.Hour), []model.Worktree{afterRow}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	compared := Compare(before, after)
+	if compared.Rows[0].ByteDelta == nil || *compared.Rows[0].ByteDelta != 7 {
+		t.Fatalf("legacy measurement=%+v", compared.Rows[0])
+	}
+}
+
+func TestCompareEmptyRowsEncodeAsArray(t *testing.T) {
+	when := time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC)
+	before, err := Load(fixture(t, when, nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	after, err := Load(fixture(t, when, nil))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var encoded struct {
+		Rows json.RawMessage `json:"rows"`
+	}
+	var output bytes.Buffer
+	if err := Write(&output, Compare(before, after), true); err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(output.Bytes(), &encoded); err != nil || string(encoded.Rows) != "[]" {
+		t.Fatalf("rows=%s err=%v", encoded.Rows, err)
+	}
+}
+
 func TestLoadRejectsMalformedTrailingDuplicateAndWrongSchema(t *testing.T) {
 	dir := t.TempDir()
 	for name, content := range map[string]string{
@@ -305,6 +347,56 @@ func TestValidationHelpersCoverRejectedContracts(t *testing.T) {
 	}
 }
 
+func TestSnapshotValidatesRootsAndOptionalMetadata(t *testing.T) {
+	source := "fixture"
+	valid := map[string]json.RawMessage{"schema_version": json.RawMessage(`"1.1.0"`), "generated_at": json.RawMessage(`"2026-09-01T00:00:00Z"`), "dry_run": json.RawMessage(`true`), "roots": json.RawMessage(`["/root"]`), "worktrees": json.RawMessage(`[]`), "summary": json.RawMessage(`{"repositories":0,"scanned":0,"safe":0,"removed":0,"skipped":0,"pruned":0,"potential_bytes":0,"reclaimed_bytes":0,"duration_ns":0}`)}
+	badRoots := mapsClone(valid)
+	badRoots["roots"] = json.RawMessage(`[null]`)
+	if _, err := snapshotFromRaw(badRoots, source); err == nil {
+		t.Fatal("null root accepted")
+	}
+	withExtensions := mapsClone(valid)
+	withExtensions["host"] = json.RawMessage(`"host-a"`)
+	withExtensions["retention_policy"] = json.RawMessage(`"72h"`)
+	withExtensions["provider_policy"] = json.RawMessage(`"github"`)
+	snapshot, err := snapshotFromRaw(withExtensions, source)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if warnings := comparisonWarnings(snapshot, snapshot); !strings.Contains(strings.Join(warnings, "\n"), "snapshot schema does not record host") || !strings.Contains(strings.Join(warnings, "\n"), "snapshot schema does not record retention policy") || !strings.Contains(strings.Join(warnings, "\n"), "snapshot schema does not record provider policy") {
+		t.Fatalf("warnings=%v", warnings)
+	}
+	wrongTypes := mapsClone(valid)
+	wrongTypes["host"] = json.RawMessage(`{}`)
+	wrongTypes["retention_policy"] = json.RawMessage(`42`)
+	wrongTypes["provider_policy"] = json.RawMessage(`false`)
+	wrongTypeSnapshot, err := snapshotFromRaw(wrongTypes, source)
+	if err != nil || !strings.Contains(strings.Join(wrongTypeSnapshot.Warnings, "\n"), "snapshot schema does not record host") {
+		t.Fatalf("snapshot=%+v err=%v", wrongTypeSnapshot, err)
+	}
+}
+
+func TestCompareEmptyRootsRemainArrayInJSON(t *testing.T) {
+	when := time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC)
+	before, err := snapshotFromRaw(map[string]json.RawMessage{"schema_version": json.RawMessage(`"1.1.0"`), "generated_at": json.RawMessage(`"2026-09-01T00:00:00Z"`), "dry_run": json.RawMessage(`true`), "roots": json.RawMessage(`[]`), "worktrees": json.RawMessage(`[]`), "summary": json.RawMessage(`{"repositories":0,"scanned":0,"safe":0,"removed":0,"skipped":0,"pruned":0,"potential_bytes":0,"reclaimed_bytes":0,"duration_ns":0}`)}, "fixture")
+	if err != nil {
+		t.Fatal(err)
+	}
+	before.Inventory.GeneratedAt = when
+	var output struct {
+		Before struct {
+			Roots json.RawMessage `json:"roots"`
+		} `json:"before"`
+	}
+	var encoded bytes.Buffer
+	if err := Write(&encoded, Compare(before, before), true); err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(encoded.Bytes(), &output); err != nil || string(output.Before.Roots) != "[]" {
+		t.Fatalf("roots=%s err=%v", output.Before.Roots, err)
+	}
+}
+
 func TestComparisonHelpersCoverWarningsAndRows(t *testing.T) {
 	before := Snapshot{Inventory: model.Inventory{Roots: []string{"/before"}, GeneratedAt: time.Now(), Errors: []string{"partial"}}, Warnings: []string{"before"}, Exclusions: []string{"/one"}, SizeKnown: map[string]bool{}}
 	after := Snapshot{Inventory: model.Inventory{Roots: []string{"/after"}, GeneratedAt: before.Inventory.GeneratedAt.Add(-time.Second), Errors: []string{"partial"}}, Warnings: []string{"after"}, Exclusions: []string{"/two"}, SizeKnown: map[string]bool{}}
@@ -354,6 +446,28 @@ func TestErrorPathsRemainFailClosed(t *testing.T) {
 	badMeasured["disk_bytes_measured"] = json.RawMessage(`"yes"`)
 	if _, err := validateRows([]model.Worktree{item}, []map[string]json.RawMessage{badMeasured}, "fixture"); err == nil {
 		t.Fatal("invalid measurement accepted")
+	}
+	for _, tc := range []struct {
+		name     string
+		item     model.Worktree
+		raw      map[string]json.RawMessage
+		measured bool
+	}{
+		{name: "ordinary zero", item: row("/zero", 0), raw: validRow, measured: true},
+		{name: "zero with error", item: model.Worktree{Repository: "/repo", Path: "/item", Classification: model.Kept, Reason: "retained", Action: model.ActionKept, Error: "failed"}, raw: validRow, measured: false},
+		{name: "prunable zero", item: model.Worktree{Repository: "/repo", Path: "/item", Classification: model.Prunable, Reason: "stale", Action: model.ActionPruned, Prunable: true}, raw: map[string]json.RawMessage{"repository": json.RawMessage(`"/repo"`), "path": json.RawMessage(`"/item"`), "disk_bytes": json.RawMessage(`0`), "classification": json.RawMessage(`"stale_orphaned"`), "reason": json.RawMessage(`"stale"`), "action": json.RawMessage(`"pruned"`), "reclaimed_bytes": json.RawMessage(`0`)}, measured: false},
+		{name: "explicit false", item: item, raw: func() map[string]json.RawMessage {
+			raw := mapsClone(validRow)
+			raw["disk_bytes_measured"] = json.RawMessage(`false`)
+			return raw
+		}(), measured: false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			known, err := validateRows([]model.Worktree{tc.item}, []map[string]json.RawMessage{tc.raw}, "fixture")
+			if err != nil || known[tc.item.Repository+"\x00"+tc.item.Path] != tc.measured {
+				t.Fatalf("known=%v err=%v", known, err)
+			}
+		})
 	}
 	for _, broken := range []model.Worktree{{Repository: "/repo", Path: "/item", DiskBytes: -1, Classification: model.Kept, Reason: "retained", Action: model.ActionKept}, {Repository: "/repo", Path: "/item", Classification: "unknown", Reason: "retained", Action: model.ActionKept}, {Repository: "/repo", Path: "/item", Classification: model.Kept, Reason: "retained", Action: "unknown"}} {
 		if err := validateRow(broken, validRow, "fixture", 0); err == nil {

@@ -176,6 +176,9 @@ func snapshotFromRaw(invRaw map[string]json.RawMessage, source string) (Snapshot
 	if inv.GeneratedAt.IsZero() {
 		return Snapshot{}, fmt.Errorf("parse %q: generated_at is required", source)
 	}
+	if _, err := stringArray(invRaw["roots"], "roots", source); err != nil {
+		return Snapshot{}, err
+	}
 	var rawRows []map[string]json.RawMessage
 	if err := json.Unmarshal(invRaw["worktrees"], &rawRows); err != nil {
 		return Snapshot{}, fmt.Errorf("parse %q: worktrees: %v", source, err)
@@ -206,7 +209,7 @@ func validateRows(rows []model.Worktree, rawRows []map[string]json.RawMessage, s
 			return nil, fmt.Errorf("parse %q: duplicate repository/path identity", source)
 		}
 		seen[key] = struct{}{}
-		measured := item.Error == ""
+		measured := !item.Prunable && (item.Error == "" || item.DiskBytes > 0)
 		if rawMeasured, ok := rawRows[i]["disk_bytes_measured"]; ok {
 			if isNull(rawMeasured) || json.Unmarshal(rawMeasured, &measured) != nil {
 				return nil, fmt.Errorf("parse %q: worktree %d disk_bytes_measured must be boolean", source, i)
@@ -296,9 +299,7 @@ func knownAction(value model.Action) bool {
 func metadataWarnings(raw map[string]json.RawMessage, roots []string) []string {
 	var warnings []string
 	for _, key := range []string{"host", "retention_policy", "provider_policy"} {
-		if value, ok := raw[key]; !ok || isNull(value) {
-			warnings = append(warnings, "snapshot does not record "+strings.ReplaceAll(key, "_", " "))
-		}
+		warnings = append(warnings, "snapshot schema does not record "+strings.ReplaceAll(key, "_", " "))
 	}
 	if len(roots) == 0 {
 		warnings = append(warnings, "snapshot records an empty scan scope")
@@ -312,7 +313,7 @@ func metadataWarnings(raw map[string]json.RawMessage, roots []string) []string {
 // Compare matches literal repository/path identities. It never treats an
 // absent row as deletion or reclaimed disk space.
 func Compare(before, after Snapshot) Document {
-	doc := Document{SchemaVersion: SchemaVersion, Before: provenance(before.Inventory), After: provenance(after.Inventory)}
+	doc := Document{SchemaVersion: SchemaVersion, Before: provenance(before.Inventory), After: provenance(after.Inventory), Rows: make([]Row, 0)}
 	doc.Warnings = comparisonWarnings(before, after)
 	oldRows := index(before.Inventory.Worktrees)
 	newRows := index(after.Inventory.Worktrees)
@@ -391,7 +392,7 @@ func increment(summary *Summary, status string) {
 }
 
 func provenance(inv model.Inventory) Provenance {
-	return Provenance{SchemaVersion: inv.SchemaVersion, GeneratedAt: inv.GeneratedAt, Roots: append([]string(nil), inv.Roots...), Errors: append([]string(nil), inv.Errors...)}
+	return Provenance{SchemaVersion: inv.SchemaVersion, GeneratedAt: inv.GeneratedAt, Roots: append([]string{}, inv.Roots...), Errors: append([]string(nil), inv.Errors...)}
 }
 func index(rows []model.Worktree) map[string]model.Worktree {
 	result := make(map[string]model.Worktree, len(rows))
