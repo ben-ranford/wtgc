@@ -17,6 +17,7 @@ const (
 	CommandClean   = "clean"
 	CommandReview  = "review"
 	CommandExplain = "explain"
+	CommandDiff    = "diff"
 )
 
 // Options is the stable command contract consumed by the application layer.
@@ -44,6 +45,8 @@ type Options struct {
 	ExcludePaths     []string
 	ReclaimTarget    int64
 	HasReclaimTarget bool
+	BeforePath       string
+	AfterPath        string
 }
 
 // UsageError reports input that should be shown with command usage and a
@@ -98,11 +101,14 @@ func Parse(args []string) (Options, error) {
 		return opts, nil
 	}
 
-	if len(args) > 0 && (args[0] == CommandClean || args[0] == CommandReview || args[0] == CommandExplain) {
+	if len(args) > 0 && (args[0] == CommandClean || args[0] == CommandReview || args[0] == CommandExplain || args[0] == CommandDiff) {
 		opts.Command = args[0]
 		args = args[1:]
 	} else if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
 		return Options{}, &UsageError{Message: fmt.Sprintf("unknown command %q", args[0])}
+	}
+	if opts.Command == CommandDiff {
+		args = normalizeDiffJSONFlag(args)
 	}
 
 	var roots, repositories, classifications, selectedPaths, excludePaths stringList
@@ -155,6 +161,16 @@ func Parse(args []string) (Options, error) {
 	}
 
 	if opts.Help || opts.Version {
+		return opts, nil
+	}
+	if opts.Command == CommandDiff {
+		if opts.Yes || opts.Interactive || opts.DeleteBranch || opts.Provider != "" || opts.ProviderRemote != "" || dryRun.set || len(roots) != 0 || len(selectedPaths) != 0 {
+			return Options{}, &UsageError{Message: "diff only accepts BEFORE AFTER and optional --json"}
+		}
+		if len(fs.Args()) != 2 {
+			return Options{}, &UsageError{Message: "diff requires exactly BEFORE and AFTER inventory files"}
+		}
+		opts.BeforePath, opts.AfterPath = fs.Arg(0), fs.Arg(1)
 		return opts, nil
 	}
 
@@ -279,6 +295,25 @@ func parseReclaimTarget(value string) (int64, error) {
 	return result * multiplier, nil
 }
 
+// normalizeDiffJSONFlag accepts the documented optional diff flag before or
+// after its two input paths without changing flag parsing for other commands.
+func normalizeDiffJSONFlag(args []string) []string {
+	flags := make([]string, 0, 2)
+	other := make([]string, 0, len(args))
+	for index, argument := range args {
+		if argument == "--" {
+			other = append(other, args[index:]...)
+			break
+		}
+		if argument == "--json" || argument == "--json=true" || argument == "--json=false" {
+			flags = append(flags, argument)
+			continue
+		}
+		other = append(other, argument)
+	}
+	return append(flags, other...)
+}
+
 func isReviewClassification(value string) bool {
 	switch model.Classification(value) {
 	case model.SafeToRemove, model.MergedButDirty, model.Unmerged, model.Prunable, model.Kept, model.Error:
@@ -395,12 +430,14 @@ func WriteUsage(w io.Writer, name string) {
   %[1]s clean [flags] [roots...]
   %[1]s review [flags] [roots...]
   %[1]s explain [flags] PATH
+  %[1]s diff [--json] BEFORE AFTER
   %[1]s [flags] [roots...]      scan when a flag is supplied
 
 Commands:
   clean              scan registered git worktrees and clean safe candidates
   review             scan and display a read-only inventory view
   explain            explain one worktree with read-only evidence
+  diff               compare two saved inventory or review JSON reports offline
 
 Flags:
   --scan-root DIR    root directory to scan; repeatable

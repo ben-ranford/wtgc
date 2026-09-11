@@ -45,6 +45,39 @@ func TestParseRepeatableExclusions(t *testing.T) {
 	}
 }
 
+func TestParseDiffAcceptsOnlyTwoFilesAndJSON(t *testing.T) {
+	for _, args := range [][]string{{"diff", "--json", "before.json", "after.json"}, {"diff", "before.json", "after.json", "--json"}} {
+		opts, err := Parse(args)
+		if err != nil || opts.Command != CommandDiff || !opts.JSON || opts.BeforePath != "before.json" || opts.AfterPath != "after.json" {
+			t.Fatalf("args=%v opts=%+v err=%v", args, opts, err)
+		}
+	}
+	for _, args := range [][]string{{"diff"}, {"diff", "one"}, {"diff", "one", "two", "three"}, {"diff", "--yes", "one", "two"}, {"diff", "--scan-root", "/tmp", "one", "two"}, {"diff", "--select", "/tmp/wt", "one", "two"}, {"diff", "--provider", "github", "one", "two"}, {"diff", "--dry-run", "one", "two"}} {
+		if _, err := Parse(args); err == nil || !IsUsageError(err) {
+			t.Fatalf("Parse(%v) error=%v", args, err)
+		}
+	}
+}
+
+func TestParseDiffPreservesDelimiterAndJSONFlagOrder(t *testing.T) {
+	options, err := Parse([]string{"diff", "--", "--json", "after.json"})
+	if err != nil || options.JSON || options.BeforePath != "--json" || options.AfterPath != "after.json" {
+		t.Fatalf("delimiter options=%+v err=%v", options, err)
+	}
+	for _, tc := range []struct {
+		args []string
+		json bool
+	}{
+		{[]string{"diff", "before.json", "after.json", "--json=false", "--json"}, true},
+		{[]string{"diff", "before.json", "after.json", "--json", "--json=false"}, false},
+	} {
+		options, err := Parse(tc.args)
+		if err != nil || options.JSON != tc.json || options.BeforePath != "before.json" || options.AfterPath != "after.json" {
+			t.Fatalf("args=%v options=%+v err=%v", tc.args, options, err)
+		}
+	}
+}
+
 func TestParseReviewFlagsAndReadOnlyContract(t *testing.T) {
 	opts, err := Parse([]string{"review", "--repository", "/repo", "--repository", "/other", "--classification", "kept", "--classification", "error", "--group-by", "repository", "--sort-by", "size", "--select", "/repo/wt", "/scan"})
 	if err != nil {
@@ -265,7 +298,7 @@ func TestUsageMentionsCoreFlags(t *testing.T) {
 	WriteUsage(&b, "wtgc")
 	out := b.String()
 
-	for _, want := range []string{"Usage:", "show help", "clean [flags] [roots...]", "review [flags] [roots...]", "scan when a flag is supplied", "--scan-root", "--exclude PATH", "for this invocation; repeatable", "--dry-run", "--yes", "--interactive", "--delete-branch", "--json", "--repository", "--classification", "--group-by", "--sort-by", "--select", "--version"} {
+	for _, want := range []string{"Usage:", "show help", "clean [flags] [roots...]", "review [flags] [roots...]", "explain [flags] PATH", "diff [--json] BEFORE AFTER", "scan when a flag is supplied", "--scan-root", "--exclude PATH", "for this invocation; repeatable", "--dry-run", "--yes", "--interactive", "--delete-branch", "--json", "--repository", "--classification", "--group-by", "--sort-by", "--select", "--version"} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("usage missing %q:\n%s", want, out)
 		}
