@@ -495,6 +495,9 @@ func changes(before, after model.Worktree, beforeKnown, afterKnown bool) ([]stri
 	if before.Reason != after.Reason {
 		result = append(result, "reason")
 	}
+	if before.Error != after.Error {
+		result = append(result, "error")
+	}
 	if before.Action != after.Action {
 		result = append(result, "action")
 	}

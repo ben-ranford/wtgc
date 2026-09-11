@@ -106,6 +106,30 @@ func TestCompareIdenticalUnknownSizeIsUnchanged(t *testing.T) {
 	}
 }
 
+func TestCompareReportsErrorsOnlyTransition(t *testing.T) {
+	when := time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC)
+	beforeRow := row("/prunable", 0)
+	beforeRow.Classification = model.Prunable
+	beforeRow.Reason = "stale registration"
+	beforeRow.Action = model.ActionPruned
+	beforeRow.Prunable = true
+	beforeRow.Error = "first operational failure"
+	afterRow := beforeRow
+	afterRow.Error = "second operational failure"
+	before, err := Load(fixture(t, when, []model.Worktree{beforeRow}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	after, err := Load(fixture(t, when.Add(time.Hour), []model.Worktree{afterRow}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	compared := Compare(before, after)
+	if compared.Rows[0].Status != "changed" || strings.Join(compared.Rows[0].Changes, ",") != "error" {
+		t.Fatalf("row=%+v", compared.Rows[0])
+	}
+}
+
 func TestCompareLegacyPositiveMeasurementsSurviveUnrelatedErrors(t *testing.T) {
 	when := time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC)
 	beforeRow := row("/measured", 10)
