@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math/big"
 	"strconv"
 	"strings"
 	"text/tabwriter"
@@ -123,11 +124,11 @@ func writeReclaimProposal(w io.Writer, proposal *review.Proposal) {
 		return
 	}
 	fmt.Fprintln(w, "Reclaim proposal (advisory only; not cleanup authorization):")
-	fmt.Fprintf(w, "  target: %s\n  target met: %t\n  proposed: %d worktree(s)\n  estimated total: %s\n", ByteString(proposal.TargetBytes), proposal.TargetMet, len(proposal.Candidates), byteStringUint64(proposal.EstimatedBytes))
+	fmt.Fprintf(w, "  target: %s\n  target met: %t\n  proposed: %d worktree(s)\n  estimated total: %s\n", ByteString(proposal.TargetBytes), proposal.TargetMet, len(proposal.Candidates), byteStringBig(proposal.EstimatedBytes))
 	if proposal.TargetMet {
-		fmt.Fprintf(w, "  estimated excess: %s\n", byteStringUint64(proposal.ExcessBytes))
+		fmt.Fprintf(w, "  estimated excess: %s\n", byteStringBig(proposal.ExcessBytes))
 	} else {
-		fmt.Fprintf(w, "  estimated shortfall: %s\n", byteStringUint64(proposal.ShortfallBytes))
+		fmt.Fprintf(w, "  estimated shortfall: %s\n", byteStringBig(proposal.ShortfallBytes))
 	}
 	fmt.Fprintln(w, "  candidates:")
 	for _, candidate := range proposal.Candidates {
@@ -323,9 +324,12 @@ func ByteString(n int64) string {
 	return fmt.Sprintf("%.1f EiB", value/1024)
 }
 
-func byteStringUint64(n uint64) string {
-	if n <= uint64(^uint64(0)>>1) {
-		return ByteString(int64(n))
+func byteStringBig(n *big.Int) string {
+	if n == nil {
+		return "0 B"
 	}
-	return fmt.Sprintf("%d B", n)
+	if n.IsInt64() {
+		return ByteString(n.Int64())
+	}
+	return n.String() + " B"
 }

@@ -3,6 +3,7 @@ package review
 
 import (
 	"fmt"
+	"math/big"
 	"sort"
 
 	"github.com/ben-ranford/wtgc/internal/model"
@@ -35,9 +36,9 @@ type Proposal struct {
 	Advisory       bool        `json:"advisory"`
 	TargetBytes    int64       `json:"target_bytes"`
 	TargetMet      bool        `json:"target_met"`
-	EstimatedBytes uint64      `json:"estimated_bytes"`
-	ExcessBytes    uint64      `json:"excess_bytes"`
-	ShortfallBytes uint64      `json:"shortfall_bytes"`
+	EstimatedBytes *big.Int    `json:"estimated_bytes"`
+	ExcessBytes    *big.Int    `json:"excess_bytes"`
+	ShortfallBytes *big.Int    `json:"shortfall_bytes"`
 	Candidates     []Candidate `json:"candidates"`
 	SelectionRule  string      `json:"selection_rule"`
 	Authorization  string      `json:"authorization"`
@@ -117,9 +118,10 @@ func Build(inv model.Inventory, opts Options) (Document, error) {
 func buildProposal(inv model.Inventory, opts Options) *Proposal {
 	proposal := &Proposal{
 		SchemaVersion: "1.0.0", Advisory: true, TargetBytes: opts.ReclaimTarget,
-		Candidates:    []Candidate{},
-		SelectionRule: "shortest descending-size prefix; minimizes candidate count under estimates, not excess bytes or user disruption",
-		Authorization: "advisory only; cleanup requires explicit paths and fresh validation",
+		Candidates:     []Candidate{},
+		SelectionRule:  "shortest descending-size prefix; minimizes candidate count under estimates, not excess bytes or user disruption",
+		Authorization:  "advisory only; cleanup requires explicit paths and fresh validation",
+		EstimatedBytes: big.NewInt(0), ExcessBytes: big.NewInt(0), ShortfallBytes: big.NewInt(0),
 	}
 	eligible := make([]model.Worktree, 0, len(inv.Worktrees))
 	unknown := 0
@@ -140,22 +142,19 @@ func buildProposal(inv model.Inventory, opts Options) *Proposal {
 		left, right := proposalIdentity(eligible[i]), proposalIdentity(eligible[j])
 		return left < right
 	})
-	target := uint64(opts.ReclaimTarget)
+	target := big.NewInt(opts.ReclaimTarget)
 	for _, worktree := range eligible {
-		if proposal.EstimatedBytes >= target {
+		if proposal.EstimatedBytes.Cmp(target) >= 0 {
 			break
 		}
-		bytes := uint64(worktree.DiskBytes)
-		// The loop stops at an int64 target. Before this addition the total is
-		// below that target, so adding one positive int64 candidate fits uint64.
 		proposal.Candidates = append(proposal.Candidates, Candidate{Repository: worktree.Repository, Path: worktree.Path, Bytes: worktree.DiskBytes})
-		proposal.EstimatedBytes += bytes
+		proposal.EstimatedBytes.Add(proposal.EstimatedBytes, big.NewInt(worktree.DiskBytes))
 	}
-	proposal.TargetMet = proposal.EstimatedBytes >= target
+	proposal.TargetMet = proposal.EstimatedBytes.Cmp(target) >= 0
 	if proposal.TargetMet {
-		proposal.ExcessBytes = proposal.EstimatedBytes - target
+		proposal.ExcessBytes.Sub(proposal.EstimatedBytes, target)
 	} else {
-		proposal.ShortfallBytes = target - proposal.EstimatedBytes
+		proposal.ShortfallBytes.Sub(target, proposal.EstimatedBytes)
 	}
 	if len(inv.Errors) > 0 {
 		proposal.Uncertainties = append(proposal.Uncertainties, fmt.Sprintf("inventory has %d scan error(s); unobserved worktrees are not proposed", len(inv.Errors)))

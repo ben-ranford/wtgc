@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io"
 	"math"
+	"math/big"
 	"strings"
 	"testing"
 	"time"
@@ -161,7 +162,7 @@ func TestWriteReviewRendersAdvisoryReclaimProposal(t *testing.T) {
 }
 
 func TestWriteReviewRendersMetProposalAndLargeTotals(t *testing.T) {
-	proposal := &review.Proposal{SchemaVersion: "1.0.0", Advisory: true, TargetBytes: 1, TargetMet: true, EstimatedBytes: uint64(math.MaxInt64) + 1, ExcessBytes: uint64(math.MaxInt64), Candidates: []review.Candidate{}, SelectionRule: "count", Authorization: "fresh validation"}
+	proposal := &review.Proposal{SchemaVersion: "1.0.0", Advisory: true, TargetBytes: 1, TargetMet: true, EstimatedBytes: new(big.Int).Add(big.NewInt(math.MaxInt64), big.NewInt(1)), ExcessBytes: big.NewInt(math.MaxInt64), ShortfallBytes: big.NewInt(0), Candidates: []review.Candidate{}, SelectionRule: "count", Authorization: "fresh validation"}
 	var output bytes.Buffer
 	if err := WriteReview(&output, review.Document{View: review.View{Groups: []review.Group{}}, Proposal: proposal}, FormatHuman); err != nil {
 		t.Fatal(err)

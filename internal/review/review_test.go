@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
+	"math/big"
 	"strings"
 	"testing"
 
@@ -132,7 +133,7 @@ func TestBuildReclaimProposalSelectsDeterministicShortestPrefix(t *testing.T) {
 		t.Fatal(err)
 	}
 	p := doc.Proposal
-	if p == nil || !p.TargetMet || p.EstimatedBytes != 40 || p.ExcessBytes != 10 || p.ShortfallBytes != 0 || len(p.Candidates) != 2 {
+	if p == nil || !p.TargetMet || p.EstimatedBytes.Cmp(big.NewInt(40)) != 0 || p.ExcessBytes.Cmp(big.NewInt(10)) != 0 || p.ShortfallBytes.Sign() != 0 || len(p.Candidates) != 2 {
 		t.Fatalf("proposal=%+v", p)
 	}
 	if p.Candidates[0].Path != "/a" || p.Candidates[1].Path != "/b" || p.SchemaVersion != "1.0.0" || !strings.Contains(p.SelectionRule, "minimizes candidate count") {
@@ -155,7 +156,7 @@ func TestBuildReclaimProposalQualifiesUnmetAndIneligibleRows(t *testing.T) {
 		t.Fatal(err)
 	}
 	p := doc.Proposal
-	if p.TargetMet || p.EstimatedBytes != 5 || p.ShortfallBytes != 5 || len(p.Candidates) != 1 || p.Candidates[0].Path != "/eligible" {
+	if p.TargetMet || p.EstimatedBytes.Cmp(big.NewInt(5)) != 0 || p.ShortfallBytes.Cmp(big.NewInt(5)) != 0 || len(p.Candidates) != 1 || p.Candidates[0].Path != "/eligible" {
 		t.Fatalf("proposal=%+v", p)
 	}
 	joined := strings.Join(p.Uncertainties, " ")
@@ -177,7 +178,7 @@ func TestBuildReclaimProposalFiltersAndAvoidsIntegerOverflow(t *testing.T) {
 		t.Fatal(err)
 	}
 	p := doc.Proposal
-	if !p.TargetMet || len(p.Candidates) != 1 || p.Candidates[0].Path != "/second" || p.EstimatedBytes != uint64(math.MaxInt64) || p.ExcessBytes != 0 {
+	if !p.TargetMet || len(p.Candidates) != 1 || p.Candidates[0].Path != "/second" || p.EstimatedBytes.Cmp(big.NewInt(math.MaxInt64)) != 0 || p.ExcessBytes.Sign() != 0 {
 		t.Fatalf("proposal=%+v", p)
 	}
 	encoded, err := json.Marshal(BuildMust(t, inv, Options{}))
