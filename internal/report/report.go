@@ -64,6 +64,12 @@ func WriteExplain(w io.Writer, document explain.Document, format Format) error {
 	for _, next := range document.NextChecks {
 		fmt.Fprintf(&output, "  - %s\n", SafeHumanText(next))
 	}
+	if len(document.OperationalErrors) > 0 {
+		fmt.Fprintln(&output, "Operational errors:")
+		for _, errText := range document.OperationalErrors {
+			fmt.Fprintf(&output, "  - %s\n", SafeHumanText(errText))
+		}
+	}
 	if written, err := w.Write(output.Bytes()); err != nil {
 		return err
 	} else if written != output.Len() {

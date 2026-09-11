@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -267,6 +268,53 @@ func TestProviderFailureIsCategorizedWithoutLeakingError(t *testing.T) {
 	item := inv.Worktrees[0]
 	if !contains(item.Reason, "authentication failed") || contains(item.Reason, "secret-token") {
 		t.Fatalf("reason=%q", item.Reason)
+	}
+}
+
+func TestExplainProviderTraceDistinguishesNoProofFromUnavailable(t *testing.T) {
+	for _, test := range []struct {
+		name       string
+		err        error
+		wantStatus model.ExplainCheckStatus
+	}{
+		{name: "valid response without proof", err: provider.ErrNoExactProof, wantStatus: model.ExplainBlocked},
+		{name: "provider unavailable", err: provider.Unavailable(errors.New("transport failed")), wantStatus: model.ExplainUnavailable},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			backend := newFakeGit(branchRecord("feature"))
+			backend.clean = []bool{true}
+			backend.ancestor = false
+			inv, err := New(backend).Run(context.Background(), Options{Roots: []string{"/scan"}, Provider: proofProvider{err: test.err}, ExplainEvidence: true})
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, check := range inv.Worktrees[0].ExplainChecks {
+				if check.ID == "provider_proof" && check.Status == test.wantStatus {
+					return
+				}
+			}
+			t.Fatalf("checks=%+v, want provider proof %s", inv.Worktrees[0].ExplainChecks, test.wantStatus)
+		})
+	}
+}
+
+func TestFilterExplainJobsUsesOnlyTheResolvedTarget(t *testing.T) {
+	root := t.TempDir()
+	target := filepath.Join(root, "target")
+	other := filepath.Join(root, "other")
+	if err := os.Mkdir(target, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(other, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	alias := filepath.Join(root, "alias")
+	if err := os.Symlink(target, alias); err != nil {
+		t.Fatal(err)
+	}
+	jobs := filterExplainJobs([]classificationJob{{record: model.RegisteredWorktree{Path: target}}, {record: model.RegisteredWorktree{Path: other}}}, alias)
+	if len(jobs) != 1 || jobs[0].record.Path != target {
+		t.Fatalf("filtered jobs=%+v", jobs)
 	}
 }
 
@@ -1501,15 +1549,15 @@ func TestClassificationAndProviderMappingErrorsAreRetained(t *testing.T) {
 
 	backend := newFakeGit(record)
 	backend.providerUpstreams = []providerMapping{{err: errors.New("ambiguous")}}
-	_, ok, reason := New(backend).providerProof(context.Background(), repo, record, "main", proofProvider{}, "", time.Now())
-	if ok || reason != "mapping unavailable or ambiguous" {
-		t.Fatalf("provider mapping err ok=%t reason=%q", ok, reason)
+	_, ok, reason, unavailable := New(backend).providerProof(context.Background(), repo, record, "main", proofProvider{}, "", time.Now())
+	if ok || reason != "mapping unavailable or ambiguous" || !unavailable {
+		t.Fatalf("provider mapping err ok=%t reason=%q unavailable=%t", ok, reason, unavailable)
 	}
 	backend = newFakeGit(record)
 	backend.providerUpstreams = []providerMapping{{remote: "origin", branch: "feature", url: "https://example.invalid/owner/repo"}}
-	_, ok, reason = New(backend).providerProof(context.Background(), repo, record, "main", proofProvider{}, "", time.Now())
-	if ok || reason != "mapping identity is invalid" {
-		t.Fatalf("provider identity ok=%t reason=%q", ok, reason)
+	_, ok, reason, unavailable = New(backend).providerProof(context.Background(), repo, record, "main", proofProvider{}, "", time.Now())
+	if ok || reason != "mapping identity is invalid" || unavailable {
+		t.Fatalf("provider identity ok=%t reason=%q unavailable=%t", ok, reason, unavailable)
 	}
 }
 
@@ -1518,7 +1566,7 @@ func TestDefaultBranchErrorAndInteractivePrunableChoiceStaySafe(t *testing.T) {
 	backend := newFakeGit(branchRecord("feature"))
 	backend.diskErr = errors.New("disk unavailable")
 	backend.cleanErr = errors.New("status unavailable")
-	item := New(backend).classifyDefaultBranchError(context.Background(), model.Repository{PrimaryPath: "/repo"}, branchRecord("feature"), "default branch unavailable")
+	item := New(backend).classifyDefaultBranchError(context.Background(), model.Repository{PrimaryPath: "/repo"}, branchRecord("feature"), "default branch unavailable", false)
 	if item.Classification != model.Kept || !contains(item.Error, "measure disk usage") || !contains(item.Error, "inspect working tree") {
 		t.Fatalf("default branch item=%+v", item)
 	}

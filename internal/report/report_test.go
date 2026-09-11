@@ -56,9 +56,9 @@ func testInventory() model.Inventory {
 
 func TestWriteExplainFormatsProjectionAndErrors(t *testing.T) {
 	now := time.Now().UTC()
-	doc := explain.Document{ExplainSchemaVersion: "1.0.0", Worktree: explain.Worktree{Path: "/repo/hostile\n", Repository: "/repo", Head: "abc", Classification: model.Kept, Reason: "locked", Error: "inspect failed", RetentionBasis: "worktree_mtime", ObservedAt: &now, EligibleAt: &now, Provider: "github", ProviderPR: 4, ProviderURL: "https://github.com/example/pr/4"}, Checks: []model.ExplainCheck{{ID: "protection", Status: model.ExplainBlocked, Detail: "locked"}}, NextChecks: []string{"Inspect status."}}
+	doc := explain.Document{ExplainSchemaVersion: "1.0.0", Worktree: explain.Worktree{Path: "/repo/hostile\n", Repository: "/repo", Head: "abc", Classification: model.Kept, Reason: "locked", Error: "inspect failed", RetentionBasis: "worktree_mtime", ObservedAt: &now, EligibleAt: &now, Provider: "github", ProviderPR: 4, ProviderURL: "https://github.com/example/pr/4"}, Checks: []model.ExplainCheck{{ID: "protection", Status: model.ExplainBlocked, Detail: "locked"}}, NextChecks: []string{"Inspect status."}, OperationalErrors: []string{"default branch unavailable"}}
 	var human bytes.Buffer
-	if err := WriteExplain(&human, doc, FormatHuman); err != nil || !strings.Contains(human.String(), `\n`) || !strings.Contains(human.String(), "Provider proof") {
+	if err := WriteExplain(&human, doc, FormatHuman); err != nil || !strings.Contains(human.String(), `\n`) || !strings.Contains(human.String(), "Provider proof") || !strings.Contains(human.String(), "Operational errors:") {
 		t.Fatalf("err=%v output=%q", err, human.String())
 	}
 	var jsonOutput bytes.Buffer
@@ -67,6 +67,12 @@ func TestWriteExplainFormatsProjectionAndErrors(t *testing.T) {
 	}
 	if err := WriteExplain(io.Discard, doc, Format("bad")); err == nil {
 		t.Fatal("bad format accepted")
+	}
+	if err := WriteExplain(failingReportWriter{}, doc, FormatHuman); err == nil {
+		t.Fatal("WriteExplain accepted writer failure")
+	}
+	if err := WriteExplain(shortReportWriter{}, doc, FormatHuman); !errors.Is(err, io.ErrShortWrite) {
+		t.Fatalf("WriteExplain short write error=%v", err)
 	}
 }
 

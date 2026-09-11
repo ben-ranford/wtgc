@@ -228,7 +228,7 @@ type scanOptions struct {
 }
 
 func (a *App) scanRepositories(ctx context.Context, repositories []model.Repository, options scanOptions, inv *model.Inventory) {
-	jobs := a.collectClassificationJobs(ctx, repositories, options.protectedPath, inv)
+	jobs := a.collectClassificationJobs(ctx, repositories, options.protectedPath, options.explainEvidence, inv)
 	if options.explainPath != "" {
 		jobs = filterExplainJobs(jobs, options.explainPath)
 	}
@@ -257,7 +257,7 @@ func sameExplainPath(left, right string) bool {
 	return filepath.Clean(left) == filepath.Clean(right)
 }
 
-func (a *App) collectClassificationJobs(ctx context.Context, repositories []model.Repository, protectedPath string, inv *model.Inventory) []classificationJob {
+func (a *App) collectClassificationJobs(ctx context.Context, repositories []model.Repository, protectedPath string, explainEvidence bool, inv *model.Inventory) []classificationJob {
 	var jobs []classificationJob
 	for _, repo := range repositories {
 		records, err := a.git.List(ctx, repo)
@@ -269,7 +269,7 @@ func (a *App) collectClassificationJobs(ctx context.Context, repositories []mode
 		if err != nil {
 			inv.Errors = append(inv.Errors, fmt.Sprintf("%s: default branch: %v", repo.CommonDir, err))
 			for _, record := range records {
-				item := a.classifyDefaultBranchError(ctx, repo, record, fmt.Sprintf("default branch: %v", err))
+				item := a.classifyDefaultBranchError(ctx, repo, record, fmt.Sprintf("default branch: %v", err), explainEvidence)
 				inv.Worktrees = append(inv.Worktrees, item)
 				if item.Error != "" {
 					inv.Errors = append(inv.Errors, fmt.Sprintf("%s: %s: %s", repo.PrimaryPath, item.Path, item.Error))
@@ -402,9 +402,13 @@ func (a *App) classifyUnmerged(ctx context.Context, item model.Worktree, repo mo
 		item.Classification, item.Reason = model.Unmerged, "branch tip is not reachable from the local default branch"
 		return item
 	}
-	proof, ok, category := a.providerProof(ctx, repo, record, defaultBranch, options.provider, options.providerRemote, options.now)
+	proof, ok, category, unavailable := a.providerProof(ctx, repo, record, defaultBranch, options.provider, options.providerRemote, options.now)
 	if !ok {
-		traceCheck(&item, options, "provider_proof", model.ExplainBlocked, "provider confirmation "+category)
+		status := model.ExplainBlocked
+		if unavailable {
+			status = model.ExplainUnavailable
+		}
+		traceCheck(&item, options, "provider_proof", status, "provider confirmation "+category)
 		item.Classification, item.Reason = model.Unmerged, "provider confirmation "+category+"; clean worktree retained because branch tip is not reachable from the local default branch"
 		return item
 	}
@@ -428,42 +432,45 @@ func providerProofIdentity(proof provider.PullRequest) model.ProviderProof {
 	return model.ProviderProof{Kind: "github", HeadRemote: proof.HeadRemote, BaseRemote: proof.BaseRemote, Number: proof.Number, MergedAt: proof.MergedAt, MergeCommitSHA: proof.MergeCommitSHA, HeadSHA: proof.HeadSHA, HeadOwner: proof.HeadOwner, HeadRepo: proof.HeadRepo, HeadRef: proof.HeadRef, BaseOwner: proof.BaseOwner, BaseRepo: proof.BaseRepo, BaseRef: proof.BaseRef}
 }
 
-func (a *App) providerProof(ctx context.Context, repo model.Repository, record model.RegisteredWorktree, defaultBranch string, p provider.MergeFinder, selectedRemote string, now time.Time) (provider.PullRequest, bool, string) {
+func (a *App) providerProof(ctx context.Context, repo model.Repository, record model.RegisteredWorktree, defaultBranch string, p provider.MergeFinder, selectedRemote string, now time.Time) (provider.PullRequest, bool, string, bool) {
 	headRemote, headRef, headURL, err := a.git.ProviderUpstream(ctx, repo, record.Branch)
 	if err != nil {
-		return provider.PullRequest{}, false, "mapping unavailable or ambiguous"
+		return provider.PullRequest{}, false, "mapping unavailable or ambiguous", true
 	}
 	trackingRemote, baseRef, baseURL, err := a.git.ProviderDefaultTracking(ctx, repo, defaultBranch, selectedRemote)
 	if err != nil {
-		return provider.PullRequest{}, false, "mapping unavailable or ambiguous"
+		return provider.PullRequest{}, false, "mapping unavailable or ambiguous", true
 	}
 	ho, hr, ok := githubRepo(headURL)
 	if !ok || headRef == "" {
-		return provider.PullRequest{}, false, "mapping identity is invalid"
+		return provider.PullRequest{}, false, "mapping identity is invalid", false
 	}
 	bo, br, ok := githubRepo(baseURL)
 	if !ok || baseRef != defaultBranch {
-		return provider.PullRequest{}, false, "mapping identity is invalid"
+		return provider.PullRequest{}, false, "mapping identity is invalid", false
 	}
 	proof, err := p.FindMerged(ctx, provider.Query{HeadOwner: ho, HeadRepo: hr, HeadRef: headRef, HeadSHA: record.Head, BaseOwner: bo, BaseRepo: br, BaseRef: baseRef})
 	if err != nil {
-		return provider.PullRequest{}, false, providerFailureCategory(err)
+		return provider.PullRequest{}, false, providerFailureCategory(err), providerUnavailable(err)
 	}
 	if proof.Number <= 0 || proof.MergedAt.IsZero() || proof.MergedAt.After(now) || proof.HeadSHA != record.Head || !sameGitHubRepository(proof.HeadOwner, proof.HeadRepo, ho, hr) || proof.HeadRef != headRef || !sameGitHubRepository(proof.BaseOwner, proof.BaseRepo, bo, br) || proof.BaseRef != baseRef || !fullOID(proof.MergeCommitSHA) {
-		return provider.PullRequest{}, false, "proof identity is invalid"
+		return provider.PullRequest{}, false, "proof identity is invalid", false
 	}
 	proof.HeadRemote, proof.BaseRemote = headRemote, trackingRemote
 	local, err := a.git.IsAncestor(ctx, repo, proof.MergeCommitSHA, defaultBranch)
 	if err != nil || !local {
-		return provider.PullRequest{}, false, "local default reachability failed"
+		return provider.PullRequest{}, false, "local default reachability failed", true
 	}
 	remote, err := a.git.IsAncestor(ctx, repo, proof.MergeCommitSHA, "refs/remotes/"+trackingRemote+"/"+defaultBranch)
 	if err != nil || !remote {
-		return provider.PullRequest{}, false, "selected default reachability failed"
+		return provider.PullRequest{}, false, "selected default reachability failed", true
 	}
-	return proof, true, ""
+	return proof, true, "", false
 }
 func providerFailureCategory(err error) string {
+	if errors.Is(err, provider.ErrNoExactProof) {
+		return "no exact merged pull request"
+	}
 	value := strings.ToLower(err.Error())
 	switch {
 	case strings.Contains(value, "http 401") || strings.Contains(value, "http 403"):
@@ -479,6 +486,11 @@ func providerFailureCategory(err error) string {
 	default:
 		return "provider response rejected"
 	}
+}
+
+func providerUnavailable(err error) bool {
+	var unavailable *provider.UnavailableError
+	return errors.As(err, &unavailable)
 }
 func fullOID(value string) bool {
 	if len(value) != 40 && len(value) != 64 {
@@ -531,7 +543,7 @@ func keepProtectedWorktree(item model.Worktree, record model.RegisteredWorktree,
 	return item, false
 }
 
-func (a *App) classifyDefaultBranchError(ctx context.Context, repo model.Repository, record model.RegisteredWorktree, message string) model.Worktree {
+func (a *App) classifyDefaultBranchError(ctx context.Context, repo model.Repository, record model.RegisteredWorktree, message string, explainEvidence bool) model.Worktree {
 	item := model.Worktree{
 		Path:           record.Path,
 		Branch:         record.Branch,
@@ -545,19 +557,31 @@ func (a *App) classifyDefaultBranchError(ctx context.Context, repo model.Reposit
 		ReclaimedBytes: 0,
 		Error:          message,
 	}
+	options := classifyOptions{explainEvidence: explainEvidence}
+	traceCheck(&item, options, "default_branch", model.ExplainUnavailable, "default branch could not be resolved")
 	if record.Prunable {
 		item.Classification, item.Reason = model.Prunable, "worktree path is missing and Git marks its metadata prunable; repository kept because default branch could not be resolved"
+		traceCheck(&item, options, "registration", model.ExplainBlocked, "Git marks the missing registration prunable")
 		return item
 	}
+	traceCheck(&item, options, "registration", model.ExplainPassed, "Git registered a live worktree")
 	if size, err := a.git.DiskUsage(record.Path); err == nil {
 		item.DiskBytes = size
+		traceCheck(&item, options, "disk_usage", model.ExplainPassed, "disk usage was measured")
 	} else {
 		item.Error = strings.TrimSpace(item.Error + "; " + fmt.Sprintf("measure disk usage: %v", err))
+		traceCheck(&item, options, "disk_usage", model.ExplainUnavailable, "measure disk usage failed")
 	}
 	if clean, err := a.git.IsClean(ctx, record.Path); err == nil {
 		item.Dirty = boolPtr(!clean)
+		status := model.ExplainPassed
+		if !clean {
+			status = model.ExplainBlocked
+		}
+		traceCheck(&item, options, "working_tree", status, "working tree was inspected")
 	} else {
 		item.Error = strings.TrimSpace(item.Error + "; " + fmt.Sprintf("inspect working tree: %v", err))
+		traceCheck(&item, options, "working_tree", model.ExplainUnavailable, "inspect working tree failed")
 	}
 	item.Classification, item.Reason = model.Kept, "kept because default branch could not be resolved"
 	return item

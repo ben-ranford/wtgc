@@ -12,6 +12,14 @@ import (
 type roundTrip func(*http.Request) (*http.Response, error)
 
 func (r roundTrip) RoundTrip(q *http.Request) (*http.Response, error) { return r(q) }
+
+func TestUnavailableErrorPreservesCause(t *testing.T) {
+	cause := errors.New("network unavailable")
+	if !errors.Is(Unavailable(cause), cause) {
+		t.Fatal("unavailable error did not retain its cause")
+	}
+}
+
 func TestGitHubAcceptsOnlyExactIdentity(t *testing.T) {
 	c := NewGitHub(&http.Client{Transport: roundTrip(func(r *http.Request) (*http.Response, error) {
 		if r.URL.Host != "api.github.com" || r.URL.Query().Get("head") != "fork:feature" {

@@ -280,6 +280,34 @@ func TestRunExplainRejectsUnknownPath(t *testing.T) {
 	}
 }
 
+func TestExplainHelpersReportOperationalAndWriterFailures(t *testing.T) {
+	root := t.TempDir()
+	if got := explainScanRoot(filepath.Join(root, "missing", "worktree")); got != root {
+		t.Fatalf("scan root=%q, want %q", got, root)
+	}
+	if got := explainScanRoot(string(filepath.Separator)); got != string(filepath.Separator) {
+		t.Fatalf("filesystem root=%q", got)
+	}
+	options := cli.Options{ExplainPath: "/missing", Retention: time.Hour}
+	var stderr bytes.Buffer
+	if code := writeExplain(processIO{stdout: io.Discard, stderr: &stderr}, model.Inventory{}, options, "json"); code != 2 || !strings.Contains(stderr.String(), "unknown registered worktree") {
+		t.Fatalf("unknown path code=%d stderr=%q", code, stderr.String())
+	}
+	worktree := model.Worktree{Path: "/repo/wt", Repository: "/repo", Classification: model.Kept}
+	options.ExplainPath = worktree.Path
+	stderr.Reset()
+	if code := writeExplain(processIO{stdout: failingWriter{}, stderr: &stderr}, model.Inventory{Worktrees: []model.Worktree{worktree}}, options, "human"); code != 1 || !strings.Contains(stderr.String(), "write report") {
+		t.Fatalf("writer failure code=%d stderr=%q", code, stderr.String())
+	}
+	if _, err := findExplainedWorktree([]model.Worktree{worktree, worktree}, worktree.Path, worktree.Path); err == nil || !strings.Contains(err.Error(), "ambiguous") {
+		t.Fatalf("ambiguous worktree error=%v", err)
+	}
+	stderr.Reset()
+	if code := writeExplain(processIO{stdout: io.Discard, stderr: &stderr}, model.Inventory{Worktrees: []model.Worktree{worktree, {Path: worktree.Path + "/", Repository: "/repo", Classification: model.Kept}}}, options, "json"); code != 2 || !strings.Contains(stderr.String(), "ambiguous review path") {
+		t.Fatalf("ambiguous match code=%d stderr=%q", code, stderr.String())
+	}
+}
+
 func TestRunReviewRejectsDestructiveFlagsWithStaticInformation(t *testing.T) {
 	for _, args := range [][]string{{"review", "--yes", "--help"}, {"review", "--delete-branch=false", "--version"}} {
 		var stdout, stderr bytes.Buffer

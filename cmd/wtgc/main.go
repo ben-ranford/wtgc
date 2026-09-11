@@ -96,27 +96,9 @@ func run(ctx context.Context, args []string, streams processIO, deps commandDepe
 		return 0
 	}
 
-	workingDirectory, err := deps.getwd()
-	if err != nil {
-		fmt.Fprintf(streams.stderr, "resolve current directory: %v\n", err)
-		return 1
-	}
-	if opts.Command == cli.CommandReview || opts.Command == cli.CommandExplain {
-		opts.Repositories, err = normalizeReviewPaths(opts.Repositories, workingDirectory)
-		if err == nil && opts.Command == cli.CommandReview {
-			opts.SelectedPaths, err = normalizeReviewPaths(opts.SelectedPaths, workingDirectory)
-		}
-		if err == nil && opts.Command == cli.CommandExplain {
-			opts.ExplainPath, err = canonicalReviewPath(opts.ExplainPath, workingDirectory)
-		}
-		if err != nil {
-			fmt.Fprintf(streams.stderr, "review: %v\n", err)
-			return 2
-		}
-	}
-	roots := opts.Roots
-	if opts.Command == cli.CommandExplain {
-		roots = []string{explainScanRoot(opts.ExplainPath)}
+	opts, workingDirectory, roots, code := prepareCommand(opts, deps.getwd, streams.stderr)
+	if code != 0 {
+		return code
 	}
 	appOptions := app.Options{
 		Roots:           roots,
@@ -142,37 +124,75 @@ func run(ctx context.Context, args []string, streams processIO, deps commandDepe
 	}
 
 	inventory, runErr := app.New(deps.backend).Run(ctx, appOptions)
+	if code := writeCommandOutput(streams, inventory, opts, runErr); code != 0 {
+		return code
+	}
+	if runErr != nil {
+		fmt.Fprintf(streams.stderr, "wtgc: %v\n", runErr)
+		return 1
+	}
+	return 0
+}
+
+func prepareCommand(opts cli.Options, getwd func() (string, error), stderr io.Writer) (cli.Options, string, []string, int) {
+	workingDirectory, err := getwd()
+	if err != nil {
+		fmt.Fprintf(stderr, "resolve current directory: %v\n", err)
+		return cli.Options{}, "", nil, 1
+	}
+	if opts.Command != cli.CommandReview && opts.Command != cli.CommandExplain {
+		return opts, workingDirectory, opts.Roots, 0
+	}
+	opts.Repositories, err = normalizeReviewPaths(opts.Repositories, workingDirectory)
+	if err == nil && opts.Command == cli.CommandReview {
+		opts.SelectedPaths, err = normalizeReviewPaths(opts.SelectedPaths, workingDirectory)
+	}
+	if err == nil && opts.Command == cli.CommandExplain {
+		opts.ExplainPath, err = canonicalReviewPath(opts.ExplainPath, workingDirectory)
+	}
+	if err != nil {
+		fmt.Fprintf(stderr, "%s: %v\n", opts.Command, err)
+		return cli.Options{}, "", nil, 2
+	}
+	if opts.Command == cli.CommandExplain {
+		return opts, workingDirectory, []string{explainScanRoot(opts.ExplainPath)}, 0
+	}
+	return opts, workingDirectory, opts.Roots, 0
+}
+
+func writeCommandOutput(streams processIO, inventory model.Inventory, opts cli.Options, runErr error) int {
 	format := report.FormatHuman
 	if opts.JSON {
 		format = report.FormatJSON
 	}
+	if opts.Command == cli.CommandExplain {
+		return writeExplain(streams, inventory, opts, format)
+	}
 	if opts.Command == cli.CommandReview {
-		reviewOptions, err := reviewOptionsForInventory(opts, inventory)
-		if err != nil {
-			fmt.Fprintf(streams.stderr, "review: %v\n", err)
-			return 2
-		}
-		document, err := review.Build(inventory, reviewOptions)
-		if err != nil {
-			fmt.Fprintf(streams.stderr, "review: %v\n", err)
-			if runErr == nil {
-				return 2
-			}
-		}
-		if err := report.WriteReview(streams.stdout, document, format); err != nil {
-			fmt.Fprintf(streams.stderr, "write report: %v\n", err)
-			return 1
-		}
-	} else if opts.Command == cli.CommandExplain {
-		if code := writeExplain(streams, inventory, opts, format); code != 0 {
-			return code
-		}
-	} else if err := report.Write(streams.stdout, inventory, format); err != nil {
+		return writeReview(streams, inventory, opts, format, runErr)
+	}
+	if err := report.Write(streams.stdout, inventory, format); err != nil {
 		fmt.Fprintf(streams.stderr, "write report: %v\n", err)
 		return 1
 	}
-	if runErr != nil {
-		fmt.Fprintf(streams.stderr, "wtgc: %v\n", runErr)
+	return 0
+}
+
+func writeReview(streams processIO, inventory model.Inventory, opts cli.Options, format report.Format, runErr error) int {
+	reviewOptions, err := reviewOptionsForInventory(opts, inventory)
+	if err != nil {
+		fmt.Fprintf(streams.stderr, "review: %v\n", err)
+		return 2
+	}
+	document, err := review.Build(inventory, reviewOptions)
+	if err != nil {
+		fmt.Fprintf(streams.stderr, "review: %v\n", err)
+		if runErr == nil {
+			return 2
+		}
+	}
+	if err := report.WriteReview(streams.stdout, document, format); err != nil {
+		fmt.Fprintf(streams.stderr, "write report: %v\n", err)
 		return 1
 	}
 	return 0
@@ -203,7 +223,8 @@ func writeExplain(streams processIO, inventory model.Inventory, opts cli.Options
 		fmt.Fprintf(streams.stderr, "explain: %v\n", err)
 		return 2
 	}
-	if err := report.WriteExplain(streams.stdout, explain.Build(found, opts.Provider == "github", opts.Retention), format); err != nil {
+	document := explain.WithOperationalErrors(explain.Build(found, opts.Provider == "github", opts.Retention), inventory.Errors)
+	if err := report.WriteExplain(streams.stdout, document, format); err != nil {
 		fmt.Fprintf(streams.stderr, "write report: %v\n", err)
 		return 1
 	}

@@ -15,6 +15,7 @@ type Document struct {
 	Worktree             Worktree             `json:"worktree"`
 	Checks               []model.ExplainCheck `json:"checks"`
 	NextChecks           []string             `json:"next_checks"`
+	OperationalErrors    []string             `json:"operational_errors,omitempty"`
 }
 
 // Worktree is the explain schema projection. It deliberately omits cleanup
@@ -61,6 +62,13 @@ func Build(worktree model.Worktree, providerRequested bool, retention time.Durat
 	return Document{ExplainSchemaVersion: SchemaVersion, Worktree: project(worktree), Checks: unavailableChecks(), NextChecks: nextChecks(worktree, providerRequested, retention)}
 }
 
+// WithOperationalErrors preserves completed target evidence while exposing
+// scan failures as structured diagnostics for explain callers.
+func WithOperationalErrors(document Document, errors []string) Document {
+	document.OperationalErrors = slices.Clone(errors)
+	return document
+}
+
 func project(w model.Worktree) Worktree {
 	v := Worktree{Path: w.Path, Branch: w.Branch, Head: w.Head, Repository: w.Repository, DefaultBranch: w.DefaultBranch, Classification: w.Classification, Reason: w.Reason, Error: w.Error, Dirty: w.Dirty, DiskBytes: w.DiskBytes}
 	if w.WorktreeDetails == nil {
@@ -104,13 +112,6 @@ func missingCheck(worktree model.Worktree, id string, providerRequested bool, re
 	if id == "retention" && retention == 0 {
 		return statusCheck(id, model.ExplainNotEvaluated, "not evaluated; no retention window was requested")
 	}
-	if id == "retention" && worktree.RetentionBasis != "" && worktree.EligibleAt != nil {
-		status := model.ExplainPassed
-		if worktree.Remaining > 0 {
-			status = model.ExplainBlocked
-		}
-		return statusCheck(id, status, "basis="+worktree.RetentionBasis+" eligible_at="+worktree.EligibleAt.UTC().Format(time.RFC3339))
-	}
 	return statusCheck(id, model.ExplainNotEvaluated, "not evaluated because an earlier safety decision short-circuited classification")
 }
 
@@ -125,7 +126,7 @@ func nextChecks(w model.Worktree, providerRequested bool, retention time.Duratio
 	if w.Classification == model.Unmerged && !providerRequested {
 		result = append(result, "Confirm local remote-tracking reachability.", "Rerun with --provider github only if explicit provider merge proof is required.")
 	}
-	if retention > 0 && w.EligibleAt != nil && w.Remaining > 0 {
+	if retention > 0 && w.WorktreeDetails != nil && w.EligibleAt != nil && w.Remaining > 0 {
 		result = append(result, "wait until "+w.EligibleAt.UTC().Format(time.RFC3339))
 	}
 	if w.Error != "" {

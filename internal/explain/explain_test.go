@@ -1,6 +1,7 @@
 package explain
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -27,6 +28,34 @@ func TestBuildProjectsOnlyExplainFieldsAndRetentionTrace(t *testing.T) {
 	for _, check := range document.Checks {
 		if check.ID == "retention" && check.Status != model.ExplainPassed {
 			t.Fatalf("retention=%+v", check)
+		}
+	}
+}
+
+func TestBuildDoesNotSynthesizeRetentionProofWhenTraceIsAbsent(t *testing.T) {
+	now := time.Now().UTC()
+	document := Build(model.Worktree{Path: "/repo/wt", Classification: model.Kept, WorktreeDetails: &model.WorktreeDetails{RetentionBasis: "worktree_mtime", EligibleAt: &now, Remaining: time.Hour, ExplainChecks: []model.ExplainCheck{{ID: "registration", Status: model.ExplainPassed}}}}, false, time.Hour)
+	for _, check := range document.Checks {
+		if check.ID == "retention" && check.Status != model.ExplainNotEvaluated {
+			t.Fatalf("retention=%+v, want trace absence to remain not evaluated", check)
+		}
+	}
+}
+
+func TestWithOperationalErrorsCopiesDiagnostics(t *testing.T) {
+	document := WithOperationalErrors(Build(model.Worktree{Path: "/repo/wt"}, false, 0), []string{"scan failed"})
+	if len(document.OperationalErrors) != 1 || document.OperationalErrors[0] != "scan failed" {
+		t.Fatalf("operational errors=%+v", document.OperationalErrors)
+	}
+}
+
+func TestNextChecksDescribeConcreteBlockedStates(t *testing.T) {
+	now := time.Now().UTC()
+	document := Build(model.Worktree{Path: "/repo/wt", Classification: model.Unmerged, Locked: true, Error: "status unavailable", WorktreeDetails: &model.WorktreeDetails{EligibleAt: &now, Remaining: time.Hour, ExplainChecks: []model.ExplainCheck{{ID: "registration", Status: model.ExplainPassed}}}}, false, time.Hour)
+	joined := strings.Join(document.NextChecks, "\n")
+	for _, want := range []string{"lock state", "remote-tracking", "--provider github", "wait until", "after resolving"} {
+		if !strings.Contains(joined, want) {
+			t.Fatalf("next checks=%q, missing %q", joined, want)
 		}
 	}
 }
