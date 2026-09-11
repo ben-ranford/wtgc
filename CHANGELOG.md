@@ -1,5 +1,29 @@
 # Changelog
 
+## [1.2.0](https://github.com/ben-ranford/wtgc/compare/wtgc-v1.1.0...wtgc-v1.2.0) (2026-09-11)
+
+
+### Features
+
+* **ci:** enforce 98% coverage floors ([#103](https://github.com/ben-ranford/wtgc/issues/103)) ([0bccc1e](https://github.com/ben-ranford/wtgc/commit/0bccc1ea31cc986c4991cff4f003066100e491ab))
+* **clean:** enforce exact selected-worktree cleanup ([#119](https://github.com/ben-ranford/wtgc/issues/119)) ([bdfe2db](https://github.com/ben-ranford/wtgc/commit/bdfe2db685759997735cc4c545238801619aa716))
+* **clean:** exclude protected paths ([#127](https://github.com/ben-ranford/wtgc/issues/127)) ([d77fab7](https://github.com/ben-ranford/wtgc/commit/d77fab79b8746b62e7f3f31685e0be8d5a50d183))
+* **clean:** pick worktrees by number ([#130](https://github.com/ben-ranford/wtgc/issues/130)) ([b833081](https://github.com/ben-ranford/wtgc/commit/b833081cb5738bd78b939b1bcdf596ba534408a1))
+* **diff:** compare saved inventories ([#128](https://github.com/ben-ranford/wtgc/issues/128)) ([691ac2d](https://github.com/ben-ranford/wtgc/commit/691ac2de97d6d5ac88e9e307a9e2697021ce5a2c))
+* **explain:** explain worktree safety decisions ([#126](https://github.com/ben-ranford/wtgc/issues/126)) ([df16098](https://github.com/ben-ranford/wtgc/commit/df16098e3e6c686f043fc0cff4f7b7cd80e4f130))
+* **review:** add grouped inventory review ([#118](https://github.com/ben-ranford/wtgc/issues/118)) ([4213ca7](https://github.com/ben-ranford/wtgc/commit/4213ca7c91abe11f6f347fd0e34608fccfcf0f01))
+* **review:** propose worktrees for a reclaim target ([#129](https://github.com/ben-ranford/wtgc/issues/129)) ([b97bd7a](https://github.com/ben-ranford/wtgc/commit/b97bd7ac39fe0e671209d67d68cadb809c112689))
+
+
+### Bug Fixes
+
+* **release:** finish 1.2 release readiness ([#114](https://github.com/ben-ranford/wtgc/issues/114)) ([173e17e](https://github.com/ben-ranford/wtgc/commit/173e17e1d72ff33fa1a57d382796c3b8fd0b76ea))
+
+
+### Reverts
+
+* **docs:** move release guidance back to issues ([#116](https://github.com/ben-ranford/wtgc/issues/116)) ([a335838](https://github.com/ben-ranford/wtgc/commit/a335838ce08421f5649be896c0428b8a1344aeba))
+
 ## [1.1.0](https://github.com/ben-ranford/wtgc/compare/wtgc-v1.0.0...wtgc-v1.1.0) (2026-09-09)
 
 
