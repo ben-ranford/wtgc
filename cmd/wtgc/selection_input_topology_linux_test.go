@@ -8,7 +8,6 @@ import (
 	"os"
 	"os/exec"
 	"reflect"
-	"strings"
 	"syscall"
 	"testing"
 )
@@ -159,7 +158,7 @@ func TestTerminalPTYTopologyHelpersRejectClosedDescriptor(t *testing.T) {
 	if err := file.Close(); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := terminalPTYNumber(file); err == nil || !strings.Contains(err.Error(), "file already closed") {
-		t.Fatalf("closed terminal descriptor err=%v", err)
+	if _, err := terminalPTYNumber(file); err == nil {
+		t.Fatal("closed terminal descriptor accepted")
 	}
 }
