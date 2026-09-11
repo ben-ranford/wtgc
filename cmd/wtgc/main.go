@@ -58,6 +58,7 @@ type commandDependencies struct {
 	backend     app.Git
 	getwd       func() (string, error)
 	newProvider func() provider.MergeFinder
+	isTerminal  func(any) bool
 }
 
 // runMain wires process dependencies into the command. Keeping this boundary
@@ -76,7 +77,7 @@ func runMain(args []string, streams processIO, deps startupDependencies) int {
 		}
 		backend = deps.newGitWithTimeout("git", timeout)
 	}
-	return run(ctx, args, streams, commandDependencies{backend: backend, getwd: deps.getwd, newProvider: func() provider.MergeFinder { return provider.NewGitHub(nil) }})
+	return run(ctx, args, streams, commandDependencies{backend: backend, getwd: deps.getwd, newProvider: func() provider.MergeFinder { return provider.NewGitHub(nil) }, isTerminal: isTerminal})
 }
 
 func run(ctx context.Context, args []string, streams processIO, deps commandDependencies) int {
@@ -101,6 +102,10 @@ func run(ctx context.Context, args []string, streams processIO, deps commandDepe
 	if code != 0 {
 		return code
 	}
+	if opts.Pick && (!deps.isTerminal(streams.stdin) || !deps.isTerminal(streams.stderr)) {
+		fmt.Fprintln(streams.stderr, "clean --pick requires terminal input and output")
+		return 2
+	}
 	appOptions := app.Options{
 		Roots:           roots,
 		ExcludePaths:    opts.ExcludePaths,
@@ -116,6 +121,9 @@ func run(ctx context.Context, args []string, streams processIO, deps commandDepe
 	}
 	if opts.Command == cli.CommandClean {
 		appOptions.SelectedPaths = opts.SelectedPaths
+	}
+	if opts.Pick {
+		appOptions.Pick = numberedPicker(ctx, streams.stdin, streams.stderr)
 	}
 	if opts.Provider == "github" {
 		appOptions.Provider = deps.newProvider()

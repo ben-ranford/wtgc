@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -421,4 +422,326 @@ func (h *selectionHooks) List(ctx context.Context, repo model.Repository) ([]mod
 		return h.list(ctx, repo)
 	}
 	return h.Git.List(ctx, repo)
+}
+
+func TestPickedSelectionKeepsDisplayedIdentityAndPreflightsWholeSet(t *testing.T) {
+	for _, drift := range []string{"none", "second HEAD"} {
+		t.Run(drift, func(t *testing.T) {
+			backend, inv, err, seen := runPickedSelection(t, drift)
+			if seen != 1 {
+				t.Fatalf("picker calls=%d", seen)
+			}
+			assertPickedSelectionResult(t, drift, backend, inv, err)
+		})
+	}
+}
+
+func TestPickerFailureRejectsCleanupWithoutTreatingItAsEmptyChoice(t *testing.T) {
+	backend, opts := selectionFixture(t)
+	opts.SelectedPaths = nil
+	opts.Pick = func(PickPreview) PickResult { return PickResult{Err: errors.New("input failed")} }
+	inv, err := New(backend).Run(context.Background(), opts)
+	if err == nil || backend.removeCalls != 0 || !strings.Contains(strings.Join(inv.Errors, " "), "picker: input failed") {
+		t.Fatalf("err=%v removes=%d inventory=%+v", err, backend.removeCalls, inv)
+	}
+}
+
+func TestPickerPreviewCannotMutateInventoryEvidenceOrSelection(t *testing.T) {
+	backend, opts := selectionFixture(t)
+	old := time.Now().UTC().Add(-2 * time.Hour)
+	if err := os.Chtimes(backend.records[0].Path, old, old); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chtimes(filepath.Join(backend.records[0].Path, ".git"), old, old); err != nil {
+		t.Fatal(err)
+	}
+	opts.Retention = time.Hour
+	inv, err := New(backend).Run(context.Background(), Options{Roots: opts.Roots, Retention: opts.Retention})
+	if err != nil {
+		t.Fatal(err)
+	}
+	item := &inv.Worktrees[0]
+	dirty, measured := true, true
+	item.Dirty = &dirty
+	details := item.Details()
+	details.DiskBytesMeasured = &measured
+	details.MergedAt = &old
+	details.CacheWarnings = []model.CacheWarning{{Path: "cache", Bytes: 1}}
+	details.ProviderProof = model.ProviderProof{HeadSHA: "head"}
+	details.ExplainChecks = []model.ExplainCheck{{ID: "clean", Status: model.ExplainPassed}}
+	want := pickerPreviewEvidence{
+		dirty:             *item.Dirty,
+		diskBytesMeasured: *details.DiskBytesMeasured,
+		retentionBasis:    details.RetentionBasis,
+		observedAt:        *details.ObservedAt,
+		eligibleAt:        *details.EligibleAt,
+		mergedAt:          *details.MergedAt,
+		cacheWarning:      details.CacheWarnings[0],
+		providerProof:     details.ProviderProof,
+		explainCheck:      details.ExplainChecks[0],
+	}
+	opts.SelectedPaths = nil
+	opts.Execute, opts.Interactive = true, true
+	opts.Now = func() time.Time { return time.Now().UTC() }
+	opts.ConfirmSelection = func(SelectionPreview) bool { return true }
+	opts.Pick = func(preview PickPreview) PickResult {
+		assertPickerPreviewIsIndependent(t, *item, preview.Rows[0].Worktree)
+		mutatePickerPreviewEvidence(t, &preview.Rows[0].Worktree)
+		now := time.Now().UTC()
+		if err := os.Chtimes(item.Path, now, now); err != nil {
+			t.Fatal(err)
+		}
+		return PickResult{Selected: []int{1}}
+	}
+	New(backend).cleanPicked(context.Background(), backend.repositories, opts, &inv)
+	if backend.removeCalls != 0 || inv.Summary.Removed != 0 || !strings.Contains(strings.Join(inv.Errors, " "), "changed after display") {
+		t.Fatalf("picker mutation bypassed retention revalidation: removes=%d inventory=%+v", backend.removeCalls, inv)
+	}
+	assertPickerInventoryEvidence(t, inv.Worktrees[0], want)
+}
+
+func TestPickerPreviewCopiesNilOptionalDetails(t *testing.T) {
+	preview := pickerPreviewWorktree(model.Worktree{})
+	if preview.WorktreeDetails != nil || preview.Dirty != nil {
+		t.Fatalf("nil details were allocated: %+v", preview)
+	}
+}
+
+func mutatePickerPreviewEvidence(t *testing.T, item *model.Worktree) {
+	t.Helper()
+	*item.Dirty = false
+	*item.DiskBytesMeasured = false
+	*item.ObservedAt = item.ObservedAt.Add(time.Hour)
+	*item.EligibleAt = item.EligibleAt.Add(time.Hour)
+	*item.MergedAt = item.MergedAt.Add(time.Hour)
+	item.RetentionBasis = ""
+	item.CacheWarnings[0].Path = "changed"
+	item.ProviderProof.HeadSHA = "changed"
+	item.ExplainChecks[0].ID = "changed"
+}
+
+type pickerPreviewEvidence struct {
+	dirty             bool
+	diskBytesMeasured bool
+	retentionBasis    string
+	observedAt        time.Time
+	eligibleAt        time.Time
+	mergedAt          time.Time
+	cacheWarning      model.CacheWarning
+	providerProof     model.ProviderProof
+	explainCheck      model.ExplainCheck
+}
+
+func assertPickerPreviewIsIndependent(t *testing.T, inventory, preview model.Worktree) {
+	t.Helper()
+	if inventory.Dirty == preview.Dirty || inventory.WorktreeDetails == preview.WorktreeDetails || inventory.DiskBytesMeasured == preview.DiskBytesMeasured || inventory.ObservedAt == preview.ObservedAt || inventory.EligibleAt == preview.EligibleAt || inventory.MergedAt == preview.MergedAt || &inventory.CacheWarnings[0] == &preview.CacheWarnings[0] || &inventory.ExplainChecks[0] == &preview.ExplainChecks[0] {
+		t.Fatalf("picker preview aliases inventory evidence: inventory=%+v preview=%+v", inventory, preview)
+	}
+}
+
+func assertPickerInventoryEvidence(t *testing.T, item model.Worktree, want pickerPreviewEvidence) {
+	t.Helper()
+	if *item.Dirty != want.dirty || *item.DiskBytesMeasured != want.diskBytesMeasured || item.RetentionBasis != want.retentionBasis || !item.ObservedAt.Equal(want.observedAt) || !item.EligibleAt.Equal(want.eligibleAt) || !item.MergedAt.Equal(want.mergedAt) || !reflect.DeepEqual(item.CacheWarnings[0], want.cacheWarning) || !reflect.DeepEqual(item.ProviderProof, want.providerProof) || !reflect.DeepEqual(item.ExplainChecks[0], want.explainCheck) {
+		t.Fatalf("picker mutation changed inventory evidence: got=%+v want=%+v", item, want)
+	}
+}
+
+func TestPickerRejectsSelectionWhenAnotherRepositoryScanFails(t *testing.T) {
+	backend, opts := selectionFixture(t)
+	other := model.Repository{PrimaryPath: filepath.Join(t.TempDir(), "other"), CommonDir: filepath.Join(t.TempDir(), "other.git")}
+	backend.repositories = append(backend.repositories, other)
+	hooks := &selectionHooks{Git: backend, list: func(_ context.Context, repo model.Repository) ([]model.RegisteredWorktree, error) {
+		if repo.PrimaryPath == other.PrimaryPath {
+			return nil, errors.New("other repository scan failed")
+		}
+		return append([]model.RegisteredWorktree(nil), backend.records...), nil
+	}}
+	opts.SelectedPaths = nil
+	opts.Pick = func(PickPreview) PickResult { return PickResult{Selected: []int{1}} }
+	inv, err := New(hooks).Run(context.Background(), opts)
+	if err == nil || backend.removeCalls != 0 || !strings.Contains(strings.Join(inv.Errors, " "), "picker selection rejected because the scan contains errors") {
+		t.Fatalf("err=%v removes=%d inventory=%+v", err, backend.removeCalls, inv)
+	}
+}
+
+func TestPickerEmptyAndInvalidSelectionsDoNotAuthorizeRemoval(t *testing.T) {
+	for _, selected := range [][]int{nil, {0}, {1, 1}, {4}} {
+		t.Run(fmt.Sprint(selected), func(t *testing.T) {
+			backend, opts := selectionFixture(t)
+			opts.SelectedPaths = nil
+			opts.Pick = func(PickPreview) PickResult { return PickResult{Selected: selected} }
+			inv, err := New(backend).Run(context.Background(), opts)
+			if backend.removeCalls != 0 {
+				t.Fatalf("picker selection removed worktrees: %d", backend.removeCalls)
+			}
+			if len(selected) == 0 {
+				if err != nil {
+					t.Fatal(err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(strings.Join(inv.Errors, " "), "picker returned an invalid selection") {
+				t.Fatalf("err=%v inventory=%+v", err, inv)
+			}
+		})
+	}
+}
+
+func TestPickerUnavailableRowShowsRegistrationBindingError(t *testing.T) {
+	backend, opts := selectionFixture(t)
+	if err := os.Remove(filepath.Join(backend.records[0].Path, ".git")); err != nil {
+		t.Fatal(err)
+	}
+	assertPickerUnavailableBinding(t, backend, opts, "registration:")
+}
+
+func TestPickerUnavailableRowShowsAmbiguousRepositoryBindingError(t *testing.T) {
+	backend, opts := selectionFixture(t)
+	backend.repositories = append(backend.repositories, backend.repositories[0])
+	assertPickerUnavailableBinding(t, backend, opts, "ambiguous repository")
+}
+
+func assertPickerUnavailableBinding(t *testing.T, backend *fakeGit, opts Options, want string) {
+	t.Helper()
+	opts.SelectedPaths = nil
+	opts.Pick = func(preview PickPreview) PickResult {
+		if len(preview.Rows) == 0 || preview.Rows[0].Selectable || !strings.Contains(preview.Rows[0].Unavailable, want) {
+			t.Fatalf("picker row=%+v", preview.Rows)
+		}
+		return PickResult{}
+	}
+	inv, err := New(backend).Run(context.Background(), opts)
+	if err != nil || backend.removeCalls != 0 || inv.Summary.Removed != 0 {
+		t.Fatalf("err=%v removes=%d inventory=%+v", err, backend.removeCalls, inv)
+	}
+}
+
+func TestPickerRefusesUnavailableCommonDirectory(t *testing.T) {
+	backend, opts := selectionFixture(t)
+	inv, err := New(backend).Run(context.Background(), Options{Roots: opts.Roots})
+	if err != nil {
+		t.Fatal(err)
+	}
+	backend.repositories[0].CommonDir = filepath.Join(t.TempDir(), "missing")
+	if _, err := bindSelectedWorktree(backend.repositories, inv.Worktrees[0], 0); err == nil || !strings.Contains(err.Error(), "common directory") {
+		t.Fatalf("binding error=%v", err)
+	}
+	opts.SelectedPaths = nil
+	opts.Pick = func(preview PickPreview) PickResult {
+		if preview.Rows[0].Selectable {
+			t.Fatalf("row remained selectable: %+v", preview.Rows[0])
+		}
+		return PickResult{Selected: []int{1}}
+	}
+	inv, err = New(backend).Run(context.Background(), opts)
+	if err == nil || backend.removeCalls != 0 || !strings.Contains(strings.Join(inv.Errors, " "), "picker returned an invalid selection") {
+		t.Fatalf("err=%v removes=%d inventory=%+v", err, backend.removeCalls, inv)
+	}
+}
+
+func TestPickerRejectsDisappearedDisplayedPath(t *testing.T) {
+	backend, opts := selectionFixture(t)
+	inv, err := New(backend).Run(context.Background(), Options{Roots: opts.Roots})
+	if err != nil {
+		t.Fatal(err)
+	}
+	item := inv.Worktrees[0]
+	item.Path = filepath.Join(t.TempDir(), "missing")
+	if _, err := bindSelectedWorktree(backend.repositories, item, 0); err == nil {
+		t.Fatal("missing displayed path was bound")
+	}
+}
+
+func TestPickerPreflightRejectsUnprovableExcludedMembership(t *testing.T) {
+	backend, opts := selectionFixture(t)
+	inv, bound := pickerPreflightFixture(t, backend, opts)
+	if err := os.RemoveAll(inv.Worktrees[0].Path); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(inv.Worktrees[0].Path, []byte("no longer a worktree"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	opts.exclusions = exclusionBoundary{values: []string{opts.Roots[0]}}
+	if err := New(backend).preflightSelectedSet(context.Background(), []selectedWorktree{bound}, opts, &inv); err == nil || !strings.Contains(err.Error(), "selected exclusion membership") {
+		t.Fatalf("preflight error=%v", err)
+	}
+}
+
+func TestPickerPreflightRejectsDisplayedExcludedPath(t *testing.T) {
+	backend, opts := selectionFixture(t)
+	inv, bound := pickerPreflightFixture(t, backend, opts)
+	var err error
+	opts.exclusions, err = newExclusionBoundary([]string{inv.Worktrees[0].Path})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := New(backend).preflightSelectedSet(context.Background(), []selectedWorktree{bound}, opts, &inv); err == nil || !strings.Contains(err.Error(), "selected path is excluded") {
+		t.Fatalf("preflight error=%v", err)
+	}
+}
+
+func pickerPreflightFixture(t *testing.T, backend *fakeGit, opts Options) (model.Inventory, selectedWorktree) {
+	t.Helper()
+	inv, err := New(backend).Run(context.Background(), Options{Roots: opts.Roots})
+	if err != nil {
+		t.Fatal(err)
+	}
+	bound, err := bindSelectedWorktree(backend.repositories, inv.Worktrees[0], 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return inv, bound
+}
+
+func TestSelectedBranchRemainsWhenExcludedRegistrationStillExists(t *testing.T) {
+	backend, _ := selectionFixture(t)
+	exclusions, err := newExclusionBoundary([]string{backend.records[0].Path})
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = New(backend).requireUnusedBranch(context.Background(), backend.repository, backend.records[0].Branch, exclusions)
+	if err == nil || !strings.Contains(err.Error(), "excluded registration remains") {
+		t.Fatalf("branch guard error=%v", err)
+	}
+}
+
+func runPickedSelection(t *testing.T, drift string) (*fakeGit, model.Inventory, error, int) {
+	t.Helper()
+	backend, opts := selectionFixture(t)
+	opts.SelectedPaths = nil
+	opts.Execute, opts.Interactive = true, true
+	seen := 0
+	opts.Pick = func(preview PickPreview) PickResult {
+		assertPickRows(t, preview.Rows)
+		seen++
+		return PickResult{Selected: []int{1, 2}}
+	}
+	opts.ConfirmSelection = func(SelectionPreview) bool {
+		if drift == "second HEAD" {
+			backend.records[1].Head = "changed"
+		}
+		return true
+	}
+	inv, err := New(backend).Run(context.Background(), opts)
+	return backend, inv, err, seen
+}
+
+func assertPickRows(t *testing.T, rows []PickRow) {
+	t.Helper()
+	if len(rows) != 4 || !rows[0].Selectable || !rows[1].Selectable || rows[2].Selectable || !rows[3].Selectable {
+		t.Fatalf("rows=%+v", rows)
+	}
+}
+
+func assertPickedSelectionResult(t *testing.T, drift string, backend *fakeGit, inv model.Inventory, err error) {
+	t.Helper()
+	if drift == "second HEAD" {
+		if err == nil || backend.removeCalls != 0 || inv.Summary.Removed != 0 {
+			t.Fatalf("whole-set drift mutated: err=%v removes=%d inv=%+v", err, backend.removeCalls, inv)
+		}
+		return
+	}
+	if err != nil || backend.removeCalls != 2 || inv.Summary.Removed != 2 {
+		t.Fatalf("picked cleanup err=%v removes=%d inv=%+v", err, backend.removeCalls, inv)
+	}
 }

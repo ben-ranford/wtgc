@@ -57,6 +57,7 @@ type Options struct {
 	ExcludePaths     []string
 	SelectedPaths    []string
 	ConfirmSelection func(SelectionPreview) bool
+	Pick             func(PickPreview) PickResult
 	selection        *selectionIdentity
 	exclusions       exclusionBoundary
 	Execute          bool
@@ -170,6 +171,11 @@ func (a *App) Run(ctx context.Context, opts Options) (model.Inventory, error) {
 }
 
 func (a *App) cleanup(ctx context.Context, repositories []model.Repository, opts Options, inv *model.Inventory) {
+	if opts.Pick != nil {
+		a.cleanPicked(ctx, repositories, opts, inv)
+		a.summarize(inv)
+		return
+	}
 	if len(opts.SelectedPaths) > 0 {
 		a.cleanSelection(ctx, repositories, opts, inv)
 		a.summarize(inv)

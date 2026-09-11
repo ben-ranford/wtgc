@@ -25,6 +25,7 @@ type Options struct {
 	DryRun          bool
 	Yes             bool
 	Interactive     bool
+	Pick            bool
 	DeleteBranch    bool
 	JSON            bool
 	Version         bool
@@ -115,6 +116,7 @@ func Parse(args []string) (Options, error) {
 	fs.BoolVar(&opts.Yes, "yes", false, "execute cleanup without prompting")
 	fs.BoolVar(&opts.Yes, "y", false, "execute cleanup without prompting")
 	fs.BoolVar(&opts.Interactive, "interactive", false, "prompt before destructive cleanup actions")
+	fs.BoolVar(&opts.Pick, "pick", false, "choose numbered safe worktrees in a terminal")
 	fs.BoolVar(&opts.DeleteBranch, "delete-branch", false, "delete branches for removed worktrees when safe")
 	fs.BoolVar(&opts.JSON, "json", false, "write machine-readable JSON")
 	fs.BoolVar(&opts.Version, "version", false, "print version and exit")
@@ -134,6 +136,11 @@ func Parse(args []string) (Options, error) {
 
 	if err := fs.Parse(args); err != nil {
 		return Options{}, &UsageError{Message: err.Error()}
+	}
+	if opts.Pick {
+		if err := validatePickFlags(&opts, fs, selectedPaths); err != nil {
+			return Options{}, err
+		}
 	}
 	if opts.Command == CommandReview || opts.Command == CommandExplain {
 		if err := validateReadOnlyFlags(opts.Command, fs, dryRun); err != nil {
@@ -257,6 +264,28 @@ func validateExecutionMode(opts *Options, dryRun boolOption) error {
 	return nil
 }
 
+func validatePickFlags(opts *Options, fs *flag.FlagSet, selectedPaths stringList) error {
+	if opts.Command != CommandClean {
+		return &UsageError{Message: "--pick is available only with clean"}
+	}
+	var forbidden string
+	fs.Visit(func(value *flag.Flag) {
+		switch value.Name {
+		case "yes", "y":
+			forbidden = "--yes"
+		case "json":
+			forbidden = "--json"
+		}
+	})
+	if forbidden != "" {
+		return &UsageError{Message: "--pick rejects " + forbidden}
+	}
+	if len(selectedPaths) != 0 {
+		return &UsageError{Message: "--pick rejects --select"}
+	}
+	return nil
+}
+
 type boolOption struct {
 	value bool
 	set   bool
@@ -318,6 +347,7 @@ Flags:
   --dry-run          preview cleanup actions without removing anything (default)
   --yes, -y          execute cleanup without prompting
   --interactive      prompt before destructive cleanup actions
+  --pick             choose numbered safe worktrees in a terminal (optional --interactive executes)
   --delete-branch    delete branches for removed worktrees when safe
   --json             write machine-readable JSON
   --provider github   use explicit GitHub merge proof for squash merges

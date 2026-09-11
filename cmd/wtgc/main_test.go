@@ -1070,6 +1070,7 @@ func mainCommandDependencies(backend app.Git, getwd func() (string, error)) comm
 		backend:     backend,
 		getwd:       getwd,
 		newProvider: func() provider.MergeFinder { return provider.NewGitHub(nil) },
+		isTerminal:  isTerminal,
 	}
 }
 
