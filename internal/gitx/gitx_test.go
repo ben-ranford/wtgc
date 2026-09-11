@@ -14,7 +14,60 @@ import (
 	"time"
 
 	"github.com/ben-ranford/wtgc/internal/model"
+	"github.com/ben-ranford/wtgc/internal/testgit"
 )
+
+func TestResolveExplainFindsLiveAndStaleRegistrations(t *testing.T) {
+	repo := testgit.NewRepository(t)
+	client := New("git")
+	gotRepo, record, found, err := client.ResolveExplain(context.Background(), repo.Path)
+	if err != nil || !found || !record.Primary || !sameResolvedPath(gotRepo.PrimaryPath, repo.Path) {
+		t.Fatalf("live repo=%+v record=%+v found=%t err=%v", gotRepo, record, found, err)
+	}
+	stale := repo.CreateMergedWorktree(t, "stale")
+	if err := os.RemoveAll(stale); err != nil {
+		t.Fatal(err)
+	}
+	gotRepo, record, found, err = client.ResolveExplain(context.Background(), stale)
+	if err != nil || !found || !record.Prunable || !sameResolvedPath(gotRepo.PrimaryPath, repo.Path) {
+		t.Fatalf("stale repo=%+v record=%+v found=%t err=%v", gotRepo, record, found, err)
+	}
+}
+
+func TestResolveExplainCanonicalizesMissingAliasAndRejectsAmbiguity(t *testing.T) {
+	repo := testgit.NewRepository(t)
+	stale := repo.CreateMergedWorktree(t, "stale")
+	if err := os.RemoveAll(stale); err != nil {
+		t.Fatal(err)
+	}
+	alias := filepath.Join(t.TempDir(), "alias")
+	if err := os.Symlink(repo.Root, alias); err != nil {
+		t.Fatal(err)
+	}
+	aliasStale := filepath.Join(alias, "worktrees", "stale")
+	_, record, found, err := New("git").ResolveExplain(context.Background(), aliasStale)
+	if err != nil || !found || !record.Prunable {
+		t.Fatalf("alias record=%+v found=%t err=%v", record, found, err)
+	}
+	if _, _, found, err = New("git").ResolveExplain(context.Background(), filepath.Join(repo.Root, "unknown")); err != nil || found {
+		t.Fatalf("unknown found=%t err=%v", found, err)
+	}
+	other := testgit.NewRepository(t)
+	shared := filepath.Join(repo.Root, "shared-stale")
+	repo.CreateMergedWorktreeAt(t, "first", shared)
+	if err := os.RemoveAll(shared); err != nil {
+		t.Fatal(err)
+	}
+	other.CreateMergedWorktreeAt(t, "second", shared)
+	if err := os.RemoveAll(shared); err != nil {
+		t.Fatal(err)
+	}
+	_, _, _, err = New("git").ResolveExplain(context.Background(), shared)
+	var usage interface{ ExplainUsage() bool }
+	if !errors.As(err, &usage) || !usage.ExplainUsage() {
+		t.Fatalf("ambiguity err=%v", err)
+	}
+}
 
 var gitScriptTestMu sync.Mutex
 

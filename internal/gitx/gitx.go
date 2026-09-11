@@ -299,9 +299,13 @@ func (c *Client) ResolveExplain(ctx context.Context, path string) (model.Reposit
 	}
 	commonDir, err := c.commonGitDir(ctx, root)
 	if err == nil {
-		return c.resolveExplainRecords(ctx, []model.Repository{{CommonDir: commonDir, PrimaryPath: root}}, path)
+		repo, record, found, resolveErr := c.resolveExplainRecords(ctx, []model.Repository{{CommonDir: commonDir, PrimaryPath: root}}, path)
+		if resolveErr != nil || found {
+			return repo, record, found, resolveErr
+		}
+		root = filepath.Dir(root)
 	}
-	repos, discoveryErrors := c.Discover(ctx, []string{root})
+	repos, discoveryErrors := c.Discover(ctx, []string{filepath.Dir(root)})
 	if len(discoveryErrors) > 0 {
 		return model.Repository{}, model.RegisteredWorktree{}, false, discoveryErrors[0]
 	}

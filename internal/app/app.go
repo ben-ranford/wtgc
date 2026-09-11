@@ -93,8 +93,11 @@ func (a *App) Run(ctx context.Context, opts Options) (model.Inventory, error) {
 		Worktrees:     []model.Worktree{},
 	}
 	if opts.ExplainPath != "" {
-		a.runExplainTarget(ctx, opts, now, &inv)
+		targetErr := a.runExplainTarget(ctx, opts, now, &inv)
 		inv.Summary.Duration = time.Since(started)
+		if targetErr != nil {
+			return inv, targetErr
+		}
 		if len(inv.Errors) > 0 {
 			return inv, fmt.Errorf("completed with %d error(s)", len(inv.Errors))
 		}
@@ -138,19 +141,19 @@ func (a *App) Run(ctx context.Context, opts Options) (model.Inventory, error) {
 	return inv, nil
 }
 
-func (a *App) runExplainTarget(ctx context.Context, opts Options, now time.Time, inv *model.Inventory) {
+func (a *App) runExplainTarget(ctx context.Context, opts Options, now time.Time, inv *model.Inventory) error {
 	resolver, ok := a.git.(ExplainTargetResolver)
 	if !ok {
 		inv.Errors = append(inv.Errors, "explain target resolution is unavailable for this Git backend")
-		return
+		return errors.New("explain target resolution is unavailable for this Git backend")
 	}
 	repo, record, found, err := resolver.ResolveExplain(ctx, opts.ExplainPath)
 	if err != nil {
 		inv.Errors = append(inv.Errors, fmt.Sprintf("%s: resolve requested worktree: %v", opts.ExplainPath, err))
-		return
+		return err
 	}
 	if !found {
-		return
+		return nil
 	}
 	inv.Summary.Repositories = 1
 	options := scanOptions{protectedPath: opts.ProtectedPath, provider: opts.Provider, providerRemote: opts.ProviderRemote, now: now, explainEvidence: opts.ExplainEvidence}
@@ -164,6 +167,7 @@ func (a *App) runExplainTarget(ctx context.Context, opts Options, now time.Time,
 	}
 	a.applyRetention(now, opts.Retention, opts.ExplainEvidence, inv)
 	a.summarize(inv)
+	return nil
 }
 
 func (a *App) addCacheWarnings(ctx context.Context, threshold int64, scanner func(context.Context, string, int64) []cache.Warning, inv *model.Inventory) {
