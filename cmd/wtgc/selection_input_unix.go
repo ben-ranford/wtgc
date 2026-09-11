@@ -21,7 +21,7 @@ func prepareSelectionInput(input io.Reader) (io.Reader, func() error, error) {
 		return input, nil, nil
 	}
 	if isTerminal(file) {
-		return openTerminalSelectionInput()
+		return openTerminalSelectionInput(file)
 	}
 	raw, err := file.SyscallConn()
 	if err != nil {
@@ -69,15 +69,47 @@ func prepareSelectionInput(input io.Reader) (io.Reader, func() error, error) {
 }
 
 // A terminal often shares one open file description between stdin, stdout and
-// stderr. Opening the controlling terminal gives the interruptible reader its
+// stderr. Reopening the supplied terminal gives the interruptible reader its
 // own nonblocking state, so picker and confirmation output cannot inherit
-// O_NONBLOCK and fail under a slow PTY consumer.
-func openTerminalSelectionInput() (io.Reader, func() error, error) {
-	terminal, err := os.Open("/dev/tty")
+// O_NONBLOCK and fail under a slow PTY consumer. It deliberately does not use
+// /dev/tty: supplied terminal input can be valid without a controlling terminal
+// and can differ from the controlling terminal.
+func openTerminalSelectionInput(supplied *os.File) (io.Reader, func() error, error) {
+	path, err := terminalPath(supplied)
 	if err != nil {
 		return nil, nil, err
 	}
+	return openResolvedTerminalSelectionInput(supplied, path)
+}
+
+func openResolvedTerminalSelectionInput(supplied *os.File, path string) (io.Reader, func() error, error) {
+	terminal, err := openOwnedSelectionTerminal(path)
+	if err != nil {
+		return nil, nil, err
+	}
+	if err := sameTerminal(supplied, terminal); err != nil {
+		return nil, nil, errors.Join(err, terminal.Close())
+	}
 	return prepareTerminalSelectionInput(terminal)
+}
+
+var openOwnedSelectionTerminal = func(path string) (*os.File, error) {
+	return os.OpenFile(path, os.O_RDONLY|syscall.O_NOCTTY|syscall.O_NONBLOCK, 0)
+}
+
+func sameTerminal(supplied, reopened *os.File) error {
+	suppliedInfo, err := supplied.Stat()
+	if err != nil {
+		return err
+	}
+	reopenedInfo, err := reopened.Stat()
+	if err != nil {
+		return err
+	}
+	if !os.SameFile(suppliedInfo, reopenedInfo) {
+		return fmt.Errorf("reopened selection terminal does not match supplied input")
+	}
+	return nil
 }
 
 func prepareTerminalSelectionInput(terminal *os.File) (io.Reader, func() error, error) {

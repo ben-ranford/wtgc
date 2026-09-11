@@ -61,9 +61,16 @@ func TestSelectionInputRestoresOriginalMode(t *testing.T) {
 func TestTerminalSelectionInputPreservesInheritedFlags(t *testing.T) {
 	if os.Getenv(terminalFlagsProbe) == "1" {
 		before := []uintptr{selectionInputFlags(t, os.Stdin), selectionInputFlags(t, os.Stdout), selectionInputFlags(t, os.Stderr)}
-		_, release, err := prepareSelectionInput(os.Stdin)
+		reader, release, err := prepareSelectionInput(os.Stdin)
 		if err != nil {
 			t.Fatal(err)
+		}
+		owned, ok := reader.(*terminalSelectionInput)
+		if !ok {
+			t.Fatalf("prepared terminal input type=%T", reader)
+		}
+		if err := sameTerminal(os.Stdin, owned.file); err != nil {
+			t.Fatalf("prepared input did not reopen supplied terminal: %v", err)
 		}
 		if err := release(); err != nil {
 			t.Fatal(err)
@@ -251,7 +258,7 @@ func TestPrepareTerminalSelectionInputRejectsClosedFile(t *testing.T) {
 }
 
 func TestOpenTerminalSelectionInputReturnsUsableInputOrTTYError(t *testing.T) {
-	input, release, err := openTerminalSelectionInput()
+	input, release, err := openTerminalSelectionInput(os.Stdin)
 	if err != nil {
 		if input != nil || release != nil {
 			t.Fatalf("failed opener returned input=%T release present=%t", input, release != nil)
@@ -263,6 +270,87 @@ func TestOpenTerminalSelectionInputReturnsUsableInputOrTTYError(t *testing.T) {
 	}
 	if err := release(); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestOpenResolvedTerminalSelectionInputUsesOwnedFile(t *testing.T) {
+	supplied, err := os.CreateTemp(t.TempDir(), "supplied")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer supplied.Close()
+	path := supplied.Name()
+	originalOpen := openOwnedSelectionTerminal
+	t.Cleanup(func() { openOwnedSelectionTerminal = originalOpen })
+	called := false
+	openOwnedSelectionTerminal = func(gotPath string) (*os.File, error) {
+		called = true
+		if gotPath != path {
+			t.Fatalf("path=%q want %q", gotPath, path)
+		}
+		return os.OpenFile(gotPath, os.O_RDONLY|syscall.O_NOCTTY|syscall.O_NONBLOCK, 0)
+	}
+	input, release, err := openResolvedTerminalSelectionInput(supplied, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !called {
+		t.Fatal("owned terminal opener was not called")
+	}
+	if input == supplied {
+		t.Fatal("selection input reused supplied descriptor")
+	}
+	if err := release(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := supplied.Stat(); err != nil {
+		t.Fatalf("release closed supplied input: %v", err)
+	}
+}
+
+func TestOpenResolvedTerminalSelectionInputRejectsIdentityMismatch(t *testing.T) {
+	supplied, err := os.CreateTemp(t.TempDir(), "supplied")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer supplied.Close()
+	different, err := os.CreateTemp(t.TempDir(), "different")
+	if err != nil {
+		t.Fatal(err)
+	}
+	different.Close()
+	originalOpen := openOwnedSelectionTerminal
+	t.Cleanup(func() { openOwnedSelectionTerminal = originalOpen })
+	var reopened *os.File
+	openOwnedSelectionTerminal = func(string) (*os.File, error) {
+		reopened, err = os.Open(different.Name())
+		return reopened, err
+	}
+	if _, _, err := openResolvedTerminalSelectionInput(supplied, supplied.Name()); err == nil || !strings.Contains(err.Error(), "does not match") {
+		t.Fatalf("identity mismatch err=%v", err)
+	}
+	if _, err := reopened.Stat(); err == nil {
+		t.Fatal("identity mismatch left reopened terminal open")
+	}
+}
+
+func TestTerminalPathResolvesSuppliedDescriptor(t *testing.T) {
+	supplied, err := os.CreateTemp(t.TempDir(), "supplied")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer supplied.Close()
+	path, err := terminalPath(supplied)
+	if err != nil {
+		t.Fatal(err)
+	}
+	reopened, err := os.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer reopened.Close()
+	if err := sameTerminal(supplied, reopened); err != nil {
+		t.Fatalf("resolved path did not reopen supplied descriptor: %v", err)
 	}
 }
 
