@@ -139,11 +139,13 @@ func TestWritePickFieldHandlesNarrowLabels(t *testing.T) {
 }
 
 func TestAbsoluteExcludePathsRejectsEmptyAndResolvesRelative(t *testing.T) {
-	if _, err := absoluteExcludePaths([]string{"  "}, "/base"); err == nil {
+	base := t.TempDir()
+	if _, err := absoluteExcludePaths([]string{"  "}, base); err == nil {
 		t.Fatal("accepted an empty exclusion path")
 	}
-	paths, err := absoluteExcludePaths([]string{"relative", "/absolute/../excluded"}, "/base")
-	if err != nil || !reflect.DeepEqual(paths, []string{"/base/relative", "/excluded"}) {
+	absolute := filepath.Join(t.TempDir(), "absolute", "..", "excluded")
+	paths, err := absoluteExcludePaths([]string{"relative", absolute}, base)
+	if err != nil || !reflect.DeepEqual(paths, []string{filepath.Join(base, "relative"), filepath.Clean(absolute)}) {
 		t.Fatalf("paths=%q err=%v", paths, err)
 	}
 }
@@ -454,11 +456,30 @@ func TestPickRejectsNonTerminalBeforeScanning(t *testing.T) {
 func TestPickRunsWithTerminalStreams(t *testing.T) {
 	repo := testgit.NewRepository(t)
 	target := repo.CreateMergedWorktree(t, "picked")
+	client := gitx.New("git")
+	repositories, discoveryErrs := client.Discover(context.Background(), []string{repo.Root})
+	if len(discoveryErrs) != 0 || len(repositories) != 1 {
+		t.Fatalf("discover repositories=%+v errors=%v", repositories, discoveryErrs)
+	}
+	registered, err := client.List(context.Background(), repositories[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	registeredTarget := ""
+	for _, worktree := range registered {
+		if worktree.Branch == "picked" {
+			registeredTarget = worktree.Path
+			break
+		}
+	}
+	if registeredTarget == "" {
+		t.Fatalf("picked worktree was not registered: %q", target)
+	}
 	var stdout, stderr bytes.Buffer
-	deps := mainCommandDependencies(gitx.New("git"), func() (string, error) { return repo.Path, nil })
+	deps := mainCommandDependencies(client, func() (string, error) { return repo.Path, nil })
 	deps.isTerminal = func(any) bool { return true }
 	code := run(context.Background(), []string{"clean", "--pick", repo.Root}, processIO{stdin: strings.NewReader("1\n"), stdout: &stdout, stderr: &stderr}, deps)
-	if code != 0 || !strings.Contains(stdout.String(), target) || !strings.Contains(stdout.String(), "would_remove") || !strings.Contains(stderr.String(), "Choose worktrees by number") {
+	if code != 0 || !strings.Contains(stdout.String(), filepath.ToSlash(registeredTarget)) || !strings.Contains(stdout.String(), "would_remove") || !strings.Contains(stdout.String(), "dry run: true") || !strings.Contains(stderr.String(), "Choose worktrees by number") {
 		t.Fatalf("code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
 	}
 	if _, err := os.Stat(target); err != nil {
