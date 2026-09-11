@@ -84,6 +84,90 @@ func TestExplainExcludedTargetRetainsOnlyRegistrationEvidence(t *testing.T) {
 	}
 }
 
+func TestExplainWithExclusionsRejectsBackendWithoutScopedResolverBeforeReads(t *testing.T) {
+	root := t.TempDir()
+	target := filepath.Join(root, "target")
+	if err := os.Mkdir(target, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	backend := &exclusionSpy{fakeGit: newFakeGit(model.RegisteredWorktree{Path: target, Branch: "feature", Head: "abc"})}
+	backend.repository = model.Repository{PrimaryPath: root, CommonDir: filepath.Join(root, ".git")}
+	backend.repositories = []model.Repository{backend.repository}
+
+	inv, err := New(backend).Run(context.Background(), Options{ExplainPath: target, ExcludePaths: []string{root}, ExplainEvidence: true})
+	if err == nil || !strings.Contains(strings.Join(inv.Errors, "\n"), "explain resolver") {
+		t.Fatalf("err=%v inventory=%+v", err, inv)
+	}
+	if backend.defaultCalls != 0 || backend.cleanCalls != 0 || backend.diskCalls != 0 {
+		t.Fatalf("unsupported scoped resolver performed reads: default=%d clean=%d disk=%d", backend.defaultCalls, backend.cleanCalls, backend.diskCalls)
+	}
+}
+
+func TestExplainScopedResolverMembershipFailureStopsBeforeClassification(t *testing.T) {
+	root := t.TempDir()
+	loop := filepath.Join(root, "loop")
+	if err := os.Symlink(loop, loop); err != nil {
+		t.Skipf("create symlink loop: %v", err)
+	}
+	backend := &exclusionExplainSpy{exclusionSpy: &exclusionSpy{fakeGit: newFakeGit(model.RegisteredWorktree{Path: loop, Branch: "feature", Head: "abc"})}}
+	backend.repository = model.Repository{PrimaryPath: root, CommonDir: filepath.Join(root, ".git")}
+	backend.repositories = []model.Repository{backend.repository}
+
+	inv, err := New(backend).Run(context.Background(), Options{ExplainPath: loop, ExcludePaths: []string{root}, ExplainEvidence: true})
+	if err == nil || !strings.Contains(strings.Join(inv.Errors, "\n"), "exclusion membership") {
+		t.Fatalf("err=%v inventory=%+v", err, inv)
+	}
+	if backend.defaultCalls != 0 || backend.cleanCalls != 0 || backend.diskCalls != 0 {
+		t.Fatalf("unprovable scoped membership performed reads: default=%d clean=%d disk=%d", backend.defaultCalls, backend.cleanCalls, backend.diskCalls)
+	}
+}
+
+func TestExplainScopedResolverClassifiesIncludedTarget(t *testing.T) {
+	root := t.TempDir()
+	target, excluded := filepath.Join(root, "target"), filepath.Join(root, "excluded")
+	for _, path := range []string{target, excluded} {
+		if err := os.Mkdir(path, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	backend := &exclusionExplainSpy{exclusionSpy: &exclusionSpy{fakeGit: newFakeGit(model.RegisteredWorktree{Path: target, Branch: "feature", Head: "abc"})}}
+	backend.repository = model.Repository{PrimaryPath: root, CommonDir: filepath.Join(root, ".git")}
+	backend.repositories, backend.clean, backend.ancestor, backend.remote = []model.Repository{backend.repository}, []bool{true}, true, true
+
+	inv, err := New(backend).Run(context.Background(), Options{ExplainPath: target, ExcludePaths: []string{excluded}, ExplainEvidence: true})
+	if err != nil || len(inv.Worktrees) != 1 || inv.Worktrees[0].Classification != model.SafeToRemove {
+		t.Fatalf("err=%v inventory=%+v", err, inv)
+	}
+	canonicalExcluded, canonicalErr := canonicalExclusionPath(excluded)
+	if canonicalErr != nil {
+		t.Fatal(canonicalErr)
+	}
+	if backend.defaultCalls != 1 || backend.cleanCalls != 1 || len(backend.excludePaths) != 1 || backend.excludePaths[0] != canonicalExcluded {
+		t.Fatalf("scoped resolver calls: default=%d clean=%d excluded=%q", backend.defaultCalls, backend.cleanCalls, backend.excludePaths)
+	}
+}
+
+func TestExplainScopedResolverRetainsTargetWhenDefaultBranchFails(t *testing.T) {
+	root := t.TempDir()
+	target, excluded := filepath.Join(root, "target"), filepath.Join(root, "excluded")
+	for _, path := range []string{target, excluded} {
+		if err := os.Mkdir(path, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	backend := &exclusionExplainSpy{exclusionSpy: &exclusionSpy{fakeGit: newFakeGit(model.RegisteredWorktree{Path: target, Branch: "feature", Head: "abc"})}}
+	backend.repository = model.Repository{PrimaryPath: root, CommonDir: filepath.Join(root, ".git")}
+	backend.repositories, backend.defaultErr, backend.clean = []model.Repository{backend.repository}, errors.New("default unavailable"), []bool{true}
+
+	inv, err := New(backend).Run(context.Background(), Options{ExplainPath: target, ExcludePaths: []string{excluded}, ExplainEvidence: true})
+	if err == nil || len(inv.Worktrees) != 1 || inv.Worktrees[0].Classification != model.Kept || !strings.Contains(inv.Worktrees[0].Reason, "default branch") {
+		t.Fatalf("err=%v inventory=%+v", err, inv)
+	}
+	if backend.defaultCalls != 1 || backend.cleanCalls != 1 || backend.diskCalls != 1 {
+		t.Fatalf("default failure did not use target-only diagnostic reads: default=%d clean=%d disk=%d", backend.defaultCalls, backend.cleanCalls, backend.diskCalls)
+	}
+}
+
 func hasExplainCheck(item model.Worktree, id string, status model.ExplainCheckStatus) bool {
 	for _, check := range item.ExplainChecks {
 		if check.ID == id && check.Status == status {
@@ -531,11 +615,27 @@ type exclusionSpy struct {
 	diskPaths       []string
 	removePaths     []string
 	discoveryErrors []error
+	defaultCalls    int
 }
 
 func (f *exclusionSpy) DiscoverExcluding(ctx context.Context, roots, _ []string) ([]model.Repository, []error) {
 	repositories, _ := f.Discover(ctx, roots)
 	return repositories, f.discoveryErrors
+}
+
+func (f *exclusionSpy) DefaultBranch(ctx context.Context, repo model.Repository) (string, error) {
+	f.defaultCalls++
+	return f.fakeGit.DefaultBranch(ctx, repo)
+}
+
+type exclusionExplainSpy struct {
+	*exclusionSpy
+	excludePaths []string
+}
+
+func (f *exclusionExplainSpy) ResolveExplainExcluding(ctx context.Context, path string, excluded []string) (model.Repository, model.RegisteredWorktree, bool, error) {
+	f.excludePaths = append([]string(nil), excluded...)
+	return f.fakeGit.ResolveExplain(ctx, path)
 }
 
 func (f *exclusionSpy) DiskUsage(path string) (int64, error) {
