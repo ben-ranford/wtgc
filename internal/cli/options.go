@@ -164,8 +164,8 @@ func Parse(args []string) (Options, error) {
 		return opts, nil
 	}
 	if opts.Command == CommandDiff {
-		if opts.Yes || opts.Interactive || opts.DeleteBranch || opts.Provider != "" || opts.ProviderRemote != "" || dryRun.set || len(roots) != 0 || len(selectedPaths) != 0 {
-			return Options{}, &UsageError{Message: "diff only accepts BEFORE AFTER and optional --json"}
+		if err := validateDiffFlags(fs); err != nil {
+			return Options{}, err
 		}
 		if len(fs.Args()) != 2 {
 			return Options{}, &UsageError{Message: "diff requires exactly BEFORE and AFTER inventory files"}
@@ -241,6 +241,19 @@ func Parse(args []string) (Options, error) {
 	opts.HasReclaimTarget = reclaimTarget.set
 
 	return opts, nil
+}
+
+func validateDiffFlags(fs *flag.FlagSet) error {
+	var invalid string
+	fs.Visit(func(value *flag.Flag) {
+		if value.Name != "json" {
+			invalid = "--" + value.Name
+		}
+	})
+	if invalid != "" {
+		return &UsageError{Message: "diff only accepts BEFORE AFTER and optional --json"}
+	}
+	return nil
 }
 
 type reclaimTargetOption struct {

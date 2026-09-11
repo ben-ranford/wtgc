@@ -52,7 +52,14 @@ func TestParseDiffAcceptsOnlyTwoFilesAndJSON(t *testing.T) {
 			t.Fatalf("args=%v opts=%+v err=%v", args, opts, err)
 		}
 	}
-	for _, args := range [][]string{{"diff"}, {"diff", "one"}, {"diff", "one", "two", "three"}, {"diff", "--yes", "one", "two"}, {"diff", "--scan-root", "/tmp", "one", "two"}, {"diff", "--select", "/tmp/wt", "one", "two"}, {"diff", "--provider", "github", "one", "two"}, {"diff", "--dry-run", "one", "two"}} {
+	for _, args := range [][]string{
+		{"diff"}, {"diff", "one"}, {"diff", "one", "two", "three"},
+		{"diff", "--yes", "one", "two"}, {"diff", "--scan-root", "/tmp", "one", "two"},
+		{"diff", "--select", "/tmp/wt", "one", "two"}, {"diff", "--provider", "github", "one", "two"},
+		{"diff", "--dry-run", "one", "two"}, {"diff", "--exclude", "/tmp/ignored", "one", "two"},
+		{"diff", "--retention", "1h", "one", "two"}, {"diff", "--cache-threshold", "1", "one", "two"},
+		{"diff", "--pick", "one", "two"},
+	} {
 		if _, err := Parse(args); err == nil || !IsUsageError(err) {
 			t.Fatalf("Parse(%v) error=%v", args, err)
 		}
