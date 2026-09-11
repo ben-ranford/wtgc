@@ -114,8 +114,12 @@ func run(ctx context.Context, args []string, streams processIO, deps commandDepe
 			return 2
 		}
 	}
+	roots := opts.Roots
+	if opts.Command == cli.CommandExplain {
+		roots = []string{explainScanRoot(opts.ExplainPath)}
+	}
 	appOptions := app.Options{
-		Roots:           opts.Roots,
+		Roots:           roots,
 		Execute:         opts.Command == cli.CommandClean && !opts.DryRun,
 		Interactive:     opts.Interactive,
 		DeleteBranch:    opts.DeleteBranch,
@@ -124,6 +128,7 @@ func run(ctx context.Context, args []string, streams processIO, deps commandDepe
 		CacheThreshold:  opts.CacheThreshold,
 		ProviderRemote:  opts.ProviderRemote,
 		ExplainEvidence: opts.Command == cli.CommandExplain,
+		ExplainPath:     opts.ExplainPath,
 	}
 	if opts.Command == cli.CommandClean {
 		appOptions.SelectedPaths = opts.SelectedPaths
@@ -171,6 +176,20 @@ func run(ctx context.Context, args []string, streams processIO, deps commandDepe
 		return 1
 	}
 	return 0
+}
+
+func explainScanRoot(path string) string {
+	root := filepath.Dir(path)
+	for {
+		if _, err := os.Stat(root); err == nil {
+			return root
+		}
+		parent := filepath.Dir(root)
+		if parent == root {
+			return root
+		}
+		root = parent
+	}
 }
 
 func writeExplain(streams processIO, inventory model.Inventory, opts cli.Options, format report.Format) int {

@@ -57,6 +57,7 @@ type Options struct {
 	// ExplainEvidence requests classifier trace data for wtgc explain only.
 	// Normal inventory/review scans retain their allocation and output contract.
 	ExplainEvidence bool
+	ExplainPath     string
 }
 
 // App coordinates Git inspection without weakening Git's own safety checks.
@@ -95,9 +96,9 @@ func (a *App) Run(ctx context.Context, opts Options) (model.Inventory, error) {
 		return inv, errors.New("no Git repositories with registered worktrees found")
 	}
 
-	a.scanRepositories(ctx, repositories, scanOptions{protectedPath: opts.ProtectedPath, provider: opts.Provider, providerRemote: opts.ProviderRemote, now: now, explainEvidence: opts.ExplainEvidence}, &inv)
+	a.scanRepositories(ctx, repositories, scanOptions{protectedPath: opts.ProtectedPath, provider: opts.Provider, providerRemote: opts.ProviderRemote, now: now, explainEvidence: opts.ExplainEvidence, explainPath: opts.ExplainPath}, &inv)
 	a.addCacheWarnings(ctx, opts.CacheThreshold, opts.CacheScanner, &inv)
-	a.applyRetention(now, opts.Retention, &inv)
+	a.applyRetention(now, opts.Retention, opts.ExplainEvidence, &inv)
 	sort.Slice(inv.Worktrees, func(i, j int) bool {
 		if inv.Worktrees[i].Repository == inv.Worktrees[j].Repository {
 			return inv.Worktrees[i].Path < inv.Worktrees[j].Path
@@ -138,13 +139,15 @@ func (a *App) addCacheWarnings(ctx context.Context, threshold int64, scanner fun
 	}
 }
 
-func (a *App) applyRetention(now time.Time, retention time.Duration, inv *model.Inventory) {
-	if retention == 0 {
-		return
-	}
+func (a *App) applyRetention(now time.Time, retention time.Duration, explainEvidence bool, inv *model.Inventory) {
 	for i := range inv.Worktrees {
 		item := &inv.Worktrees[i]
+		if retention == 0 {
+			traceRetention(item, explainEvidence, model.ExplainNotEvaluated, "not evaluated; no retention window was requested")
+			continue
+		}
 		if item.Classification != model.SafeToRemove {
+			traceRetention(item, explainEvidence, model.ExplainNotEvaluated, "not evaluated because an earlier safety decision short-circuited classification")
 			continue
 		}
 		observed, basis, err := retentionObservedAt(item)
@@ -153,6 +156,7 @@ func (a *App) applyRetention(now time.Time, retention time.Duration, inv *model.
 			if err != nil {
 				item.Error = fmt.Sprintf("retention timestamp: %v", err)
 			}
+			traceRetention(item, explainEvidence, model.ExplainUnavailable, "retention timestamp could not be proven")
 			continue
 		}
 		eligible := observed.Add(retention)
@@ -161,8 +165,18 @@ func (a *App) applyRetention(now time.Time, retention time.Duration, inv *model.
 		details.Remaining = eligible.Sub(now)
 		if now.Before(eligible) {
 			item.Classification, item.Reason = model.Kept, "kept until retention window elapses"
+			traceRetention(item, explainEvidence, model.ExplainBlocked, "basis="+basis+" eligible_at="+eligible.Format(time.RFC3339))
+		} else {
+			traceRetention(item, explainEvidence, model.ExplainPassed, "basis="+basis+" eligible_at="+eligible.Format(time.RFC3339))
 		}
 	}
+}
+
+func traceRetention(item *model.Worktree, enabled bool, status model.ExplainCheckStatus, detail string) {
+	if !enabled {
+		return
+	}
+	item.Details().ExplainChecks = append(item.ExplainChecks, model.ExplainCheck{ID: "retention", Status: status, Detail: detail})
 }
 
 func retentionObservedAt(item *model.Worktree) (time.Time, string, error) {
@@ -210,14 +224,37 @@ type scanOptions struct {
 	providerRemote  string
 	now             time.Time
 	explainEvidence bool
+	explainPath     string
 }
 
 func (a *App) scanRepositories(ctx context.Context, repositories []model.Repository, options scanOptions, inv *model.Inventory) {
 	jobs := a.collectClassificationJobs(ctx, repositories, options.protectedPath, inv)
+	if options.explainPath != "" {
+		jobs = filterExplainJobs(jobs, options.explainPath)
+	}
 	if len(jobs) == 0 {
 		return
 	}
 	a.classifyJobs(ctx, jobs, options.provider, options.providerRemote, options.now, options.explainEvidence, inv)
+}
+
+func filterExplainJobs(jobs []classificationJob, path string) []classificationJob {
+	filtered := jobs[:0]
+	for _, job := range jobs {
+		if sameExplainPath(job.record.Path, path) {
+			filtered = append(filtered, job)
+		}
+	}
+	return filtered
+}
+
+func sameExplainPath(left, right string) bool {
+	leftResolved, leftErr := filepath.EvalSymlinks(left)
+	rightResolved, rightErr := filepath.EvalSymlinks(right)
+	if leftErr == nil && rightErr == nil {
+		return filepath.Clean(leftResolved) == filepath.Clean(rightResolved)
+	}
+	return filepath.Clean(left) == filepath.Clean(right)
 }
 
 func (a *App) collectClassificationJobs(ctx context.Context, repositories []model.Repository, protectedPath string, inv *model.Inventory) []classificationJob {

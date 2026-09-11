@@ -134,7 +134,7 @@ func Parse(args []string) (Options, error) {
 		return Options{}, &UsageError{Message: err.Error()}
 	}
 	if opts.Command == CommandReview || opts.Command == CommandExplain {
-		if err := validateReviewExecutionFlags(fs, dryRun); err != nil {
+		if err := validateReadOnlyFlags(opts.Command, fs, dryRun); err != nil {
 			return Options{}, err
 		}
 		opts.DryRun = true
@@ -192,6 +192,9 @@ func Parse(args []string) (Options, error) {
 			}
 		}
 	}
+	if opts.Command == CommandExplain && len(selectedPaths) > 0 {
+		return Options{}, &UsageError{Message: "explain does not accept --select"}
+	}
 
 	if len(roots) == 0 {
 		roots = append(roots, ".")
@@ -213,7 +216,7 @@ func isReviewClassification(value string) bool {
 	}
 }
 
-func validateReviewExecutionFlags(fs *flag.FlagSet, dryRun boolOption) error {
+func validateReadOnlyFlags(command string, fs *flag.FlagSet, dryRun boolOption) error {
 	var destructive string
 	fs.Visit(func(value *flag.Flag) {
 		switch value.Name {
@@ -222,7 +225,7 @@ func validateReviewExecutionFlags(fs *flag.FlagSet, dryRun boolOption) error {
 		}
 	})
 	if destructive != "" || (dryRun.set && !dryRun.value) {
-		return &UsageError{Message: "review is read-only and rejects --yes, --interactive, --delete-branch, and --dry-run=false"}
+		return &UsageError{Message: command + " is read-only and rejects --yes, --interactive, --delete-branch, and --dry-run=false"}
 	}
 	return nil
 }

@@ -1431,7 +1431,7 @@ func TestSafetyFailuresDuringRetentionAndRevalidationKeepWorktree(t *testing.T) 
 	t.Parallel()
 	now := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
 	inv := model.Inventory{Worktrees: []model.Worktree{{Path: "/path/that/does/not/exist", Classification: model.SafeToRemove}}}
-	New(nil).applyRetention(now, time.Hour, &inv)
+	New(nil).applyRetention(now, time.Hour, false, &inv)
 	if item := inv.Worktrees[0]; item.Classification != model.Kept || !contains(item.Error, "retention timestamp") {
 		t.Fatalf("retention failure item=%+v", item)
 	}
