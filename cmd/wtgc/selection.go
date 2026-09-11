@@ -193,6 +193,9 @@ func writePickField(text *strings.Builder, indent, label, value string) {
 		runes = runes[width:]
 		linePrefix = indent
 		width = 80 - len(linePrefix)
+		if width < 1 {
+			width = 1
+		}
 	}
 	fmt.Fprintf(text, "%s%s\n", linePrefix, string(runes))
 }

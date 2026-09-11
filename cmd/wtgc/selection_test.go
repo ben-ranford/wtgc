@@ -130,6 +130,24 @@ func TestNumberedPickerReportsUnmeasuredBytesHonestly(t *testing.T) {
 	}
 }
 
+func TestWritePickFieldHandlesNarrowLabels(t *testing.T) {
+	var text strings.Builder
+	writePickField(&text, strings.Repeat(" ", 81), "label=", "value")
+	if !strings.HasSuffix(text.String(), "e\n") || strings.Count(text.String(), "\n") != len("value") {
+		t.Fatalf("narrow field=%q", text.String())
+	}
+}
+
+func TestAbsoluteExcludePathsRejectsEmptyAndResolvesRelative(t *testing.T) {
+	if _, err := absoluteExcludePaths([]string{"  "}, "/base"); err == nil {
+		t.Fatal("accepted an empty exclusion path")
+	}
+	paths, err := absoluteExcludePaths([]string{"relative", "/absolute/../excluded"}, "/base")
+	if err != nil || !reflect.DeepEqual(paths, []string{"/base/relative", "/excluded"}) {
+		t.Fatalf("paths=%q err=%v", paths, err)
+	}
+}
+
 func TestNumberedPickerDistinguishesFailuresFromVoluntaryCancellation(t *testing.T) {
 	preview := app.PickPreview{Rows: []app.PickRow{{Number: 1, Selectable: true}}}
 	readFailure := errors.New("read failed")
@@ -444,6 +462,21 @@ func TestPickRejectsNonTerminalBeforeScanning(t *testing.T) {
 	code := run(context.Background(), []string{"clean", "--pick"}, processIO{stdin: strings.NewReader("1\n"), stdout: &stdout, stderr: &stderr}, mainCommandDependencies(backend, func() (string, error) { return "/repo", nil }))
 	if code != 2 || !strings.Contains(stderr.String(), "requires terminal") || stdout.Len() != 0 {
 		t.Fatalf("code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+}
+
+func TestPickRunsWithTerminalStreams(t *testing.T) {
+	repo := testgit.NewRepository(t)
+	target := repo.CreateMergedWorktree(t, "picked")
+	var stdout, stderr bytes.Buffer
+	deps := mainCommandDependencies(gitx.New("git"), func() (string, error) { return repo.Path, nil })
+	deps.isTerminal = func(any) bool { return true }
+	code := run(context.Background(), []string{"clean", "--pick", repo.Root}, processIO{stdin: strings.NewReader("1\n"), stdout: &stdout, stderr: &stderr}, deps)
+	if code != 0 || !strings.Contains(stdout.String(), target) || !strings.Contains(stdout.String(), "would_remove") || !strings.Contains(stderr.String(), "Choose worktrees by number") {
+		t.Fatalf("code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+	if _, err := os.Stat(target); err != nil {
+		t.Fatalf("dry-run picker removed %q: %v", target, err)
 	}
 }
 
