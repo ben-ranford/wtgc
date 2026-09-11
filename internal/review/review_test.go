@@ -3,6 +3,7 @@ package review
 import (
 	"encoding/json"
 	"fmt"
+	"math"
 	"strings"
 	"testing"
 
@@ -117,6 +118,95 @@ func TestBuildEncodesEmptyGroupsAsArray(t *testing.T) {
 	if !strings.Contains(string(encoded), `"groups":[]`) {
 		t.Fatalf("document=%s", encoded)
 	}
+}
+
+func TestBuildReclaimProposalSelectsDeterministicShortestPrefix(t *testing.T) {
+	inv := model.Inventory{SchemaVersion: "1.1.0", Worktrees: []model.Worktree{
+		worktree("/z", "/repo-z", model.SafeToRemove, 10),
+		worktree("/b", "/repo-a", model.SafeToRemove, 20),
+		worktree("/a", "/repo-a", model.SafeToRemove, 20),
+		worktree("/kept", "/repo", model.Kept, 100),
+	}}
+	doc, err := Build(inv, Options{HasReclaimTarget: true, ReclaimTarget: 30})
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := doc.Proposal
+	if p == nil || !p.TargetMet || p.EstimatedBytes != 40 || p.ExcessBytes != 10 || p.ShortfallBytes != 0 || len(p.Candidates) != 2 {
+		t.Fatalf("proposal=%+v", p)
+	}
+	if p.Candidates[0].Path != "/a" || p.Candidates[1].Path != "/b" || p.SchemaVersion != "1.0.0" || !strings.Contains(p.SelectionRule, "minimizes candidate count") {
+		t.Fatalf("proposal=%+v", p)
+	}
+}
+
+func TestBuildReclaimProposalQualifiesUnmetAndIneligibleRows(t *testing.T) {
+	measured := false
+	inv := model.Inventory{Errors: []string{"scan interrupted"}, ExcludedPaths: []string{"/protected"}, Worktrees: []model.Worktree{
+		worktree("/eligible", "/repo", model.SafeToRemove, 5),
+		worktree("/zero", "/repo", model.SafeToRemove, 0),
+		{Path: "/unknown", Repository: "/repo", Classification: model.SafeToRemove, DiskBytesMeasured: &measured},
+		{Path: "/excluded", Repository: "/repo", Classification: model.SafeToRemove, DiskBytes: 100, Excluded: true},
+		{Path: "/stale", Repository: "/repo", Classification: model.SafeToRemove, DiskBytes: 100, Prunable: true},
+		{Path: "/failed", Repository: "/repo", Classification: model.SafeToRemove, DiskBytes: 100, Error: "disk read failed"},
+	}}
+	doc, err := Build(inv, Options{HasReclaimTarget: true, ReclaimTarget: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := doc.Proposal
+	if p.TargetMet || p.EstimatedBytes != 5 || p.ShortfallBytes != 5 || len(p.Candidates) != 1 || p.Candidates[0].Path != "/eligible" {
+		t.Fatalf("proposal=%+v", p)
+	}
+	joined := strings.Join(p.Uncertainties, " ")
+	for _, want := range []string{"scan error", "5 scoped safe", "excluded invocation", "do not promise"} {
+		if !strings.Contains(joined, want) {
+			t.Fatalf("uncertainties=%q missing %q", joined, want)
+		}
+	}
+}
+
+func TestBuildReclaimProposalFiltersAndAvoidsIntegerOverflow(t *testing.T) {
+	inv := model.Inventory{Worktrees: []model.Worktree{
+		worktree("/first", "/included", model.SafeToRemove, math.MaxInt64-1),
+		worktree("/second", "/included", model.SafeToRemove, math.MaxInt64),
+		worktree("/other", "/other", model.SafeToRemove, math.MaxInt64),
+	}}
+	doc, err := Build(inv, Options{Repositories: []string{"/included"}, HasReclaimTarget: true, ReclaimTarget: math.MaxInt64})
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := doc.Proposal
+	if !p.TargetMet || len(p.Candidates) != 1 || p.Candidates[0].Path != "/second" || p.EstimatedBytes != uint64(math.MaxInt64) || p.ExcessBytes != 0 {
+		t.Fatalf("proposal=%+v", p)
+	}
+	encoded, err := json.Marshal(BuildMust(t, inv, Options{}))
+	if err != nil || strings.Contains(string(encoded), "proposal") {
+		t.Fatalf("unflagged document changed: %s err=%v", encoded, err)
+	}
+}
+
+func TestBuildReclaimProposalRejectsSelection(t *testing.T) {
+	_, err := Build(model.Inventory{}, Options{HasReclaimTarget: true, ReclaimTarget: 1, SelectedPaths: []string{"/one"}})
+	if err == nil || !strings.Contains(err.Error(), "cannot be combined") {
+		t.Fatalf("Build error=%v", err)
+	}
+}
+
+func TestBuildReclaimProposalRejectsNonPositiveTarget(t *testing.T) {
+	_, err := Build(model.Inventory{}, Options{HasReclaimTarget: true})
+	if err == nil || !strings.Contains(err.Error(), "greater than zero") {
+		t.Fatalf("Build error=%v", err)
+	}
+}
+
+func BuildMust(t *testing.T, inv model.Inventory, opts Options) Document {
+	t.Helper()
+	doc, err := Build(inv, opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return doc
 }
 
 func worktree(path, repository string, classification model.Classification, size int64) model.Worktree {

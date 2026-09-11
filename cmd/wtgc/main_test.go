@@ -412,7 +412,7 @@ func TestRunReviewRejectsDestructiveFlagsWithStaticInformation(t *testing.T) {
 }
 
 func TestRunReviewOnlyCreatesProviderWhenExplicitlyRequested(t *testing.T) {
-	backend := newMainFakeGit(mainRecord("main"), mainRemovableRecord("feature"))
+	backend := &reviewNoMutationGit{mainFakeGit: newMainFakeGit(mainRecord("main"), mainRemovableRecord("feature"))}
 	providerCalls := 0
 	dependencies := commandDependencies{backend: backend, getwd: func() (string, error) { return "/repo", nil }, newProvider: func() provider.MergeFinder { providerCalls++; return mainProofFinder{} }}
 	for _, args := range [][]string{{"review", "--json"}, {"review", "--provider", "github", "--json"}} {
@@ -423,6 +423,27 @@ func TestRunReviewOnlyCreatesProviderWhenExplicitlyRequested(t *testing.T) {
 	}
 	if providerCalls != 1 {
 		t.Fatalf("provider calls=%d, want one explicit opt-in", providerCalls)
+	}
+}
+
+func TestRunReviewReclaimTargetIsAdvisoryAndProviderOptIn(t *testing.T) {
+	backend := &reviewNoMutationGit{mainFakeGit: newMainFakeGit(mainRecord("main"), mainRemovableRecord("feature"))}
+	providerCalls := 0
+	dependencies := commandDependencies{backend: backend, getwd: func() (string, error) { return "/repo", nil }, newProvider: func() provider.MergeFinder { providerCalls++; return mainProofFinder{} }}
+	var stdout, stderr bytes.Buffer
+	code := run(context.Background(), []string{"review", "--json", "--reclaim-target", "1"}, processIO{stdin: strings.NewReader(""), stdout: &stdout, stderr: &stderr}, dependencies)
+	if code != 0 || stderr.Len() != 0 || backend.removes != 0 || backend.prunes != 0 || backend.deletes != 0 || providerCalls != 0 {
+		t.Fatalf("code=%d stderr=%q mutations=%d/%d/%d providers=%d", code, stderr.String(), backend.removes, backend.prunes, backend.deletes, providerCalls)
+	}
+	var document struct {
+		Proposal *struct {
+			SchemaVersion string `json:"schema_version"`
+			Advisory      bool   `json:"advisory"`
+			TargetMet     bool   `json:"target_met"`
+		} `json:"proposal"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &document); err != nil || document.Proposal == nil || document.Proposal.SchemaVersion != "1.0.0" || !document.Proposal.Advisory {
+		t.Fatalf("review JSON=%s err=%v proposal=%+v", stdout.String(), err, document.Proposal)
 	}
 }
 

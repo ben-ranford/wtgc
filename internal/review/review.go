@@ -11,11 +11,13 @@ import (
 const SchemaVersion = "1.0.0"
 
 type Options struct {
-	Repositories    []string
-	Classifications []string
-	GroupBy         string
-	SortBy          string
-	SelectedPaths   []string
+	Repositories     []string
+	Classifications  []string
+	GroupBy          string
+	SortBy           string
+	SelectedPaths    []string
+	ReclaimTarget    int64
+	HasReclaimTarget bool
 }
 
 // Document keeps the complete scan inventory separate from the projected view.
@@ -23,6 +25,29 @@ type Document struct {
 	ReviewSchemaVersion string          `json:"review_schema_version"`
 	Inventory           model.Inventory `json:"inventory"`
 	View                View            `json:"view"`
+	Proposal            *Proposal       `json:"proposal,omitempty"`
+}
+
+// Proposal is a versioned, advisory-only reclaim estimate. It does not
+// authorize cleanup; each candidate must pass clean's fresh validation.
+type Proposal struct {
+	SchemaVersion  string      `json:"schema_version"`
+	Advisory       bool        `json:"advisory"`
+	TargetBytes    int64       `json:"target_bytes"`
+	TargetMet      bool        `json:"target_met"`
+	EstimatedBytes uint64      `json:"estimated_bytes"`
+	ExcessBytes    uint64      `json:"excess_bytes"`
+	ShortfallBytes uint64      `json:"shortfall_bytes"`
+	Candidates     []Candidate `json:"candidates"`
+	SelectionRule  string      `json:"selection_rule"`
+	Authorization  string      `json:"authorization"`
+	Uncertainties  []string    `json:"uncertainties,omitempty"`
+}
+
+type Candidate struct {
+	Repository string `json:"repository"`
+	Path       string `json:"path"`
+	Bytes      int64  `json:"bytes"`
 }
 
 type View struct {
@@ -56,6 +81,12 @@ type Total struct {
 
 // Build validates advisory selections and deterministically projects inv.
 func Build(inv model.Inventory, opts Options) (Document, error) {
+	if opts.HasReclaimTarget && opts.ReclaimTarget <= 0 {
+		return Document{}, fmt.Errorf("--reclaim-target must be greater than zero")
+	}
+	if opts.HasReclaimTarget && len(opts.SelectedPaths) > 0 {
+		return Document{}, fmt.Errorf("--reclaim-target cannot be combined with --select")
+	}
 	selected, selectionErr := resolveSelections(inv.Worktrees, opts.SelectedPaths)
 	doc := Document{ReviewSchemaVersion: SchemaVersion, Inventory: inv}
 	doc.View.GroupBy, doc.View.SortBy = opts.GroupBy, opts.SortBy
@@ -77,7 +108,81 @@ func Build(inv model.Inventory, opts Options) (Document, error) {
 	sortRows(visible, doc.View.SortBy)
 	doc.View.Totals.Visible = totalRows(visible)
 	doc.View.Groups = groupRows(visible, doc.View.GroupBy)
+	if opts.HasReclaimTarget {
+		doc.Proposal = buildProposal(inv, opts)
+	}
 	return doc, selectionErr
+}
+
+func buildProposal(inv model.Inventory, opts Options) *Proposal {
+	proposal := &Proposal{
+		SchemaVersion: "1.0.0", Advisory: true, TargetBytes: opts.ReclaimTarget,
+		Candidates:    []Candidate{},
+		SelectionRule: "shortest descending-size prefix; minimizes candidate count under estimates, not excess bytes or user disruption",
+		Authorization: "advisory only; cleanup requires explicit paths and fresh validation",
+	}
+	eligible := make([]model.Worktree, 0, len(inv.Worktrees))
+	unknown := 0
+	for _, worktree := range inv.Worktrees {
+		if !matches(worktree, opts) || worktree.Classification != model.SafeToRemove {
+			continue
+		}
+		if eligibleForProposal(worktree) {
+			eligible = append(eligible, worktree)
+		} else if uncertainSafeWorktree(worktree) {
+			unknown++
+		}
+	}
+	sort.Slice(eligible, func(i, j int) bool {
+		if eligible[i].DiskBytes != eligible[j].DiskBytes {
+			return eligible[i].DiskBytes > eligible[j].DiskBytes
+		}
+		left, right := proposalIdentity(eligible[i]), proposalIdentity(eligible[j])
+		return left < right
+	})
+	target := uint64(opts.ReclaimTarget)
+	for _, worktree := range eligible {
+		if proposal.EstimatedBytes >= target {
+			break
+		}
+		bytes := uint64(worktree.DiskBytes)
+		// The loop stops at an int64 target. Before this addition the total is
+		// below that target, so adding one positive int64 candidate fits uint64.
+		proposal.Candidates = append(proposal.Candidates, Candidate{Repository: worktree.Repository, Path: worktree.Path, Bytes: worktree.DiskBytes})
+		proposal.EstimatedBytes += bytes
+	}
+	proposal.TargetMet = proposal.EstimatedBytes >= target
+	if proposal.TargetMet {
+		proposal.ExcessBytes = proposal.EstimatedBytes - target
+	} else {
+		proposal.ShortfallBytes = target - proposal.EstimatedBytes
+	}
+	if len(inv.Errors) > 0 {
+		proposal.Uncertainties = append(proposal.Uncertainties, fmt.Sprintf("inventory has %d scan error(s); unobserved worktrees are not proposed", len(inv.Errors)))
+	}
+	if unknown > 0 {
+		proposal.Uncertainties = append(proposal.Uncertainties, fmt.Sprintf("%d scoped safe worktree(s) have an unknown, non-positive, excluded, stale, or failed measurement and were not proposed", unknown))
+	}
+	if len(inv.ExcludedPaths) > 0 {
+		proposal.Uncertainties = append(proposal.Uncertainties, "excluded invocation paths were not inspected or proposed")
+	}
+	proposal.Uncertainties = append(proposal.Uncertainties, "estimated bytes do not promise actual free disk space")
+	return proposal
+}
+
+func eligibleForProposal(worktree model.Worktree) bool {
+	return worktree.Path != "" && worktree.Repository != "" && worktree.DiskBytes > 0 &&
+		(worktree.DiskBytesMeasured == nil || *worktree.DiskBytesMeasured) &&
+		!worktree.Excluded && !worktree.Prunable && !worktree.Removed && worktree.Error == ""
+}
+
+func uncertainSafeWorktree(worktree model.Worktree) bool {
+	return worktree.Excluded || worktree.Prunable || worktree.Error != "" || worktree.DiskBytes <= 0 ||
+		(worktree.DiskBytesMeasured != nil && !*worktree.DiskBytesMeasured)
+}
+
+func proposalIdentity(worktree model.Worktree) string {
+	return worktree.Repository + "\x00" + worktree.Path
 }
 
 func resolveSelections(worktrees []model.Worktree, paths []string) (map[string]bool, error) {
