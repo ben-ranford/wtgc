@@ -310,7 +310,7 @@ func TestRunExplainReturnsUsageForAmbiguousResolverResult(t *testing.T) {
 	}
 }
 
-func TestExplainHelpersReportOperationalAndWriterFailures(t *testing.T) {
+func TestExplainHelpersResolveMissingTarget(t *testing.T) {
 	root := t.TempDir()
 	if got := explainScanRoot(filepath.Join(root, "missing", "worktree")); got != root {
 		t.Fatalf("scan root=%q, want %q", got, root)
@@ -323,8 +323,12 @@ func TestExplainHelpersReportOperationalAndWriterFailures(t *testing.T) {
 	if code := writeExplain(processIO{stdout: io.Discard, stderr: &stderr}, model.Inventory{}, options, report.FormatJSON, nil); code != 2 || !strings.Contains(stderr.String(), "unknown registered worktree") {
 		t.Fatalf("unknown path code=%d stderr=%q", code, stderr.String())
 	}
+}
+
+func TestExplainHelpersReportWriterAndDuplicateFailures(t *testing.T) {
+	options := cli.Options{ExplainPath: "/repo/wt", Retention: time.Hour}
 	worktree := model.Worktree{Path: "/repo/wt", Repository: "/repo", Classification: model.Kept}
-	options.ExplainPath = worktree.Path
+	var stderr bytes.Buffer
 	stderr.Reset()
 	if code := writeExplain(processIO{stdout: failingWriter{}, stderr: &stderr}, model.Inventory{Worktrees: []model.Worktree{worktree}}, options, report.FormatHuman, nil); code != 1 || !strings.Contains(stderr.String(), "write report") {
 		t.Fatalf("writer failure code=%d stderr=%q", code, stderr.String())
@@ -336,8 +340,14 @@ func TestExplainHelpersReportOperationalAndWriterFailures(t *testing.T) {
 	if code := writeExplain(processIO{stdout: io.Discard, stderr: &stderr}, model.Inventory{Worktrees: []model.Worktree{worktree, {Path: worktree.Path + "/", Repository: "/repo", Classification: model.Kept}}}, options, report.FormatJSON, nil); code != 2 || !strings.Contains(stderr.String(), "ambiguous review path") {
 		t.Fatalf("ambiguous match code=%d stderr=%q", code, stderr.String())
 	}
+}
+
+func TestExplainHelpersWriteOperationalResults(t *testing.T) {
+	options := cli.Options{ExplainPath: "/repo/wt", Retention: time.Hour}
+	worktree := model.Worktree{Path: "/repo/wt", Repository: "/repo", Classification: model.Kept}
 	operational := model.Inventory{Worktrees: []model.Worktree{worktree, {Path: worktree.Path + "/", Repository: "/repo", Classification: model.Kept}}, Errors: []string{"target inspection failed"}}
 	stdout := &bytes.Buffer{}
+	var stderr bytes.Buffer
 	stderr.Reset()
 	if code := writeExplain(processIO{stdout: stdout, stderr: &stderr}, operational, options, report.FormatJSON, errors.New("target inspection failed")); code != 1 || !strings.Contains(stdout.String(), `"operational_errors"`) || !strings.Contains(stdout.String(), "target inspection failed") {
 		t.Fatalf("operational ambiguity code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
@@ -347,8 +357,12 @@ func TestExplainHelpersReportOperationalAndWriterFailures(t *testing.T) {
 	if code := writeExplain(processIO{stdout: stdout, stderr: &stderr}, operational, options, report.FormatJSON, explainUsageFailure{message: "ambiguous registered worktree"}); code != 2 || !strings.Contains(stderr.String(), "ambiguous registered worktree") || stdout.Len() != 0 {
 		t.Fatalf("usage ambiguity code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
 	}
+}
+
+func TestExplainHelpersReportOperationalWriterFailure(t *testing.T) {
+	var stderr bytes.Buffer
 	stderr.Reset()
-	if code := writeOperationalExplain(processIO{stdout: failingWriter{}, stderr: &stderr}, options.ExplainPath, []string{"target inspection failed"}, report.FormatJSON); code != 1 || !strings.Contains(stderr.String(), "write report") {
+	if code := writeOperationalExplain(processIO{stdout: failingWriter{}, stderr: &stderr}, "/repo/wt", []string{"target inspection failed"}, report.FormatJSON); code != 1 || !strings.Contains(stderr.String(), "write report") {
 		t.Fatalf("operational writer failure code=%d stderr=%q", code, stderr.String())
 	}
 }

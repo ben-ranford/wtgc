@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -230,6 +231,55 @@ func TestCoverageGitParseAndDiscoveryErrors(t *testing.T) {
 	New(scriptedGit(t, all(2))).discoverRoot(context.Background(), root, seen, &errs)
 	if len(errs) == 0 {
 		t.Fatal("git discovery failure was hidden")
+	}
+}
+
+func TestDiscoverReportsUnresolvableCurrentDirectory(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("removing the active directory has different semantics on Windows")
+	}
+	original, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	if err := os.Chdir(dir); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := os.Chdir(original); err != nil {
+			t.Errorf("restore working directory: %v", err)
+		}
+	})
+	if err := os.Remove(dir); err != nil {
+		t.Fatal(err)
+	}
+	repos, errs := New("git").Discover(context.Background(), []string{"."})
+	if len(repos) != 0 || len(errs) != 1 || (!strings.Contains(errs[0].Error(), "resolve root") && !strings.Contains(errs[0].Error(), "stat root")) {
+		t.Fatalf("repos=%+v errs=%v", repos, errs)
+	}
+}
+
+func TestDiscoverReportsUnreadableRootWalkFailure(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("POSIX directory permissions are required")
+	}
+	root := filepath.Join(t.TempDir(), "unreadable")
+	if err := os.Mkdir(root, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(root, 0o000); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(root, 0o700) })
+	if _, err := os.ReadDir(root); err == nil {
+		t.Skip("filesystem permissions do not enforce an unreadable directory")
+	}
+	seen := map[string]string{}
+	var errs []error
+	New("git").discoverRoot(context.Background(), root, seen, &errs)
+	if len(seen) != 0 || len(errs) == 0 || !strings.Contains(errs[0].Error(), "walk ") {
+		t.Fatalf("seen=%v errs=%v", seen, errs)
 	}
 }
 
