@@ -141,6 +141,38 @@ func TestBuildReclaimProposalSelectsDeterministicShortestPrefix(t *testing.T) {
 	}
 }
 
+func TestBuildReclaimProposalUsesDiskBytesForExactTarget(t *testing.T) {
+	inv := model.Inventory{Worktrees: []model.Worktree{
+		worktree("/large", "/repo", model.SafeToRemove, 8),
+		worktree("/small", "/repo", model.SafeToRemove, 2),
+	}}
+	inv.Worktrees[0].Details().CacheWarnings = []model.CacheWarning{{Bytes: 100}}
+	doc, err := Build(inv, Options{HasReclaimTarget: true, ReclaimTarget: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := doc.Proposal
+	if !p.TargetMet || p.EstimatedBytes.Cmp(big.NewInt(10)) != 0 || p.ExcessBytes.Sign() != 0 || p.ShortfallBytes.Sign() != 0 || len(p.Candidates) != 2 {
+		t.Fatalf("proposal=%+v", p)
+	}
+	if p.Candidates[0].Path != "/large" || p.Candidates[1].Path != "/small" {
+		t.Fatalf("candidates=%+v", p.Candidates)
+	}
+}
+
+func TestBuildReclaimProposalDoesNotCountCacheWarnings(t *testing.T) {
+	item := worktree("/candidate", "/repo", model.SafeToRemove, 8)
+	item.Details().CacheWarnings = []model.CacheWarning{{Bytes: 100}}
+	doc, err := Build(model.Inventory{Worktrees: []model.Worktree{item}}, Options{HasReclaimTarget: true, ReclaimTarget: 10})
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := doc.Proposal
+	if p.TargetMet || p.EstimatedBytes.Cmp(big.NewInt(8)) != 0 || p.ShortfallBytes.Cmp(big.NewInt(2)) != 0 || len(p.Candidates) != 1 {
+		t.Fatalf("proposal=%+v", p)
+	}
+}
+
 func TestBuildReclaimProposalQualifiesUnmetAndIneligibleRows(t *testing.T) {
 	measured := false
 	inv := model.Inventory{Errors: []string{"scan interrupted"}, ExcludedPaths: []string{"/protected"}, Worktrees: []model.Worktree{
