@@ -18,6 +18,7 @@ const (
 	CommandReview  = "review"
 	CommandExplain = "explain"
 	CommandDiff    = "diff"
+	jsonFlag       = "--json"
 )
 
 // Options is the stable command contract consumed by the application layer.
@@ -329,7 +330,7 @@ func normalizeDiffJSONFlag(args []string) []string {
 			delimiterIndex = len(other) - len(args[index:])
 			break
 		}
-		if argument == "--json" || argument == "--json=true" || argument == "--json=false" {
+		if argument == jsonFlag || argument == jsonFlag+"=true" || argument == jsonFlag+"=false" {
 			flags = append(flags, argument)
 			continue
 		}
@@ -348,7 +349,7 @@ func validateDiffArgumentBoundary(args []string) error {
 		if argument == "--" {
 			return nil
 		}
-		if strings.HasPrefix(argument, "-") && argument != "--json" && argument != "--json=true" && argument != "--json=false" {
+		if strings.HasPrefix(argument, "-") && argument != jsonFlag && argument != jsonFlag+"=true" && argument != jsonFlag+"=false" {
 			return &UsageError{Message: "diff paths beginning with - require -- before the paths"}
 		}
 	}
@@ -412,7 +413,7 @@ func validatePickFlags(opts *Options, fs *flag.FlagSet, selectedPaths stringList
 		case "yes", "y":
 			forbidden = "--yes"
 		case "json":
-			forbidden = "--json"
+			forbidden = jsonFlag
 		}
 	})
 	if forbidden != "" {
