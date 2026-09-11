@@ -13,6 +13,10 @@
       "type": "array",
       "items": { "type": "string" }
     },
+    "excluded_paths": {
+      "type": "array",
+      "items": { "type": "string" }
+    },
     "worktrees": {
       "type": "array",
       "items": { "$ref": "#/$defs/worktree" }
@@ -80,6 +84,8 @@
         "observed_at": { "type": "string", "format": "date-time" },
         "eligible_at": { "type": "string", "format": "date-time" },
         "retention_remaining_ns": { "type": "integer" },
+        "disk_bytes_measured": { "type": "boolean" },
+        "excluded": { "type": "boolean" },
         "cache_warnings": { "type": "array", "items": { "$ref": "#/$defs/cache_warning" } }
         ,"provider": { "type": "string" }, "provider_pr": { "type": "integer", "minimum": 1 }, "provider_url": { "type": "string" }, "merged_at": { "type": "string", "format": "date-time" }
       }
