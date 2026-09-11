@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/ben-ranford/wtgc/internal/explain"
 	"github.com/ben-ranford/wtgc/internal/model"
 	"github.com/ben-ranford/wtgc/internal/review"
 )
@@ -50,6 +51,22 @@ func testInventory() model.Inventory {
 			PotentialBytes: 1536,
 			Duration:       2 * time.Second,
 		},
+	}
+}
+
+func TestWriteExplainFormatsProjectionAndErrors(t *testing.T) {
+	now := time.Now().UTC()
+	doc := explain.Document{ExplainSchemaVersion: "1.0.0", Worktree: explain.Worktree{Path: "/repo/hostile\n", Repository: "/repo", Head: "abc", Classification: model.Kept, Reason: "locked", Error: "inspect failed", RetentionBasis: "worktree_mtime", ObservedAt: &now, EligibleAt: &now, Provider: "github", ProviderPR: 4, ProviderURL: "https://github.com/example/pr/4"}, Checks: []model.ExplainCheck{{ID: "protection", Status: model.ExplainBlocked, Detail: "locked"}}, NextChecks: []string{"Inspect status."}}
+	var human bytes.Buffer
+	if err := WriteExplain(&human, doc, FormatHuman); err != nil || !strings.Contains(human.String(), `\n`) || !strings.Contains(human.String(), "Provider proof") {
+		t.Fatalf("err=%v output=%q", err, human.String())
+	}
+	var jsonOutput bytes.Buffer
+	if err := WriteExplain(&jsonOutput, doc, FormatJSON); err != nil || !strings.Contains(jsonOutput.String(), `"explain_schema_version"`) {
+		t.Fatalf("err=%v output=%q", err, jsonOutput.String())
+	}
+	if err := WriteExplain(io.Discard, doc, Format("bad")); err == nil {
+		t.Fatal("bad format accepted")
 	}
 }
 

@@ -2,6 +2,7 @@ package explain
 
 import (
 	"testing"
+	"time"
 
 	"github.com/ben-ranford/wtgc/internal/model"
 )
@@ -14,6 +15,19 @@ func TestBuildPreservesClassifierTraceAndMarksShortCircuits(t *testing.T) {
 	}
 	if checks["protection"].Status != model.ExplainBlocked || checks["local_default_reachability"].Status != model.ExplainNotEvaluated || checks["provider_proof"].Status != model.ExplainNotEvaluated {
 		t.Fatalf("checks=%+v", checks)
+	}
+}
+
+func TestBuildProjectsOnlyExplainFieldsAndRetentionTrace(t *testing.T) {
+	now := time.Now().UTC()
+	document := Build(model.Worktree{Path: "/repo/wt", Branch: "feature", Head: "head", Repository: "/repo", Classification: model.SafeToRemove, WorktreeDetails: &model.WorktreeDetails{RetentionBasis: "provider_merged_at", ObservedAt: &now, EligibleAt: &now, ProviderProof: model.ProviderProof{Kind: "github", HeadSHA: "head", HeadOwner: "owner", HeadRepo: "headrepo", HeadRef: "feature", BaseOwner: "owner", BaseRepo: "base", BaseRef: "main", HeadRemote: "fork", BaseRemote: "origin", MergeCommitSHA: "merge", MergedAt: now}, ExplainChecks: []model.ExplainCheck{{ID: "retention", Status: model.ExplainPassed, Detail: "elapsed"}}}}, true, time.Hour)
+	if document.Worktree.Proof == nil || document.Worktree.Proof.HeadRepository != "owner/headrepo" || document.Worktree.Proof.BaseRemote != "origin" {
+		t.Fatalf("proof=%+v", document.Worktree.Proof)
+	}
+	for _, check := range document.Checks {
+		if check.ID == "retention" && check.Status != model.ExplainPassed {
+			t.Fatalf("retention=%+v", check)
+		}
 	}
 }
 
