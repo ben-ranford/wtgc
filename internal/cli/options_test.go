@@ -2,6 +2,7 @@ package cli
 
 import (
 	"errors"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -34,6 +35,13 @@ func TestParseCleanDefaultsToDryRunCurrentDirectory(t *testing.T) {
 	}
 	if got, want := strings.Join(opts.Roots, ","), "."; got != want {
 		t.Fatalf("Roots = %q, want %q", got, want)
+	}
+}
+
+func TestParseRepeatableExclusions(t *testing.T) {
+	opts, err := Parse([]string{"review", "--exclude", "client", "--exclude", "archive", "/scan"})
+	if err != nil || !reflect.DeepEqual(opts.ExcludePaths, []string{"client", "archive"}) {
+		t.Fatalf("options=%+v err=%v", opts, err)
 	}
 }
 
@@ -211,7 +219,7 @@ func TestUsageMentionsCoreFlags(t *testing.T) {
 	WriteUsage(&b, "wtgc")
 	out := b.String()
 
-	for _, want := range []string{"Usage:", "show help", "clean [flags] [roots...]", "review [flags] [roots...]", "scan when a flag is supplied", "--scan-root", "--dry-run", "--yes", "--interactive", "--delete-branch", "--json", "--repository", "--classification", "--group-by", "--sort-by", "--select", "--version"} {
+	for _, want := range []string{"Usage:", "show help", "clean [flags] [roots...]", "review [flags] [roots...]", "scan when a flag is supplied", "--scan-root", "--exclude PATH", "for this invocation; repeatable", "--dry-run", "--yes", "--interactive", "--delete-branch", "--json", "--repository", "--classification", "--group-by", "--sort-by", "--select", "--version"} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("usage missing %q:\n%s", want, out)
 		}

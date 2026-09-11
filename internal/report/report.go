@@ -102,6 +102,7 @@ func WriteReview(w io.Writer, document review.Document, format Format) error {
 		return err
 	}
 	writeReviewTotals(&output, document.View.Totals)
+	writeExclusionScope(&output, document.Inventory)
 	if len(document.Inventory.Errors) > 0 {
 		fmt.Fprintln(&output, "Errors:")
 		for _, errText := range document.Inventory.Errors {
@@ -123,7 +124,7 @@ func writeReviewRow(w io.Writer, row review.Row) {
 		selected = "selected"
 	}
 	evidence := reviewEvidence(worktree)
-	fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n", selected, SafeHumanText(emptyDash(worktree.Head)), SafeHumanText(worktree.Path), worktree.Classification, ByteString(worktree.DiskBytes), SafeHumanText(withError(worktree.Reason, worktree.Error)), SafeHumanText(evidence))
+	fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n", selected, SafeHumanText(emptyDash(worktree.Head)), SafeHumanText(worktree.Path), worktree.Classification, displayDiskBytes(worktree), SafeHumanText(withError(worktree.Reason, worktree.Error)), SafeHumanText(evidence))
 }
 
 func reviewEvidence(worktree model.Worktree) string {
@@ -163,12 +164,23 @@ func writeHuman(w io.Writer, inv model.Inventory) error {
 		return err
 	}
 	writeSummary(w, inv)
+	writeExclusionScope(w, inv)
 	return nil
+}
+
+func writeExclusionScope(w io.Writer, inv model.Inventory) {
+	if len(inv.ExcludedPaths) == 0 {
+		return
+	}
+	fmt.Fprintln(w, "Scope limitations:")
+	for _, path := range inv.ExcludedPaths {
+		fmt.Fprintf(w, "  excluded: %s (working files, size, caches, cleanup, and repository-wide prune skipped)\n", SafeHumanText(path))
+	}
 }
 
 func writeWorktree(w io.Writer, wt model.Worktree) {
 	reason := withError(wt.Reason, wt.Error)
-	fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", SafeHumanText(wt.Path), SafeHumanText(emptyDash(wt.Branch)), wt.Classification, dirtyString(wt.Dirty), action(wt), ByteString(wt.DiskBytes), ByteString(wt.ReclaimedBytes), SafeHumanText(reason))
+	fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n", SafeHumanText(wt.Path), SafeHumanText(emptyDash(wt.Branch)), wt.Classification, dirtyString(wt.Dirty), action(wt), displayDiskBytes(wt), ByteString(wt.ReclaimedBytes), SafeHumanText(reason))
 	if wt.WorktreeDetails != nil {
 		writeDetails(w, wt)
 	}
@@ -207,6 +219,13 @@ func safeRoots(roots []string) []string {
 		values[i] = SafeHumanText(root)
 	}
 	return values
+}
+
+func displayDiskBytes(worktree model.Worktree) string {
+	if worktree.WorktreeDetails != nil && worktree.Excluded && worktree.DiskBytesMeasured != nil && !*worktree.DiskBytesMeasured {
+		return "unmeasured"
+	}
+	return ByteString(worktree.DiskBytes)
 }
 
 func withError(value, err string) string { return withSuffix(value, err, "; ") }

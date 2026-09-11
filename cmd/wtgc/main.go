@@ -103,6 +103,7 @@ func run(ctx context.Context, args []string, streams processIO, deps commandDepe
 	}
 	appOptions := app.Options{
 		Roots:           roots,
+		ExcludePaths:    opts.ExcludePaths,
 		Execute:         opts.Command == cli.CommandClean && !opts.DryRun,
 		Interactive:     opts.Interactive,
 		DeleteBranch:    opts.DeleteBranch,
@@ -141,10 +142,13 @@ func prepareCommand(opts cli.Options, getwd func() (string, error), stderr io.Wr
 		fmt.Fprintf(stderr, "resolve current directory: %v\n", err)
 		return cli.Options{}, "", nil, 1
 	}
-	if opts.Command != cli.CommandReview && opts.Command != cli.CommandExplain {
-		return opts, workingDirectory, opts.Roots, 0
+	// Preserve the path the user supplied (after resolving only its relative
+	// base). The app records that source for cleanup-time alias revalidation;
+	// canonical membership is established separately by the exclusion boundary.
+	opts.ExcludePaths, err = absoluteExcludePaths(opts.ExcludePaths, workingDirectory)
+	if err == nil && opts.Command == cli.CommandReview {
+		opts.Repositories, err = normalizeReviewPaths(opts.Repositories, workingDirectory)
 	}
-	opts.Repositories, err = normalizeReviewPaths(opts.Repositories, workingDirectory)
 	if err == nil && opts.Command == cli.CommandReview {
 		opts.SelectedPaths, err = normalizeReviewPaths(opts.SelectedPaths, workingDirectory)
 	}
@@ -154,6 +158,9 @@ func prepareCommand(opts cli.Options, getwd func() (string, error), stderr io.Wr
 	if err != nil {
 		fmt.Fprintf(stderr, "%s: %v\n", opts.Command, err)
 		return cli.Options{}, "", nil, 2
+	}
+	if opts.Command != cli.CommandReview && opts.Command != cli.CommandExplain {
+		return opts, workingDirectory, opts.Roots, 0
 	}
 	if opts.Command == cli.CommandExplain {
 		return opts, workingDirectory, []string{explainScanRoot(opts.ExplainPath)}, 0
@@ -282,6 +289,20 @@ func normalizeReviewPaths(paths []string, base string) ([]string, error) {
 			return nil, err
 		}
 		normalized[i] = resolved
+	}
+	return normalized, nil
+}
+
+func absoluteExcludePaths(paths []string, base string) ([]string, error) {
+	normalized := make([]string, len(paths))
+	for i, path := range paths {
+		if strings.TrimSpace(path) == "" {
+			return nil, fmt.Errorf("exclude path is empty")
+		}
+		if !filepath.IsAbs(path) {
+			path = filepath.Join(base, path)
+		}
+		normalized[i] = filepath.Clean(path)
 	}
 	return normalized, nil
 }

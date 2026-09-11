@@ -3,6 +3,7 @@ package gitx
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io/fs"
 	"os"
 	"os/exec"
@@ -88,6 +89,19 @@ func TestResolveExplainFallsBackAfterAnUnknownRegistrationInAGitRepository(t *te
 	_, _, found, err := New("git").ResolveExplain(context.Background(), filepath.Join(repo.Root, "unknown-registration"))
 	if err != nil || found {
 		t.Fatalf("unknown registration found=%t err=%v", found, err)
+	}
+}
+
+func TestResolveExplainExcludingSkipsFallbackDiscoveryInExcludedSubtree(t *testing.T) {
+	requireGit(t)
+	root := t.TempDir()
+	excludedRoot := filepath.Join(root, "excluded")
+	if err := os.Mkdir(excludedRoot, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	excluded := initRepoWithCommit(t, excludedRoot)
+	if _, _, found, err := New("git").ResolveExplainExcluding(context.Background(), filepath.Join(excluded, "unknown-registration"), []string{excluded}); err != nil || found {
+		t.Fatalf("found=%t err=%v", found, err)
 	}
 }
 
@@ -507,6 +521,139 @@ func TestDiscoverFindsNestedRepositoriesInBuildAndDependencyDirs(t *testing.T) {
 	}
 	if findRepoByPath(repos, repo).PrimaryPath == "" {
 		t.Fatalf("did not discover nested repo under node_modules/vendor: %#v", repos)
+	}
+}
+
+func TestDiscoverExcludingSkipsOnlyConfiguredSubtree(t *testing.T) {
+	requireGit(t)
+	root := t.TempDir()
+	excludedRoot, includedRoot := filepath.Join(root, "excluded"), filepath.Join(root, "included")
+	for _, path := range []string{excludedRoot, includedRoot} {
+		if err := os.Mkdir(path, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	excluded := initRepoWithCommit(t, excludedRoot)
+	included := initRepoWithCommit(t, includedRoot)
+	canonicalExcluded, err := filepath.EvalSymlinks(excluded)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	repos, errs := New("git").DiscoverExcluding(context.Background(), []string{root}, []string{canonicalExcluded})
+	if len(errs) > 0 {
+		t.Fatalf("DiscoverExcluding errors: %v", errs)
+	}
+	if len(repos) != 1 || findRepoByPath(repos, included).PrimaryPath == "" || findRepoByPath(repos, excluded).PrimaryPath != "" {
+		t.Fatalf("DiscoverExcluding repositories=%#v", repos)
+	}
+}
+
+func TestDiscoverExcludingSkipsConfiguredFileEntry(t *testing.T) {
+	requireGit(t)
+	workspace := t.TempDir()
+	primary := initRepoWithCommit(t, workspace)
+	root := filepath.Join(workspace, "scan")
+	if err := os.Mkdir(root, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	linked := filepath.Join(root, "linked")
+	run(t, primary, "git", "worktree", "add", "-b", "linked", linked)
+	metadata := filepath.Join(linked, ".git")
+	before, err := os.ReadFile(metadata)
+	if err != nil {
+		t.Fatal(err)
+	}
+	canonicalMetadata, err := filepath.EvalSymlinks(metadata)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if repositories, errs := New("git").Discover(context.Background(), []string{root}); len(errs) != 0 || len(repositories) != 1 {
+		t.Fatalf("unexcluded repositories=%v errors=%v", repositories, errs)
+	}
+	if repositories, errs := New("git").DiscoverExcluding(context.Background(), []string{root}, []string{canonicalMetadata}); len(errs) != 0 || len(repositories) != 0 {
+		t.Fatalf("excluded repositories=%v errors=%v", repositories, errs)
+	}
+	after, err := os.ReadFile(metadata)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(after) != string(before) {
+		t.Fatalf("excluded metadata changed: before=%q after=%q", before, after)
+	}
+}
+
+func TestDiscoverExcludingReportsUnreadableRootWalk(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows mode bits do not make a directory unreadable")
+	}
+	root := t.TempDir()
+	if err := os.Chmod(root, 0o000); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := os.Chmod(root, 0o700); err != nil {
+			t.Errorf("restore root permissions: %v", err)
+		}
+	})
+	_, errs := New("git").DiscoverExcluding(context.Background(), []string{root}, nil)
+	if len(errs) != 1 || !strings.Contains(errs[0].Error(), "walk ") {
+		t.Fatalf("errors=%v", errs)
+	}
+}
+
+func TestPathWithinUsesComponentBoundaries(t *testing.T) {
+	parent := filepath.Join(t.TempDir(), "app")
+	if !pathWithin(parent, parent) || !pathWithin(parent, filepath.Join(parent, "child")) || pathWithin(parent, parent+"le") {
+		t.Fatalf("component boundary matching failed for %q", parent)
+	}
+}
+
+func TestDiscoverExcludingRejectsInvalidRootsWithoutWalking(t *testing.T) {
+	root := t.TempDir()
+	file := filepath.Join(root, "file")
+	if err := os.WriteFile(file, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, errs := New("git").DiscoverExcluding(context.Background(), []string{"", file, filepath.Join(root, "missing")}, nil)
+	if len(errs) != 3 {
+		t.Fatalf("errors=%v", errs)
+	}
+	joined := fmt.Sprint(errs)
+	for _, want := range []string{"empty discovery root", "not a directory", "stat root"} {
+		if !strings.Contains(joined, want) {
+			t.Fatalf("errors=%v missing %q", errs, want)
+		}
+	}
+}
+
+func TestDiscoverExcludingReportsRelativeRootWhenWorkingDirectoryDisappearsOnLinux(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("removed working directory resolution failure is covered on Linux")
+	}
+	previousPWD, hadPWD := os.LookupEnv("PWD")
+	if err := os.Unsetenv("PWD"); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if hadPWD {
+			if err := os.Setenv("PWD", previousPWD); err != nil {
+				t.Errorf("restore PWD: %v", err)
+			}
+			return
+		}
+		if err := os.Unsetenv("PWD"); err != nil {
+			t.Errorf("clear PWD: %v", err)
+		}
+	})
+	dir := t.TempDir()
+	t.Chdir(dir)
+	if err := os.Remove(dir); err != nil {
+		t.Fatal(err)
+	}
+	_, errs := New("git").DiscoverExcluding(context.Background(), []string{"relative"}, nil)
+	if len(errs) != 1 || !strings.Contains(errs[0].Error(), "resolve root") {
+		t.Fatalf("errors=%v", errs)
 	}
 }
 

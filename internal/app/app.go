@@ -44,12 +44,21 @@ type ExplainTargetResolver interface {
 	ResolveExplain(context.Context, string) (model.Repository, model.RegisteredWorktree, bool, error)
 }
 
+// exclusionExplainTargetResolver preserves the exclusion boundary when an
+// explain target needs fallback repository discovery. Target registration
+// metadata remains readable; its working tree never becomes a scan candidate.
+type exclusionExplainTargetResolver interface {
+	ResolveExplainExcluding(context.Context, string, []string) (model.Repository, model.RegisteredWorktree, bool, error)
+}
+
 // Options controls one scan and optional cleanup pass.
 type Options struct {
 	Roots            []string
+	ExcludePaths     []string
 	SelectedPaths    []string
 	ConfirmSelection func(SelectionPreview) bool
 	selection        *selectionIdentity
+	exclusions       exclusionBoundary
 	Execute          bool
 	Interactive      bool
 	DeleteBranch     bool
@@ -72,6 +81,10 @@ type App struct {
 	git Git
 }
 
+type exclusionDiscoverer interface {
+	DiscoverExcluding(context.Context, []string, []string) ([]model.Repository, []error)
+}
+
 // New constructs an application with an explicit Git boundary.
 func New(git Git) *App { return &App{git: git} }
 
@@ -79,6 +92,12 @@ func New(git Git) *App { return &App{git: git} }
 func (a *App) Run(ctx context.Context, opts Options) (model.Inventory, error) {
 	opts.Roots = slices.Clone(opts.Roots)
 	opts.SelectedPaths = slices.Clone(opts.SelectedPaths)
+	opts.ExcludePaths = slices.Clone(opts.ExcludePaths)
+	exclusions, err := newExclusionBoundary(opts.ExcludePaths)
+	if err != nil {
+		return model.Inventory{SchemaVersion: schemaVersion, Worktrees: []model.Worktree{}}, err
+	}
+	opts.exclusions = exclusions
 	started := time.Now()
 	if opts.Now == nil {
 		opts.Now = time.Now
@@ -90,6 +109,7 @@ func (a *App) Run(ctx context.Context, opts Options) (model.Inventory, error) {
 		GeneratedAt:   now,
 		DryRun:        !opts.Execute,
 		Roots:         append([]string(nil), opts.Roots...),
+		ExcludedPaths: exclusions.paths(),
 		Worktrees:     []model.Worktree{},
 	}
 	if opts.ExplainPath != "" {
@@ -104,7 +124,19 @@ func (a *App) Run(ctx context.Context, opts Options) (model.Inventory, error) {
 		return inv, nil
 	}
 
-	repositories, discoveryErrors := a.git.Discover(ctx, opts.Roots)
+	var repositories []model.Repository
+	var discoveryErrors []error
+	if len(exclusions.values) > 0 {
+		discovery, ok := a.git.(exclusionDiscoverer)
+		if !ok {
+			inv.Errors = append(inv.Errors, "exclude requires a discovery backend that enforces exclusion boundaries")
+			inv.Summary.Duration = time.Since(started)
+			return inv, errors.New("exclude boundary is unavailable")
+		}
+		repositories, discoveryErrors = discovery.DiscoverExcluding(ctx, opts.Roots, exclusions.paths())
+	} else {
+		repositories, discoveryErrors = a.git.Discover(ctx, opts.Roots)
+	}
 	for _, err := range discoveryErrors {
 		inv.Errors = append(inv.Errors, err.Error())
 	}
@@ -114,7 +146,11 @@ func (a *App) Run(ctx context.Context, opts Options) (model.Inventory, error) {
 		return inv, errors.New("no Git repositories with registered worktrees found")
 	}
 
-	a.scanRepositories(ctx, repositories, scanOptions{protectedPath: opts.ProtectedPath, provider: opts.Provider, providerRemote: opts.ProviderRemote, now: now, explainEvidence: opts.ExplainEvidence, explainPath: opts.ExplainPath}, &inv)
+	a.scanRepositories(ctx, repositories, scanOptions{
+		protectedPath: opts.ProtectedPath,
+		exclusions:    exclusions,
+		classify:      classifyOptions{provider: opts.Provider, providerRemote: opts.ProviderRemote, now: now, explainEvidence: opts.ExplainEvidence},
+	}, &inv)
 	a.addCacheWarnings(ctx, opts.CacheThreshold, opts.CacheScanner, &inv)
 	a.applyRetention(now, opts.Retention, opts.ExplainEvidence, &inv)
 	sort.Slice(inv.Worktrees, func(i, j int) bool {
@@ -125,20 +161,27 @@ func (a *App) Run(ctx context.Context, opts Options) (model.Inventory, error) {
 	})
 	a.summarize(&inv)
 
-	if len(opts.SelectedPaths) > 0 {
-		a.cleanSelection(ctx, repositories, opts, &inv)
-		a.summarize(&inv)
-	} else if opts.Execute {
-		for _, repo := range repositories {
-			a.cleanRepository(ctx, repo, opts, &inv)
-		}
-		a.summarize(&inv)
-	}
+	a.cleanup(ctx, repositories, opts, &inv)
 	inv.Summary.Duration = time.Since(started)
 	if len(inv.Errors) > 0 {
 		return inv, fmt.Errorf("completed with %d error(s)", len(inv.Errors))
 	}
 	return inv, nil
+}
+
+func (a *App) cleanup(ctx context.Context, repositories []model.Repository, opts Options, inv *model.Inventory) {
+	if len(opts.SelectedPaths) > 0 {
+		a.cleanSelection(ctx, repositories, opts, inv)
+		a.summarize(inv)
+		return
+	}
+	if !opts.Execute {
+		return
+	}
+	for _, repo := range repositories {
+		a.cleanRepository(ctx, repo, opts, inv)
+	}
+	a.summarize(inv)
 }
 
 func (a *App) runExplainTarget(ctx context.Context, opts Options, now time.Time, inv *model.Inventory) error {
@@ -147,7 +190,20 @@ func (a *App) runExplainTarget(ctx context.Context, opts Options, now time.Time,
 		inv.Errors = append(inv.Errors, "explain target resolution is unavailable for this Git backend")
 		return errors.New("explain target resolution is unavailable for this Git backend")
 	}
-	repo, record, found, err := resolver.ResolveExplain(ctx, opts.ExplainPath)
+	var repo model.Repository
+	var record model.RegisteredWorktree
+	var found bool
+	var err error
+	if len(opts.exclusions.values) > 0 {
+		excludingResolver, supported := a.git.(exclusionExplainTargetResolver)
+		if !supported {
+			inv.Errors = append(inv.Errors, "exclude requires an explain resolver that enforces exclusion boundaries")
+			return errors.New("exclude boundary is unavailable for explain")
+		}
+		repo, record, found, err = excludingResolver.ResolveExplainExcluding(ctx, opts.ExplainPath, opts.exclusions.paths())
+	} else {
+		repo, record, found, err = resolver.ResolveExplain(ctx, opts.ExplainPath)
+	}
 	if err != nil {
 		inv.Errors = append(inv.Errors, fmt.Sprintf("%s: resolve requested worktree: %v", opts.ExplainPath, err))
 		return err
@@ -156,14 +212,25 @@ func (a *App) runExplainTarget(ctx context.Context, opts Options, now time.Time,
 		return nil
 	}
 	inv.Summary.Repositories = 1
-	options := scanOptions{protectedPath: opts.ProtectedPath, provider: opts.Provider, providerRemote: opts.ProviderRemote, now: now, explainEvidence: opts.ExplainEvidence}
+	if excluded, membershipErr := opts.exclusions.contains(record.Path); membershipErr != nil {
+		inv.Errors = append(inv.Errors, fmt.Sprintf("%s: evaluate exclusion membership: %v", record.Path, membershipErr))
+		return membershipErr
+	} else if excluded {
+		item := excludedWorktree(repo, record, "")
+		traceCheck(&item, classifyOptions{explainEvidence: opts.ExplainEvidence}, "registration", model.ExplainPassed, "Git registration was resolved; working files were not inspected")
+		traceCheck(&item, classifyOptions{explainEvidence: opts.ExplainEvidence}, "actual", model.ExplainNotEvaluated, "not evaluated because the requested worktree is excluded by invocation scope")
+		inv.Worktrees = append(inv.Worktrees, item)
+		a.summarize(inv)
+		return nil
+	}
+	options := scanOptions{protectedPath: opts.ProtectedPath, exclusions: opts.exclusions, classify: classifyOptions{provider: opts.Provider, providerRemote: opts.ProviderRemote, now: now, explainEvidence: opts.ExplainEvidence}}
 	defaultBranch, err := a.git.DefaultBranch(ctx, repo)
 	if err != nil {
 		inv.Errors = append(inv.Errors, fmt.Sprintf("%s: default branch: %v", repo.CommonDir, err))
 		item := a.classifyDefaultBranchError(ctx, repo, record, fmt.Sprintf("default branch: %v", err), opts.ExplainEvidence)
 		inv.Worktrees = append(inv.Worktrees, item)
 	} else {
-		a.classifyJobs(ctx, []classificationJob{{repo: repo, defaultBranch: defaultBranch, protectedPath: opts.ProtectedPath, record: record}}, options.provider, options.providerRemote, options.now, options.explainEvidence, inv)
+		a.classifyJobs(ctx, []classificationJob{{repo: repo, defaultBranch: defaultBranch, protectedPath: opts.ProtectedPath, record: record}}, options.classify, inv)
 	}
 	a.applyRetention(now, opts.Retention, opts.ExplainEvidence, inv)
 	a.summarize(inv)
@@ -176,7 +243,7 @@ func (a *App) addCacheWarnings(ctx context.Context, threshold int64, scanner fun
 	}
 	for i := range inv.Worktrees {
 		item := &inv.Worktrees[i]
-		if item.Prunable || item.Path == "" {
+		if item.Prunable || (item.WorktreeDetails != nil && item.Excluded) || item.Path == "" {
 			continue
 		}
 		for _, warning := range scanner(ctx, item.Path, threshold) {
@@ -266,25 +333,22 @@ type classifyOptions struct {
 }
 
 type scanOptions struct {
-	protectedPath   string
-	provider        provider.MergeFinder
-	providerRemote  string
-	now             time.Time
-	explainEvidence bool
-	explainPath     string
+	protectedPath string
+	exclusions    exclusionBoundary
+	classify      classifyOptions
 }
 
-func (a *App) scanRepositories(ctx context.Context, repositories []model.Repository, options scanOptions, inv *model.Inventory) {
-	jobs := a.collectClassificationJobs(ctx, repositories, options.protectedPath, options.explainEvidence, inv)
-	if options.explainPath != "" {
-		jobs = filterExplainJobs(jobs, options.explainPath)
-	}
+func (a *App) scanRepositories(ctx context.Context, repositories []model.Repository, opts scanOptions, inv *model.Inventory) {
+	jobs := a.collectClassificationJobs(ctx, repositories, opts, inv)
 	if len(jobs) == 0 {
 		return
 	}
-	a.classifyJobs(ctx, jobs, options.provider, options.providerRemote, options.now, options.explainEvidence, inv)
+	a.classifyJobs(ctx, jobs, opts.classify, inv)
 }
 
+// filterExplainJobs remains a narrow canonical target filter for callers that
+// already resolved a target from a repository listing. Explain itself now uses
+// ResolveExplain before scanning, so unrelated repositories are never listed.
 func filterExplainJobs(jobs []classificationJob, path string) []classificationJob {
 	filtered := jobs[:0]
 	for _, job := range jobs {
@@ -304,7 +368,7 @@ func sameExplainPath(left, right string) bool {
 	return filepath.Clean(left) == filepath.Clean(right)
 }
 
-func (a *App) collectClassificationJobs(ctx context.Context, repositories []model.Repository, protectedPath string, explainEvidence bool, inv *model.Inventory) []classificationJob {
+func (a *App) collectClassificationJobs(ctx context.Context, repositories []model.Repository, opts scanOptions, inv *model.Inventory) []classificationJob {
 	var jobs []classificationJob
 	for _, repo := range repositories {
 		records, err := a.git.List(ctx, repo)
@@ -312,31 +376,57 @@ func (a *App) collectClassificationJobs(ctx context.Context, repositories []mode
 			inv.Errors = append(inv.Errors, fmt.Sprintf("%s: list worktrees: %v", repo.CommonDir, err))
 			continue
 		}
-		defaultBranch, err := a.git.DefaultBranch(ctx, repo)
-		if err != nil {
-			inv.Errors = append(inv.Errors, fmt.Sprintf("%s: default branch: %v", repo.CommonDir, err))
-			for _, record := range records {
-				item := a.classifyDefaultBranchError(ctx, repo, record, fmt.Sprintf("default branch: %v", err), explainEvidence)
-				inv.Worktrees = append(inv.Worktrees, item)
-				if item.Error != "" {
-					inv.Errors = append(inv.Errors, fmt.Sprintf("%s: %s: %s", repo.PrimaryPath, item.Path, item.Error))
-				}
-			}
+		included := partitionExcludedWorktrees(repo, records, opts.exclusions, inv)
+		if len(included) == 0 {
 			continue
 		}
-		for _, record := range records {
-			jobs = append(jobs, classificationJob{
-				repo:          repo,
-				defaultBranch: defaultBranch,
-				protectedPath: protectedPath,
-				record:        record,
-			})
+		defaultBranch, err := a.git.DefaultBranch(ctx, repo)
+		if err != nil {
+			a.recordDefaultBranchError(ctx, repo, included, err, opts.classify.explainEvidence, inv)
+			continue
+		}
+		for _, record := range included {
+			jobs = append(jobs, classificationJob{repo: repo, defaultBranch: defaultBranch, protectedPath: opts.protectedPath, record: record})
 		}
 	}
 	return jobs
 }
 
-func (a *App) classifyJobs(ctx context.Context, jobs []classificationJob, p provider.MergeFinder, providerRemote string, now time.Time, explainEvidence bool, inv *model.Inventory) {
+func partitionExcludedWorktrees(repo model.Repository, records []model.RegisteredWorktree, exclusions exclusionBoundary, inv *model.Inventory) []model.RegisteredWorktree {
+	if len(exclusions.values) == 0 {
+		return records
+	}
+	included := make([]model.RegisteredWorktree, 0, len(records))
+	for _, record := range records {
+		excluded, err := exclusions.contains(record.Path)
+		if err != nil {
+			item := exclusionMembershipError(repo, record, err)
+			inv.Worktrees = append(inv.Worktrees, item)
+			inv.Errors = append(inv.Errors, fmt.Sprintf("%s: %s: %s", repo.PrimaryPath, item.Path, item.Error))
+			continue
+		}
+		if excluded {
+			inv.Worktrees = append(inv.Worktrees, excludedWorktree(repo, record, ""))
+			continue
+		}
+		included = append(included, record)
+	}
+	return included
+}
+
+func (a *App) recordDefaultBranchError(ctx context.Context, repo model.Repository, records []model.RegisteredWorktree, err error, explainEvidence bool, inv *model.Inventory) {
+	message := fmt.Sprintf("default branch: %v", err)
+	inv.Errors = append(inv.Errors, fmt.Sprintf("%s: %s", repo.CommonDir, message))
+	for _, record := range records {
+		item := a.classifyDefaultBranchError(ctx, repo, record, message, explainEvidence)
+		inv.Worktrees = append(inv.Worktrees, item)
+		if item.Error != "" {
+			inv.Errors = append(inv.Errors, fmt.Sprintf("%s: %s: %s", repo.PrimaryPath, item.Path, item.Error))
+		}
+	}
+}
+
+func (a *App) classifyJobs(ctx context.Context, jobs []classificationJob, options classifyOptions, inv *model.Inventory) {
 	inv.Worktrees = slices.Grow(inv.Worktrees, len(jobs))
 	jobCh := make(chan classificationJob)
 	resultCh := make(chan model.Worktree, len(jobs))
@@ -350,7 +440,7 @@ func (a *App) classifyJobs(ctx context.Context, jobs []classificationJob, p prov
 		go func() {
 			defer group.Done()
 			for job := range jobCh {
-				resultCh <- a.classify(ctx, job, classifyOptions{provider: p, providerRemote: providerRemote, now: now, explainEvidence: explainEvidence})
+				resultCh <- a.classify(ctx, job, options)
 			}
 		}()
 	}
@@ -652,26 +742,49 @@ func (a *App) cleanRepository(ctx context.Context, repo model.Repository, opts O
 		if item.Repository != repo.PrimaryPath || (item.Classification != model.SafeToRemove && item.Classification != model.Prunable) {
 			continue
 		}
-		if opts.Interactive && (opts.Confirm == nil || !opts.Confirm(*item)) {
-			item.Classification = model.Kept
-			item.Reason = "kept by interactive choice"
-			item.Action = model.ActionKept
-			if item.Prunable {
-				pruneBlocked = true
-			}
-			continue
-		}
-		if item.Classification == model.Prunable {
+		if a.cleanCandidate(ctx, repo, opts, item, inv, &pruneBlocked) {
 			acceptedPrunable = append(acceptedPrunable, i)
-			continue
 		}
-
-		a.removeWorktree(ctx, repo, opts, item, inv)
+	}
+	if len(opts.exclusions.values) > 0 {
+		for _, index := range acceptedPrunable {
+			inv.Worktrees[index].Action = model.ActionKept
+			inv.Worktrees[index].Reason = "stale registration retained because exclusions disable repository-wide prune"
+		}
+		return
 	}
 	a.pruneAcceptedWorktrees(ctx, repo, inv, acceptedPrunable, pruneBlocked)
 }
 
+func (a *App) cleanCandidate(ctx context.Context, repo model.Repository, opts Options, item *model.Worktree, inv *model.Inventory, pruneBlocked *bool) bool {
+	if opts.Interactive && (opts.Confirm == nil || !opts.Confirm(*item)) {
+		item.Classification, item.Reason, item.Action = model.Kept, "kept by interactive choice", model.ActionKept
+		if item.Prunable {
+			*pruneBlocked = true
+		}
+		return false
+	}
+	if item.Classification == model.Prunable {
+		return true
+	}
+	a.removeWorktree(ctx, repo, opts, item, inv)
+	return false
+}
+
 func (a *App) removeWorktree(ctx context.Context, repo model.Repository, opts Options, item *model.Worktree, inv *model.Inventory) {
+	if err := opts.exclusions.revalidate(); err != nil {
+		item.Classification, item.Reason, item.Error, item.Action = model.Kept, "revalidation blocked removal: excluded scope changed", err.Error(), model.ActionKept
+		return
+	}
+	excluded, err := opts.exclusions.contains(item.Path)
+	if err != nil {
+		item.Classification, item.Reason, item.Error, item.Action = model.Kept, "revalidation blocked removal: exclusion membership could not be proven", err.Error(), model.ActionKept
+		return
+	}
+	if excluded {
+		item.Classification, item.Reason, item.Action = model.Kept, "revalidation blocked removal: path is excluded by invocation scope", model.ActionKept
+		return
+	}
 	fresh, ok := a.revalidate(ctx, repo, opts, *item)
 	if !ok {
 		*item = fresh
@@ -696,18 +809,18 @@ func (a *App) removeWorktree(ctx context.Context, repo model.Repository, opts Op
 	item.ReclaimedBytes = item.DiskBytes
 	item.Action = model.ActionRemoved
 	if opts.DeleteBranch && opts.selection == nil {
-		a.deleteWorktreeBranch(ctx, repo, fresh, item, inv, false)
+		a.deleteWorktreeBranch(ctx, repo, fresh, item, inv, opts.exclusions, opts.selection != nil || len(opts.exclusions.values) > 0)
 	}
 }
 
-func (a *App) deleteWorktreeBranch(ctx context.Context, repo model.Repository, fresh model.Worktree, item *model.Worktree, inv *model.Inventory, selected bool) {
+func (a *App) deleteWorktreeBranch(ctx context.Context, repo model.Repository, fresh model.Worktree, item *model.Worktree, inv *model.Inventory, exclusions exclusionBoundary, checkRemaining bool) {
 	if fresh.WorktreeDetails != nil && fresh.ProviderProof.HeadSHA != "" {
 		item.Error = "worktree removed; branch retained because provider squash proof does not authorize branch deletion"
 		return
 	}
 	var err error
-	if selected {
-		err = a.requireUnusedSelectedBranch(ctx, repo, fresh.Branch)
+	if checkRemaining {
+		err = a.requireUnusedBranch(ctx, repo, fresh.Branch, exclusions)
 	}
 	if err == nil {
 		err = a.git.DeleteBranch(ctx, repo, fresh.Branch, fresh.DefaultBranch)

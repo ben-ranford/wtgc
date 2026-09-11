@@ -39,6 +39,7 @@ type Options struct {
 	SortBy          string
 	SelectedPaths   []string
 	ExplainPath     string
+	ExcludePaths    []string
 }
 
 // UsageError reports input that should be shown with command usage and a
@@ -100,7 +101,7 @@ func Parse(args []string) (Options, error) {
 		return Options{}, &UsageError{Message: fmt.Sprintf("unknown command %q", args[0])}
 	}
 
-	var roots, repositories, classifications, selectedPaths stringList
+	var roots, repositories, classifications, selectedPaths, excludePaths stringList
 	dryRun := boolOption{
 		value: true,
 		set:   false,
@@ -110,6 +111,7 @@ func Parse(args []string) (Options, error) {
 	fs.SetOutput(io.Discard)
 	fs.Var(&roots, "scan-root", "root directory to scan; repeatable")
 	fs.Var(&selectedPaths, "select", "worktree path to select for review or clean; repeatable")
+	fs.Var(&excludePaths, "exclude", "worktree or directory subtree to exclude for this invocation; repeatable")
 	fs.BoolVar(&opts.Yes, "yes", false, "execute cleanup without prompting")
 	fs.BoolVar(&opts.Yes, "y", false, "execute cleanup without prompting")
 	fs.BoolVar(&opts.Interactive, "interactive", false, "prompt before destructive cleanup actions")
@@ -203,6 +205,7 @@ func Parse(args []string) (Options, error) {
 	opts.Repositories = append([]string(nil), repositories...)
 	opts.Classifications = append([]string(nil), classifications...)
 	opts.SelectedPaths = append([]string(nil), selectedPaths...)
+	opts.ExcludePaths = append([]string(nil), excludePaths...)
 
 	return opts, nil
 }
@@ -310,6 +313,7 @@ Commands:
 
 Flags:
   --scan-root DIR    root directory to scan; repeatable
+  --exclude PATH     exclude a worktree or directory subtree for this invocation; repeatable
   --select PATH      select live clean targets or advisory review rows; repeatable
   --dry-run          preview cleanup actions without removing anything (default)
   --yes, -y          execute cleanup without prompting
