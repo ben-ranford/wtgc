@@ -185,6 +185,34 @@ func TestWriteHumanEmitsReadableTableAndSummary(t *testing.T) {
 	}
 }
 
+func TestReportsDescribeExclusionScope(t *testing.T) {
+	inv := testInventory()
+	inv.ExcludedPaths = []string{"/tmp/protected\npath"}
+	measured := false
+	inv.Worktrees = append(inv.Worktrees, model.Worktree{
+		Path: "/tmp/repo-wt/excluded", Classification: model.Kept, Reason: "excluded by invocation scope",
+		WorktreeDetails: &model.WorktreeDetails{Excluded: true, DiskBytesMeasured: &measured},
+	})
+	var human bytes.Buffer
+	if err := Write(&human, inv, FormatHuman); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(human.String(), "Scope limitations:") || !strings.Contains(human.String(), `excluded: /tmp/protected\npath`) || !strings.Contains(human.String(), "/tmp/repo-wt/excluded") || !strings.Contains(human.String(), "unmeasured") {
+		t.Fatalf("human output=%q", human.String())
+	}
+	doc, err := review.Build(inv, review.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var reviewOutput bytes.Buffer
+	if err := WriteReview(&reviewOutput, doc, FormatHuman); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(reviewOutput.String(), "Scope limitations:") || !strings.Contains(reviewOutput.String(), `excluded: /tmp/protected\npath`) || !strings.Contains(reviewOutput.String(), "/tmp/repo-wt/excluded") || !strings.Contains(reviewOutput.String(), "unmeasured") {
+		t.Fatalf("review output=%q", reviewOutput.String())
+	}
+}
+
 func TestWriteHumanEscapesTerminalControlCharacters(t *testing.T) {
 	t.Parallel()
 	inv := testInventory()

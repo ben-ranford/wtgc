@@ -27,6 +27,17 @@ const verifyFlag = "--verify"
 const commitSuffix = "^{commit}"
 const defaultBranchLabel = "default branch"
 
+func pathWithin(parent, candidate string) bool {
+	if runtime.GOOS == "windows" {
+		parent, candidate = strings.ToLower(parent), strings.ToLower(candidate)
+	}
+	if parent == candidate {
+		return true
+	}
+	rel, err := filepath.Rel(parent, candidate)
+	return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
+}
+
 // RemoteRef is an exact local remote-tracking ref selected for provider proof.
 type RemoteRef struct{ Remote, Branch, URL string }
 
@@ -170,6 +181,17 @@ func NewWithTimeout(gitBinary string, commandTimeout time.Duration) *Client {
 // deduplicating by `git rev-parse --git-common-dir`. Recoverable discovery
 // failures are returned in the error slice so callers can surface ambiguity.
 func (c *Client) Discover(ctx context.Context, roots []string) ([]model.Repository, []error) {
+	return c.discover(ctx, roots, nil)
+}
+
+// DiscoverExcluding is the same local discovery operation with component-aware
+// canonical subtree boundaries. It is intentionally an optional app capability
+// so alternate Git implementations retain the stable Git interface.
+func (c *Client) DiscoverExcluding(ctx context.Context, roots, excluded []string) ([]model.Repository, []error) {
+	return c.discover(ctx, roots, excluded)
+}
+
+func (c *Client) discover(ctx context.Context, roots, excluded []string) ([]model.Repository, []error) {
 	if len(roots) == 0 {
 		return nil, []error{errors.New("no discovery roots provided")}
 	}
@@ -177,7 +199,7 @@ func (c *Client) Discover(ctx context.Context, roots []string) ([]model.Reposito
 	seen := map[string]string{}
 	var errs []error
 	for _, root := range roots {
-		c.discoverRoot(ctx, root, seen, &errs)
+		c.discoverRootExcluding(ctx, root, excluded, seen, &errs)
 	}
 
 	commonDirs := make([]string, 0, len(seen))
@@ -204,6 +226,10 @@ func (c *Client) Discover(ctx context.Context, roots []string) ([]model.Reposito
 }
 
 func (c *Client) discoverRoot(ctx context.Context, root string, seen map[string]string, errs *[]error) {
+	c.discoverRootExcluding(ctx, root, nil, seen, errs)
+}
+
+func (c *Client) discoverRootExcluding(ctx context.Context, root string, excluded []string, seen map[string]string, errs *[]error) {
 	if strings.TrimSpace(root) == "" {
 		*errs = append(*errs, errors.New("empty discovery root"))
 		return
@@ -227,13 +253,21 @@ func (c *Client) discoverRoot(ctx context.Context, root string, seen map[string]
 		*errs = append(*errs, fmt.Errorf("resolve root symlinks %q: %w", absRoot, err))
 		return
 	}
-	if err := c.walkRepositoryRoot(ctx, resolvedRoot, seen, errs); err != nil {
+	if err := c.walkRepositoryRoot(ctx, resolvedRoot, excluded, seen, errs); err != nil {
 		*errs = append(*errs, fmt.Errorf("walk root %q: %w", resolvedRoot, err))
 	}
 }
 
-func (c *Client) walkRepositoryRoot(ctx context.Context, root string, seen map[string]string, errs *[]error) error {
+func (c *Client) walkRepositoryRoot(ctx context.Context, root string, excluded []string, seen map[string]string, errs *[]error) error {
 	return filepath.WalkDir(root, func(path string, d fs.DirEntry, walkErr error) error {
+		for _, excludedPath := range excluded {
+			if pathWithin(excludedPath, path) {
+				if d != nil && d.IsDir() {
+					return filepath.SkipDir
+				}
+				return nil
+			}
+		}
 		return c.walkRepositoryEntry(ctx, path, d, walkErr, seen, errs)
 	})
 }
@@ -284,6 +318,17 @@ func (c *Client) List(ctx context.Context, repo model.Repository) ([]model.Regis
 // ResolveExplain finds a single registered worktree from its own nearest
 // existing directory, avoiding discovery and inspection of sibling repositories.
 func (c *Client) ResolveExplain(ctx context.Context, path string) (model.Repository, model.RegisteredWorktree, bool, error) {
+	return c.resolveExplain(ctx, path, nil)
+}
+
+// ResolveExplainExcluding resolves the requested registration while preserving
+// exclusion boundaries for the fallback discovery path. Reading target Git
+// metadata remains intentional: it is needed to identify an excluded record.
+func (c *Client) ResolveExplainExcluding(ctx context.Context, path string, excluded []string) (model.Repository, model.RegisteredWorktree, bool, error) {
+	return c.resolveExplain(ctx, path, excluded)
+}
+
+func (c *Client) resolveExplain(ctx context.Context, path string, excluded []string) (model.Repository, model.RegisteredWorktree, bool, error) {
 	root := filepath.Clean(path)
 	for {
 		if info, err := os.Stat(root); err == nil && info.IsDir() {
@@ -305,7 +350,7 @@ func (c *Client) ResolveExplain(ctx context.Context, path string) (model.Reposit
 		}
 		root = filepath.Dir(root)
 	}
-	repos, discoveryErrors := c.Discover(ctx, []string{filepath.Dir(root)})
+	repos, discoveryErrors := c.discover(ctx, []string{filepath.Dir(root)}, excluded)
 	if len(discoveryErrors) > 0 {
 		return model.Repository{}, model.RegisteredWorktree{}, false, discoveryErrors[0]
 	}

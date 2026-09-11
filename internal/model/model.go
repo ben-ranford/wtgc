@@ -77,17 +77,19 @@ type Worktree struct {
 // WorktreeDetails is embedded to keep optional inventory data flat in JSON
 // while avoiding allocating it for ordinary classifier rows.
 type WorktreeDetails struct {
-	RetentionBasis string         `json:"retention_basis,omitempty"`
-	ObservedAt     *time.Time     `json:"observed_at,omitempty"`
-	EligibleAt     *time.Time     `json:"eligible_at,omitempty"`
-	Remaining      time.Duration  `json:"retention_remaining_ns,omitempty"`
-	CacheWarnings  []CacheWarning `json:"cache_warnings,omitempty"`
-	Provider       string         `json:"provider,omitempty"`
-	ProviderPR     int            `json:"provider_pr,omitempty"`
-	ProviderURL    string         `json:"provider_url,omitempty"`
-	MergedAt       *time.Time     `json:"merged_at,omitempty"`
-	ProviderProof  ProviderProof  `json:"-"`
-	ExplainChecks  []ExplainCheck `json:"-"`
+	DiskBytesMeasured *bool          `json:"disk_bytes_measured,omitempty"`
+	Excluded          bool           `json:"excluded,omitempty"`
+	RetentionBasis    string         `json:"retention_basis,omitempty"`
+	ObservedAt        *time.Time     `json:"observed_at,omitempty"`
+	EligibleAt        *time.Time     `json:"eligible_at,omitempty"`
+	Remaining         time.Duration  `json:"retention_remaining_ns,omitempty"`
+	CacheWarnings     []CacheWarning `json:"cache_warnings,omitempty"`
+	Provider          string         `json:"provider,omitempty"`
+	ProviderPR        int            `json:"provider_pr,omitempty"`
+	ProviderURL       string         `json:"provider_url,omitempty"`
+	MergedAt          *time.Time     `json:"merged_at,omitempty"`
+	ProviderProof     ProviderProof  `json:"-"`
+	ExplainChecks     []ExplainCheck `json:"-"`
 }
 
 // ExplainCheckStatus records what a read-only classifier check established.
@@ -155,6 +157,7 @@ type Inventory struct {
 	GeneratedAt   time.Time  `json:"generated_at"`
 	DryRun        bool       `json:"dry_run"`
 	Roots         []string   `json:"roots"`
+	ExcludedPaths []string   `json:"excluded_paths,omitempty"`
 	Worktrees     []Worktree `json:"worktrees"`
 	Summary       Summary    `json:"summary"`
 	Errors        []string   `json:"errors,omitempty"`

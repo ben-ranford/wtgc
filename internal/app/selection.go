@@ -102,6 +102,21 @@ func (a *App) cleanSelection(ctx context.Context, repositories []model.Repositor
 	for i := range inv.Worktrees {
 		inv.Worktrees[i].Action = model.ActionKept
 	}
+	if err := opts.exclusions.revalidate(); err != nil {
+		inv.Errors = append(inv.Errors, fmt.Sprintf("selection rejected because excluded scope changed: %v", err))
+		return
+	}
+	for _, path := range opts.SelectedPaths {
+		excluded, err := opts.exclusions.contains(path)
+		if err != nil {
+			inv.Errors = append(inv.Errors, fmt.Sprintf("selection %q exclusion membership could not be proven: %v", path, err))
+			return
+		}
+		if excluded {
+			inv.Errors = append(inv.Errors, fmt.Sprintf("selection %q is excluded by invocation scope", path))
+			return
+		}
+	}
 	selected, err := bindSelection(repositories, opts.SelectedPaths, inv)
 	if err != nil {
 		inv.Errors = append(inv.Errors, err.Error())
@@ -136,7 +151,7 @@ func (a *App) cleanSelection(ctx context.Context, repositories []model.Repositor
 			}
 		}
 		if opts.DeleteBranch {
-			a.deleteSelectedBranches(ctx, selected, inv)
+			a.deleteSelectedBranches(ctx, selected, opts.exclusions, inv)
 		}
 	}
 	if err := ctx.Err(); err != nil {
@@ -205,13 +220,23 @@ func readRegistration(path string) (string, error) {
 
 // The allowlist authorizes removing selected checkouts, not invalidating a
 // shared ref still used by any remaining checkout (including stale records).
-func (a *App) requireUnusedSelectedBranch(ctx context.Context, repo model.Repository, branch string) error {
+func (a *App) requireUnusedBranch(ctx context.Context, repo model.Repository, branch string, exclusions exclusionBoundary) error {
+	if err := exclusions.revalidate(); err != nil {
+		return err
+	}
 	records, err := a.git.List(ctx, repo)
 	if err != nil {
 		return fmt.Errorf("inspect remaining branch checkouts: %w", err)
 	}
 	for _, record := range records {
 		if record.Branch == branch {
+			excluded, err := exclusions.contains(record.Path)
+			if err != nil {
+				return fmt.Errorf("evaluate excluded registration %q: %w", record.Path, err)
+			}
+			if excluded {
+				return fmt.Errorf("branch is retained because excluded registration remains at %s", record.Path)
+			}
 			return fmt.Errorf("branch is still checked out at %s", record.Path)
 		}
 	}
@@ -220,7 +245,7 @@ func (a *App) requireUnusedSelectedBranch(ctx context.Context, repo model.Reposi
 
 // Branch actions follow the entire removal pass: another selected checkout is
 // not a terminal retention failure while it is still waiting for removal.
-func (a *App) deleteSelectedBranches(ctx context.Context, selected []selectedWorktree, inv *model.Inventory) {
+func (a *App) deleteSelectedBranches(ctx context.Context, selected []selectedWorktree, exclusions exclusionBoundary, inv *model.Inventory) {
 	attempted := make(map[[2]string]bool)
 	for _, bound := range selected {
 		if ctx.Err() != nil {
@@ -234,6 +259,6 @@ func (a *App) deleteSelectedBranches(ctx context.Context, selected []selectedWor
 		attempted[key] = true
 		// Successful removal revalidated these exact branch/default/proof fields.
 		// The branch guard still freshly lists registrations before ancestry/CAS.
-		a.deleteWorktreeBranch(ctx, bound.repo, *item, item, inv, true)
+		a.deleteWorktreeBranch(ctx, bound.repo, *item, item, inv, exclusions, true)
 	}
 }
