@@ -273,6 +273,41 @@ func TestRunExplainIsReadOnlyAndEmitsStructuredTrace(t *testing.T) {
 	}
 }
 
+func TestRunInteractiveCleanupRejectsRedirectedExcludeAliasBeforeRemoval(t *testing.T) {
+	root := t.TempDir()
+	selected, initiallyExcluded := filepath.Join(root, "selected"), filepath.Join(root, "initially-excluded")
+	if err := os.Mkdir(filepath.Join(root, ".git"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for _, path := range []string{selected, initiallyExcluded} {
+		if err := os.Mkdir(path, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(selected, ".git"), []byte("gitdir: /metadata\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	alias := filepath.Join(root, "excluded-alias")
+	if err := os.Symlink(initiallyExcluded, alias); err != nil {
+		t.Fatal(err)
+	}
+	backend := &excludeAliasDriftGit{mainFakeGit: newMainFakeGit(model.RegisteredWorktree{Path: selected, Branch: "feature", Head: "def456"})}
+	backend.repositories[0] = model.Repository{CommonDir: filepath.Join(root, ".git"), PrimaryPath: root}
+	input := callbackReader{callback: func() {
+		if err := os.Remove(alias); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Symlink(selected, alias); err != nil {
+			t.Fatal(err)
+		}
+	}, text: "yes\n"}
+	var stdout, stderr bytes.Buffer
+	code := run(context.Background(), []string{"clean", "--interactive", "--exclude", alias, "--select", selected}, processIO{stdin: &input, stdout: &stdout, stderr: &stderr}, mainCommandDependencies(backend, func() (string, error) { return root, nil }))
+	if code != 1 || backend.removes != 0 || !strings.Contains(stdout.String(), "excluded scope changed") {
+		t.Fatalf("code=%d removes=%d stderr=%q stdout=%q", code, backend.removes, stderr.String(), stdout.String())
+	}
+}
+
 func TestRunExplainRejectsUnknownPath(t *testing.T) {
 	var stdout, stderr bytes.Buffer
 	code := run(context.Background(), []string{"explain", "/missing"}, processIO{stdin: strings.NewReader(""), stdout: &stdout, stderr: &stderr}, mainCommandDependencies(newMainFakeGit(mainRecord("main")), func() (string, error) { return "/repo", nil }))
@@ -955,6 +990,39 @@ type mainFakeGit struct {
 type reviewNoMutationGit struct {
 	*mainFakeGit
 	removes, prunes, deletes int
+}
+
+type excludeAliasDriftGit struct {
+	*mainFakeGit
+	removes int
+}
+
+func (f *excludeAliasDriftGit) DiscoverExcluding(ctx context.Context, roots, _ []string) ([]model.Repository, []error) {
+	return f.mainFakeGit.Discover(ctx, roots)
+}
+
+func (f *excludeAliasDriftGit) Remove(context.Context, model.Repository, string) error {
+	f.removes++
+	return nil
+}
+
+type callbackReader struct {
+	callback func()
+	text     string
+	called   bool
+}
+
+func (r *callbackReader) Read(buffer []byte) (int, error) {
+	if !r.called {
+		r.called = true
+		r.callback()
+	}
+	if r.text == "" {
+		return 0, io.EOF
+	}
+	n := copy(buffer, r.text)
+	r.text = r.text[n:]
+	return n, nil
 }
 
 type partialReviewGit struct {

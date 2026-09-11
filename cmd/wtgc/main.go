@@ -142,7 +142,10 @@ func prepareCommand(opts cli.Options, getwd func() (string, error), stderr io.Wr
 		fmt.Fprintf(stderr, "resolve current directory: %v\n", err)
 		return cli.Options{}, "", nil, 1
 	}
-	opts.ExcludePaths, err = normalizeReviewPaths(opts.ExcludePaths, workingDirectory)
+	// Preserve the path the user supplied (after resolving only its relative
+	// base). The app records that source for cleanup-time alias revalidation;
+	// canonical membership is established separately by the exclusion boundary.
+	opts.ExcludePaths, err = absoluteExcludePaths(opts.ExcludePaths, workingDirectory)
 	if err == nil && opts.Command == cli.CommandReview {
 		opts.Repositories, err = normalizeReviewPaths(opts.Repositories, workingDirectory)
 	}
@@ -286,6 +289,20 @@ func normalizeReviewPaths(paths []string, base string) ([]string, error) {
 			return nil, err
 		}
 		normalized[i] = resolved
+	}
+	return normalized, nil
+}
+
+func absoluteExcludePaths(paths []string, base string) ([]string, error) {
+	normalized := make([]string, len(paths))
+	for i, path := range paths {
+		if strings.TrimSpace(path) == "" {
+			return nil, fmt.Errorf("exclude path is empty")
+		}
+		if !filepath.IsAbs(path) {
+			path = filepath.Join(base, path)
+		}
+		normalized[i] = filepath.Clean(path)
 	}
 	return normalized, nil
 }
