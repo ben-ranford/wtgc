@@ -5,8 +5,12 @@ package main
 import (
 	"bytes"
 	"context"
+	"errors"
 	"io"
 	"os"
+	"os/exec"
+	"runtime"
+	"slices"
 	"strings"
 	"syscall"
 	"testing"
@@ -15,6 +19,8 @@ import (
 	"github.com/ben-ranford/wtgc/internal/app"
 	"go.uber.org/goleak"
 )
+
+const terminalFlagsProbe = "WTGC_SELECTION_TERMINAL_FLAGS_PROBE"
 
 func TestSelectionInputRestoresOriginalMode(t *testing.T) {
 	defer goleak.VerifyNone(t, goleak.IgnoreCurrent())
@@ -50,6 +56,45 @@ func TestSelectionInputRestoresOriginalMode(t *testing.T) {
 			writer.Close()
 		}
 	}
+}
+
+func TestTerminalSelectionInputPreservesInheritedFlags(t *testing.T) {
+	if os.Getenv(terminalFlagsProbe) == "1" {
+		before := []uintptr{selectionInputFlags(t, os.Stdin), selectionInputFlags(t, os.Stdout), selectionInputFlags(t, os.Stderr)}
+		_, release, err := prepareSelectionInput(os.Stdin)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := release(); err != nil {
+			t.Fatal(err)
+		}
+		after := []uintptr{selectionInputFlags(t, os.Stdin), selectionInputFlags(t, os.Stdout), selectionInputFlags(t, os.Stderr)}
+		if !slices.Equal(before, after) {
+			t.Fatalf("terminal flags changed: %v -> %v", before, after)
+		}
+		return
+	}
+	if _, err := exec.LookPath("script"); err != nil {
+		t.Skip("script is unavailable; no native PTY launcher")
+	}
+	args := []string{"-test.run=^TestTerminalSelectionInputPreservesInheritedFlags$"}
+	if runtime.GOOS == "darwin" {
+		args = append([]string{"-q", "/dev/null", "env", terminalFlagsProbe + "=1", os.Args[0]}, args...)
+	} else {
+		command := "env " + terminalFlagsProbe + "=1 " + quoteSelectionProbe(os.Args[0])
+		for _, arg := range args {
+			command += " " + quoteSelectionProbe(arg)
+		}
+		args = []string{"-q", "-c", command, "/dev/null"}
+	}
+	output, err := exec.Command("script", args...).CombinedOutput()
+	if err != nil {
+		t.Fatalf("PTY flags probe: %v output=%q", err, output)
+	}
+}
+
+func quoteSelectionProbe(value string) string {
+	return "'" + strings.ReplaceAll(value, "'", "'\\''") + "'"
 }
 
 func TestSelectionInputRejectsUnavailableDescriptor(t *testing.T) {
@@ -112,6 +157,119 @@ func TestPreparedSelectionInputIsPollable(t *testing.T) {
 	}
 	if _, err := pollable.Read(make([]byte, 1)); !os.IsTimeout(err) {
 		t.Fatalf("read did not honor deadline: %v", err)
+	}
+}
+
+func TestTerminalSelectionInputCloseInterruptsNonblockingRead(t *testing.T) {
+	reader, writer := pipeWithMode(t, true)
+	defer writer.Close()
+	raw, err := reader.SyscallConn()
+	if err != nil {
+		t.Fatal(err)
+	}
+	input := &terminalSelectionInput{file: reader, raw: raw, done: make(chan struct{})}
+	done := make(chan error, 1)
+	go func() {
+		_, err := input.Read(make([]byte, 1))
+		done <- err
+	}()
+	time.Sleep(2 * terminalSelectionPollInterval)
+	if err := input.Close(); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-done:
+		if !errors.Is(err, os.ErrClosed) {
+			t.Fatalf("read error = %v", err)
+		}
+	case <-time.After(terminalSelectionPollInterval):
+		t.Fatal("close did not interrupt terminal input read")
+	}
+}
+
+func TestPrepareTerminalSelectionInputOwnsAndClosesReader(t *testing.T) {
+	reader, writer := pipeWithMode(t, false)
+	defer writer.Close()
+	input, release, err := prepareTerminalSelectionInput(reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	terminal, ok := input.(*terminalSelectionInput)
+	if !ok {
+		t.Fatalf("input type=%T", input)
+	}
+	if _, err := writer.Write([]byte("x")); err != nil {
+		t.Fatal(err)
+	}
+	buffer := make([]byte, 1)
+	if count, err := terminal.Read(buffer); err != nil || count != 1 || string(buffer) != "x" {
+		t.Fatalf("read count=%d buffer=%q err=%v", count, buffer, err)
+	}
+	if err := release(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := reader.Stat(); err == nil {
+		t.Fatal("terminal input remained open after release")
+	}
+}
+
+func TestPrepareTerminalSelectionInputRejectsClosedFile(t *testing.T) {
+	reader, writer, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer writer.Close()
+	if err := reader.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := prepareTerminalSelectionInput(reader); err == nil {
+		t.Fatal("closed terminal input accepted")
+	}
+}
+
+func TestOpenTerminalSelectionInputReturnsUsableInputOrTTYError(t *testing.T) {
+	input, release, err := openTerminalSelectionInput()
+	if err != nil {
+		if input != nil || release != nil {
+			t.Fatalf("failed opener returned input=%T release present=%t", input, release != nil)
+		}
+		return
+	}
+	if input == nil || release == nil {
+		t.Fatalf("opened terminal input=%T release present=%t", input, release != nil)
+	}
+	if err := release(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestTerminalSelectionInputReportsEOFAndClosedControl(t *testing.T) {
+	file, err := os.CreateTemp(t.TempDir(), "empty")
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := file.SyscallConn()
+	if err != nil {
+		t.Fatal(err)
+	}
+	input := &terminalSelectionInput{file: file, raw: raw, done: make(chan struct{})}
+	if count, err := input.Read(make([]byte, 1)); count != 0 || !errors.Is(err, io.EOF) {
+		t.Fatalf("empty read count=%d err=%v", count, err)
+	}
+	if err := file.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := input.Read(make([]byte, 1)); err == nil {
+		t.Fatal("closed descriptor read succeeded")
+	}
+	if err := closeSelectionInput(file); err != nil {
+		t.Fatalf("closed input cleanup failed: %v", err)
+	}
+
+	closed := &terminalSelectionInput{done: make(chan struct{})}
+	close(closed.done)
+	if _, err := closed.Read(make([]byte, 1)); !errors.Is(err, os.ErrClosed) {
+		t.Fatalf("closed reader error=%v", err)
 	}
 }
 

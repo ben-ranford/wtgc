@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -9,6 +10,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -41,6 +43,407 @@ func TestSelectionConfirmerRequiresCompleteAnswerAndEscapesPaths(t *testing.T) {
 				t.Fatalf("unsafe preview=%q", text)
 			}
 		}
+	}
+}
+
+func TestNumberedPickerParsingAndDisplay(t *testing.T) {
+	preview := app.PickPreview{Rows: []app.PickRow{
+		{Number: 1, Selectable: true, Worktree: model.Worktree{Repository: "/repo", Branch: "one", Path: "/worktrees/one", DiskBytes: 123}},
+		{Worktree: model.Worktree{Repository: "/repo", Path: "/worktrees/unsafe\nspoof"}, Unavailable: "dirty"},
+		{Number: 2, Selectable: true, Worktree: model.Worktree{Repository: "/repo", Branch: "two", Path: "/worktrees/two", DiskBytes: 456}},
+	}}
+	for _, test := range []struct {
+		input string
+		want  []int
+		err   string
+	}{
+		{"1,2,1", []int{1, 2}, ""},
+		{"1-2", []int{1, 2}, ""},
+		{"", nil, ""},
+		{"3", nil, "not selectable"},
+		{"1,,2", nil, "empty item"},
+		{"2-1", nil, "invalid range"},
+	} {
+		got, err := parsePickSelection(test.input, preview)
+		if test.err != "" {
+			if err == nil || !strings.Contains(err.Error(), test.err) {
+				t.Fatalf("parsePickSelection(%q) err=%v", test.input, err)
+			}
+			continue
+		}
+		if err != nil || !reflect.DeepEqual(got, test.want) {
+			t.Fatalf("parsePickSelection(%q) = %v, %v", test.input, got, err)
+		}
+	}
+	text := formatPickRows(preview)
+	for _, want := range []string{"repository=/repo", "branch=one", "bytes=123", "path=/worktrees/one", "unavailable: dirty", `/worktrees/unsafe\nspoof`} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("display missing %q: %q", want, text)
+		}
+	}
+}
+
+func TestNumberedPickerRetriesAndCancelsOnEOF(t *testing.T) {
+	preview := app.PickPreview{Rows: []app.PickRow{{Number: 1, Selectable: true, Worktree: model.Worktree{Path: "/one"}}}}
+	for _, test := range []struct {
+		input string
+		want  []int
+	}{
+		{"x\n1\n", []int{1}},
+		{"", nil},
+		{"\n", nil},
+	} {
+		var output bytes.Buffer
+		result := numberedPicker(context.Background(), strings.NewReader(test.input), &output)(preview)
+		if result.Err != nil || !reflect.DeepEqual(result.Selected, test.want) {
+			t.Fatalf("input=%q result=%+v want=%v", test.input, result, test.want)
+		}
+		if test.input == "x\n1\n" && !strings.Contains(output.String(), "Invalid selection") {
+			t.Fatalf("retry was not shown: %q", output.String())
+		}
+	}
+}
+
+func TestNumberedPickerAcceptsThreeHundredCandidatesWithContextAndBoundsInput(t *testing.T) {
+	rows := make([]app.PickRow, 0, maxPickCandidates+1)
+	for i := 1; i <= maxPickCandidates; i++ {
+		rows = append(rows, app.PickRow{Number: i, Selectable: true, Worktree: model.Worktree{Path: fmt.Sprintf("/safe/%d", i)}})
+	}
+	rows = append(rows, app.PickRow{Worktree: model.Worktree{Path: "/kept"}, Unavailable: "kept"})
+	var output bytes.Buffer
+	input := strings.Repeat("9", 1025) + "\n300\n"
+	result := numberedPicker(context.Background(), strings.NewReader(input), &output)(app.PickPreview{Rows: rows})
+	if result.Err != nil || !reflect.DeepEqual(result.Selected, []int{300}) {
+		t.Fatalf("result=%+v", result)
+	}
+	text := output.String()
+	if strings.Contains(text, "more than 300") || !strings.Contains(text, "input is too long") || !strings.Contains(text, "  300  repository=") {
+		t.Fatalf("picker did not retain 300 candidates safely: %q", text)
+	}
+}
+
+func TestNumberedPickerReportsUnmeasuredBytesHonestly(t *testing.T) {
+	measured := false
+	text := formatPickRows(app.PickPreview{Rows: []app.PickRow{{Worktree: model.Worktree{Path: "/excluded", WorktreeDetails: &model.WorktreeDetails{DiskBytesMeasured: &measured}}}}})
+	if !strings.Contains(text, "bytes=unmeasured") || strings.Contains(text, "bytes=0") {
+		t.Fatalf("picker bytes=%q", text)
+	}
+}
+
+func TestNumberedPickerDistinguishesFailuresFromVoluntaryCancellation(t *testing.T) {
+	preview := app.PickPreview{Rows: []app.PickRow{{Number: 1, Selectable: true}}}
+	readFailure := errors.New("read failed")
+	result := numberedPicker(context.Background(), pickerErrorReader{err: readFailure}, io.Discard)(preview)
+	if !errors.Is(result.Err, readFailure) || result.Selected != nil {
+		t.Fatalf("read result=%+v", result)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	result = numberedPicker(ctx, strings.NewReader("\n"), io.Discard)(preview)
+	if !errors.Is(result.Err, context.Canceled) || result.Selected != nil {
+		t.Fatalf("canceled result=%+v", result)
+	}
+}
+
+func TestPickerFailsClosedAtDisplayAndInputBoundaries(t *testing.T) {
+	preview := app.PickPreview{Rows: []app.PickRow{{Number: 1, Selectable: true}}}
+	tooMany := make([]app.PickRow, maxPickCandidates+1)
+	for i := range tooMany {
+		tooMany[i] = app.PickRow{Number: i + 1, Selectable: true}
+	}
+
+	for _, test := range []struct {
+		name    string
+		preview app.PickPreview
+		input   io.Reader
+		output  io.Writer
+		wantErr string
+	}{
+		{
+			name:    "refuses more than the bounded candidate count",
+			preview: app.PickPreview{Rows: tooMany},
+			input:   strings.NewReader("1\n"),
+			output:  io.Discard,
+		},
+		{
+			name:    "reports cancellation notice failure",
+			preview: app.PickPreview{Rows: tooMany},
+			input:   strings.NewReader("1\n"),
+			output:  pickerErrorWriter{err: errors.New("notice failed")},
+			wantErr: "notice failed",
+		},
+		{
+			name:    "reports display failure before reading input",
+			preview: preview,
+			input:   strings.NewReader("1\n"),
+			output:  pickerErrorWriter{err: errors.New("display failed")},
+			wantErr: "display failed",
+		},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			result := numberedPicker(context.Background(), test.input, test.output)(test.preview)
+			if test.wantErr == "" {
+				if result.Err != nil || result.Selected != nil {
+					t.Fatalf("result=%+v", result)
+				}
+				return
+			}
+			if result.Err == nil || !strings.Contains(result.Err.Error(), test.wantErr) {
+				t.Fatalf("result=%+v, want error containing %q", result, test.wantErr)
+			}
+		})
+	}
+}
+
+func TestPickerReadAnswersPropagatesOutputAndCancellationFailures(t *testing.T) {
+	preview := app.PickPreview{Rows: []app.PickRow{{Number: 1, Selectable: true}}}
+	for _, test := range []struct {
+		name    string
+		ctx     context.Context
+		input   string
+		output  io.Writer
+		wantErr string
+	}{
+		{"prompt write", context.Background(), "1\n", pickerErrorWriter{err: errors.New("prompt failed")}, "prompt failed"},
+		{"invalid answer write", context.Background(), "x\n", pickerErrorWriter{err: errors.New("invalid failed")}, "invalid failed"},
+		{"eof newline write", context.Background(), "", pickerErrorWriter{err: errors.New("newline failed")}, "newline failed"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			result := picker{output: test.output}.readAnswers(test.ctx, strings.NewReader(test.input), preview)
+			if result.Err == nil || !strings.Contains(result.Err.Error(), test.wantErr) {
+				t.Fatalf("result=%+v, want error containing %q", result, test.wantErr)
+			}
+		})
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	result := picker{output: pickerWriteFunc(func(value []byte) (int, error) {
+		cancel()
+		if string(value) == "\n" {
+			return 0, errors.New("cancel newline failed")
+		}
+		return len(value), nil
+	})}.readAnswers(ctx, strings.NewReader("1\n"), preview)
+	if !errors.Is(result.Err, context.Canceled) || !strings.Contains(result.Err.Error(), "cancel newline failed") {
+		t.Fatalf("canceled result=%+v", result)
+	}
+
+	ctx, cancel = context.WithCancel(context.Background())
+	result = picker{output: pickerWriteFunc(func(value []byte) (int, error) {
+		if strings.Contains(string(value), "Choose worktrees") {
+			cancel()
+		}
+		return len(value), nil
+	})}.readAnswers(ctx, strings.NewReader("1\n"), preview)
+	if !errors.Is(result.Err, context.Canceled) {
+		t.Fatalf("canceled result=%+v", result)
+	}
+
+	for _, test := range []struct {
+		name  string
+		input string
+	}{
+		{"oversized answer", strings.Repeat("x", 1025) + "\n"},
+		{"invalid answer", "x\n"},
+		{"eof answer", ""},
+	} {
+		t.Run(test.name+" output failure after prompt", func(t *testing.T) {
+			writes := 0
+			result := picker{output: pickerWriteFunc(func(value []byte) (int, error) {
+				writes++
+				if writes == 1 {
+					return len(value), nil
+				}
+				return 0, errors.New("follow-up failed")
+			})}.readAnswers(context.Background(), strings.NewReader(test.input), preview)
+			if result.Err == nil || !strings.Contains(result.Err.Error(), "follow-up failed") {
+				t.Fatalf("result=%+v", result)
+			}
+		})
+	}
+}
+
+func TestPickerWithInputAndInterruptibleReadCloseOnCancellation(t *testing.T) {
+	defer goleak.VerifyNone(t, goleak.IgnoreCurrent())
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	reader, writer := io.Pipe()
+	defer writer.Close()
+	done := make(chan app.PickResult, 1)
+	go func() {
+		done <- picker{}.interruptibleRead(ctx, reader, func(input io.Reader) app.PickResult {
+			_, err := input.Read(make([]byte, 1))
+			return app.PickResult{Err: err}
+		})
+	}()
+	cancel()
+	select {
+	case result := <-done:
+		if !errors.Is(result.Err, context.Canceled) {
+			t.Fatalf("result=%+v", result)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("cancellation did not interrupt picker read")
+	}
+
+	plain := picker{}.interruptibleRead(context.Background(), strings.NewReader("1\n"), func(input io.Reader) app.PickResult {
+		line, err := io.ReadAll(input)
+		if err != nil {
+			return app.PickResult{Err: err}
+		}
+		return app.PickResult{Selected: []int{len(line)}}
+	})
+	if plain.Err != nil || !reflect.DeepEqual(plain.Selected, []int{2}) {
+		t.Fatalf("plain result=%+v", plain)
+	}
+
+	closeFailure := errors.New("close failed")
+	closable := newPickerBlockingReader(closeFailure)
+	ctx, cancel = context.WithCancel(context.Background())
+	done = make(chan app.PickResult, 1)
+	go func() {
+		done <- picker{}.interruptibleRead(ctx, closable, func(input io.Reader) app.PickResult {
+			_, err := input.Read(make([]byte, 1))
+			return app.PickResult{Err: err}
+		})
+	}()
+	cancel()
+	select {
+	case result := <-done:
+		if !errors.Is(result.Err, closeFailure) || !strings.Contains(result.Err.Error(), "interrupt numbered selection") {
+			t.Fatalf("close failure result=%+v", result)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("close failure did not finish picker read")
+	}
+}
+
+func TestPickerRejectsPreparationAndRestorationFailures(t *testing.T) {
+	closed, writer, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	closed.Close()
+	defer writer.Close()
+	result := picker{input: closed}.withInput(context.Background(), func(io.Reader) app.PickResult { return app.PickResult{} })
+	if result.Err == nil || !strings.Contains(result.Err.Error(), "prepare numbered selection") {
+		t.Fatalf("result=%+v", result)
+	}
+
+	file, err := os.CreateTemp(t.TempDir(), "answers")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer file.Close()
+	if _, err := file.WriteString("1\n"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := file.Seek(0, io.SeekStart); err != nil {
+		t.Fatal(err)
+	}
+	result = picker{input: file}.withInput(context.Background(), func(io.Reader) app.PickResult {
+		if err := file.Close(); err != nil {
+			return app.PickResult{Err: err}
+		}
+		return app.PickResult{Selected: []int{1}}
+	})
+	if result.Err == nil || !strings.Contains(result.Err.Error(), "restore numbered selection input") {
+		t.Fatalf("result=%+v", result)
+	}
+}
+
+func TestOversizedPickerLinePreservesDrainFailure(t *testing.T) {
+	boom := errors.New("drain failed")
+	reader := bufio.NewReaderSize(io.MultiReader(strings.NewReader(strings.Repeat("x", 1024)), pickerErrorReader{err: boom}), 1024)
+	_, err := readPickLine(reader)
+	if !errors.Is(err, boom) {
+		t.Fatalf("readPickLine error=%v, want %v", err, boom)
+	}
+}
+
+func TestDiscardPickerLineConsumesBufferedChunks(t *testing.T) {
+	reader := bufio.NewReaderSize(strings.NewReader(strings.Repeat("x", 2048)+"\n"), 1024)
+	if _, err := reader.ReadSlice('\n'); !errors.Is(err, bufio.ErrBufferFull) {
+		t.Fatalf("first chunk error=%v", err)
+	}
+	if err := discardPickLine(reader); err != nil {
+		t.Fatalf("discard error=%v", err)
+	}
+}
+
+type pickerErrorReader struct{ err error }
+
+func (r pickerErrorReader) Read([]byte) (int, error) { return 0, r.err }
+
+type pickerErrorWriter struct{ err error }
+
+func (w pickerErrorWriter) Write([]byte) (int, error) { return 0, w.err }
+
+type pickerWriteFunc func([]byte) (int, error)
+
+func (f pickerWriteFunc) Write(value []byte) (int, error) { return f(value) }
+
+func TestPickerFormattingAndWriteFailures(t *testing.T) {
+	if _, _, err := parsePickRange("1-2-3"); err == nil {
+		t.Fatal("malformed range accepted")
+	}
+	if _, _, err := parsePickRange("1-301"); err == nil {
+		t.Fatal("oversized range accepted")
+	}
+	if err := writePicker(pickerErrorWriter{err: errors.New("write failed")}, "text"); err == nil || !strings.Contains(err.Error(), "write failed") {
+		t.Fatalf("write error=%v", err)
+	}
+	if err := writePicker(shortPickerWriter{}, "text"); !errors.Is(err, io.ErrShortWrite) {
+		t.Fatalf("short write error=%v", err)
+	}
+}
+
+type shortPickerWriter struct{}
+
+func (shortPickerWriter) Write(value []byte) (int, error) { return len(value) - 1, nil }
+
+type pickerBlockingReader struct {
+	done     chan struct{}
+	closeErr error
+	once     sync.Once
+}
+
+func newPickerBlockingReader(closeErr error) *pickerBlockingReader {
+	return &pickerBlockingReader{done: make(chan struct{}), closeErr: closeErr}
+}
+
+func (r *pickerBlockingReader) Read([]byte) (int, error) {
+	<-r.done
+	return 0, io.EOF
+}
+
+func (r *pickerBlockingReader) Close() error {
+	r.once.Do(func() { close(r.done) })
+	return r.closeErr
+}
+
+func TestNumberedPickerFormatsThreeHundredRowsWithinTerminalWidth(t *testing.T) {
+	rows := make([]app.PickRow, maxPickCandidates)
+	for i := range rows {
+		rows[i] = app.PickRow{Number: i + 1, Selectable: true, Worktree: model.Worktree{Repository: "/repo", Branch: "feature", Path: "/worktrees/" + strings.Repeat("x", 120), DiskBytes: int64(i)}}
+	}
+	text := formatPickRows(app.PickPreview{Rows: rows})
+	if !strings.Contains(text, "  300  repository=") {
+		t.Fatalf("last candidate missing")
+	}
+	for _, line := range strings.Split(strings.TrimSuffix(text, "\n"), "\n") {
+		if len([]rune(line)) > 80 {
+			t.Fatalf("line exceeds terminal width (%d): %q", len([]rune(line)), line)
+		}
+	}
+}
+
+func TestPickRejectsNonTerminalBeforeScanning(t *testing.T) {
+	backend := newMainFakeGit(mainRecord("main"))
+	var stdout, stderr bytes.Buffer
+	code := run(context.Background(), []string{"clean", "--pick"}, processIO{stdin: strings.NewReader("1\n"), stdout: &stdout, stderr: &stderr}, mainCommandDependencies(backend, func() (string, error) { return "/repo", nil }))
+	if code != 2 || !strings.Contains(stderr.String(), "requires terminal") || stdout.Len() != 0 {
+		t.Fatalf("code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
 	}
 }
 

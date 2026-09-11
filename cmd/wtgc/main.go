@@ -101,6 +101,10 @@ func run(ctx context.Context, args []string, streams processIO, deps commandDepe
 	if code != 0 {
 		return code
 	}
+	if opts.Pick && (!isTerminal(streams.stdin) || !isTerminal(streams.stderr)) {
+		fmt.Fprintln(streams.stderr, "clean --pick requires terminal input and output")
+		return 2
+	}
 	appOptions := app.Options{
 		Roots:           roots,
 		ExcludePaths:    opts.ExcludePaths,
@@ -116,6 +120,9 @@ func run(ctx context.Context, args []string, streams processIO, deps commandDepe
 	}
 	if opts.Command == cli.CommandClean {
 		appOptions.SelectedPaths = opts.SelectedPaths
+	}
+	if opts.Pick {
+		appOptions.Pick = numberedPicker(ctx, streams.stdin, streams.stderr)
 	}
 	if opts.Provider == "github" {
 		appOptions.Provider = deps.newProvider()
