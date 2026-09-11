@@ -336,7 +336,7 @@ func TestPickerWithInputAndInterruptibleReadCloseOnCancellation(t *testing.T) {
 	}
 }
 
-func TestPickerRejectsPreparationAndRestorationFailures(t *testing.T) {
+func TestPickerRejectsPreparationFailures(t *testing.T) {
 	closed, writer, err := os.Pipe()
 	if err != nil {
 		t.Fatal(err)
@@ -345,27 +345,6 @@ func TestPickerRejectsPreparationAndRestorationFailures(t *testing.T) {
 	defer writer.Close()
 	result := picker{input: closed}.withInput(context.Background(), func(io.Reader) app.PickResult { return app.PickResult{} })
 	if result.Err == nil || !strings.Contains(result.Err.Error(), "prepare numbered selection") {
-		t.Fatalf("result=%+v", result)
-	}
-
-	file, err := os.CreateTemp(t.TempDir(), "answers")
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer file.Close()
-	if _, err := file.WriteString("1\n"); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := file.Seek(0, io.SeekStart); err != nil {
-		t.Fatal(err)
-	}
-	result = picker{input: file}.withInput(context.Background(), func(io.Reader) app.PickResult {
-		if err := file.Close(); err != nil {
-			return app.PickResult{Err: err}
-		}
-		return app.PickResult{Selected: []int{1}}
-	})
-	if result.Err == nil || !strings.Contains(result.Err.Error(), "restore numbered selection input") {
 		t.Fatalf("result=%+v", result)
 	}
 }

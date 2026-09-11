@@ -129,7 +129,7 @@ func pickPTYCommand(ctx context.Context, binary, root string) *exec.Cmd {
 	if runtime.GOOS == "darwin" {
 		return exec.CommandContext(ctx, "script", "-q", "/dev/null", binary, "clean", "--pick", root)
 	}
-	return exec.CommandContext(ctx, "script", "-q", "-c", shellQuote(binary)+" clean --pick "+shellQuote(root), "/dev/null")
+	return exec.CommandContext(ctx, "script", "-q", "-e", "-c", shellQuote(binary)+" clean --pick "+shellQuote(root), "/dev/null")
 }
 
 func shellQuote(value string) string { return "'" + strings.ReplaceAll(value, "'", "'\\''") + "'" }
