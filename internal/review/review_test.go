@@ -170,7 +170,7 @@ func TestBuildReclaimProposalQualifiesUnmetAndIneligibleRows(t *testing.T) {
 func TestBuildReclaimProposalFiltersAndAvoidsIntegerOverflow(t *testing.T) {
 	inv := model.Inventory{Worktrees: []model.Worktree{
 		worktree("/first", "/included", model.SafeToRemove, math.MaxInt64-1),
-		worktree("/second", "/included", model.SafeToRemove, math.MaxInt64),
+		worktree("/second", "/included", model.SafeToRemove, math.MaxInt64-1),
 		worktree("/other", "/other", model.SafeToRemove, math.MaxInt64),
 	}}
 	doc, err := Build(inv, Options{Repositories: []string{"/included"}, HasReclaimTarget: true, ReclaimTarget: math.MaxInt64})
@@ -178,7 +178,9 @@ func TestBuildReclaimProposalFiltersAndAvoidsIntegerOverflow(t *testing.T) {
 		t.Fatal(err)
 	}
 	p := doc.Proposal
-	if !p.TargetMet || len(p.Candidates) != 1 || p.Candidates[0].Path != "/second" || p.EstimatedBytes.Cmp(big.NewInt(math.MaxInt64)) != 0 || p.ExcessBytes.Sign() != 0 {
+	wantTotal := new(big.Int).Sub(new(big.Int).Mul(big.NewInt(math.MaxInt64), big.NewInt(2)), big.NewInt(2))
+	wantExcess := new(big.Int).Sub(wantTotal, big.NewInt(math.MaxInt64))
+	if !p.TargetMet || len(p.Candidates) != 2 || p.Candidates[0].Path != "/first" || p.Candidates[1].Path != "/second" || p.EstimatedBytes.Cmp(wantTotal) != 0 || p.ExcessBytes.Cmp(wantExcess) != 0 {
 		t.Fatalf("proposal=%+v", p)
 	}
 	encoded, err := json.Marshal(BuildMust(t, inv, Options{}))
