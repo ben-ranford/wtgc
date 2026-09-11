@@ -161,20 +161,27 @@ func (a *App) Run(ctx context.Context, opts Options) (model.Inventory, error) {
 	})
 	a.summarize(&inv)
 
-	if len(opts.SelectedPaths) > 0 {
-		a.cleanSelection(ctx, repositories, opts, &inv)
-		a.summarize(&inv)
-	} else if opts.Execute {
-		for _, repo := range repositories {
-			a.cleanRepository(ctx, repo, opts, &inv)
-		}
-		a.summarize(&inv)
-	}
+	a.cleanup(ctx, repositories, opts, &inv)
 	inv.Summary.Duration = time.Since(started)
 	if len(inv.Errors) > 0 {
 		return inv, fmt.Errorf("completed with %d error(s)", len(inv.Errors))
 	}
 	return inv, nil
+}
+
+func (a *App) cleanup(ctx context.Context, repositories []model.Repository, opts Options, inv *model.Inventory) {
+	if len(opts.SelectedPaths) > 0 {
+		a.cleanSelection(ctx, repositories, opts, inv)
+		a.summarize(inv)
+		return
+	}
+	if !opts.Execute {
+		return
+	}
+	for _, repo := range repositories {
+		a.cleanRepository(ctx, repo, opts, inv)
+	}
+	a.summarize(inv)
 }
 
 func (a *App) runExplainTarget(ctx context.Context, opts Options, now time.Time, inv *model.Inventory) error {
