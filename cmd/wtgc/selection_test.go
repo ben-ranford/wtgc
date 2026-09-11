@@ -213,28 +213,31 @@ func TestPickerFailsClosedAtDisplayAndInputBoundaries(t *testing.T) {
 	}
 }
 
-func TestPickerReadAnswersPropagatesOutputAndCancellationFailures(t *testing.T) {
+func TestPickerReadAnswersPropagatesOutputFailures(t *testing.T) {
 	preview := app.PickPreview{Rows: []app.PickRow{{Number: 1, Selectable: true}}}
 	for _, test := range []struct {
 		name    string
-		ctx     context.Context
 		input   string
 		output  io.Writer
 		wantErr string
 	}{
-		{"prompt write", context.Background(), "1\n", pickerErrorWriter{err: errors.New("prompt failed")}, "prompt failed"},
-		{"invalid answer write", context.Background(), "x\n", pickerErrorWriter{err: errors.New("invalid failed")}, "invalid failed"},
-		{"eof newline write", context.Background(), "", pickerErrorWriter{err: errors.New("newline failed")}, "newline failed"},
+		{"prompt write", "1\n", pickerErrorWriter{err: errors.New("prompt failed")}, "prompt failed"},
+		{"invalid answer write", "x\n", pickerErrorWriter{err: errors.New("invalid failed")}, "invalid failed"},
+		{"eof newline write", "", pickerErrorWriter{err: errors.New("newline failed")}, "newline failed"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			result := picker{output: test.output}.readAnswers(test.ctx, strings.NewReader(test.input), preview)
+			result := picker{output: test.output}.readAnswers(context.Background(), strings.NewReader(test.input), preview)
 			if result.Err == nil || !strings.Contains(result.Err.Error(), test.wantErr) {
 				t.Fatalf("result=%+v, want error containing %q", result, test.wantErr)
 			}
 		})
 	}
+}
 
+func TestPickerReadAnswersReportsCancellation(t *testing.T) {
+	preview := app.PickPreview{Rows: []app.PickRow{{Number: 1, Selectable: true}}}
 	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	result := picker{output: pickerWriteFunc(func(value []byte) (int, error) {
 		cancel()
 		if string(value) == "\n" {
@@ -247,6 +250,7 @@ func TestPickerReadAnswersPropagatesOutputAndCancellationFailures(t *testing.T) 
 	}
 
 	ctx, cancel = context.WithCancel(context.Background())
+	defer cancel()
 	result = picker{output: pickerWriteFunc(func(value []byte) (int, error) {
 		if strings.Contains(string(value), "Choose worktrees") {
 			cancel()
@@ -256,7 +260,10 @@ func TestPickerReadAnswersPropagatesOutputAndCancellationFailures(t *testing.T) 
 	if !errors.Is(result.Err, context.Canceled) {
 		t.Fatalf("canceled result=%+v", result)
 	}
+}
 
+func TestPickerReadAnswersReportsFollowUpWriteFailures(t *testing.T) {
+	preview := app.PickPreview{Rows: []app.PickRow{{Number: 1, Selectable: true}}}
 	for _, test := range []struct {
 		name  string
 		input string
