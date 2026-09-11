@@ -14,7 +14,109 @@ import (
 	"time"
 
 	"github.com/ben-ranford/wtgc/internal/model"
+	"github.com/ben-ranford/wtgc/internal/testgit"
 )
+
+func TestResolveExplainFindsLiveAndStaleRegistrations(t *testing.T) {
+	repo := testgit.NewRepository(t)
+	client := New("git")
+	gotRepo, record, found, err := client.ResolveExplain(context.Background(), repo.Path)
+	if err != nil || !found || !record.Primary || !sameResolvedPath(gotRepo.PrimaryPath, repo.Path) {
+		t.Fatalf("live repo=%+v record=%+v found=%t err=%v", gotRepo, record, found, err)
+	}
+	stale := repo.CreateMergedWorktree(t, "stale")
+	if err := os.RemoveAll(stale); err != nil {
+		t.Fatal(err)
+	}
+	gotRepo, record, found, err = client.ResolveExplain(context.Background(), stale)
+	if err != nil || !found || !record.Prunable || !sameResolvedPath(gotRepo.PrimaryPath, repo.Path) {
+		t.Fatalf("stale repo=%+v record=%+v found=%t err=%v", gotRepo, record, found, err)
+	}
+}
+
+func TestResolveExplainCanonicalizesMissingAliasAndRejectsAmbiguity(t *testing.T) {
+	repo := testgit.NewRepository(t)
+	stale := repo.CreateMergedWorktree(t, "stale")
+	if err := os.RemoveAll(stale); err != nil {
+		t.Fatal(err)
+	}
+	alias := filepath.Join(t.TempDir(), "alias")
+	if err := os.Symlink(repo.Root, alias); err != nil {
+		t.Fatal(err)
+	}
+	aliasStale := filepath.Join(alias, "worktrees", "stale")
+	_, record, found, err := New("git").ResolveExplain(context.Background(), aliasStale)
+	if err != nil || !found || !record.Prunable {
+		t.Fatalf("alias record=%+v found=%t err=%v", record, found, err)
+	}
+	if _, _, found, err = New("git").ResolveExplain(context.Background(), filepath.Join(repo.Root, "unknown")); err != nil || found {
+		t.Fatalf("unknown found=%t err=%v", found, err)
+	}
+	other := testgit.NewRepository(t)
+	shared := filepath.Join(repo.Root, "shared-stale")
+	repo.CreateMergedWorktreeAt(t, "first", shared)
+	if err := os.RemoveAll(shared); err != nil {
+		t.Fatal(err)
+	}
+	other.CreateMergedWorktreeAt(t, "second", shared)
+	if err := os.RemoveAll(shared); err != nil {
+		t.Fatal(err)
+	}
+	_, _, _, err = New("git").ResolveExplain(context.Background(), shared)
+	var usage interface{ ExplainUsage() bool }
+	if !errors.As(err, &usage) || !usage.ExplainUsage() || !strings.Contains(err.Error(), "ambiguous registered worktree") {
+		t.Fatalf("ambiguity err=%v", err)
+	}
+}
+
+func TestResolveExplainRejectsStatFailuresAndFallsBackFromNonRepositoryParent(t *testing.T) {
+	client := New(scriptedGit(t, all(2)))
+	if _, _, _, err := client.ResolveExplain(context.Background(), "\x00"); err == nil {
+		t.Fatal("invalid path stat failure was accepted")
+	}
+	file := filepath.Join(t.TempDir(), "not-a-directory")
+	if err := os.WriteFile(file, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, found, err := client.ResolveExplain(context.Background(), file); err != nil || found {
+		t.Fatalf("fallback found=%t err=%v", found, err)
+	}
+}
+
+func TestResolveExplainFallsBackAfterAnUnknownRegistrationInAGitRepository(t *testing.T) {
+	repo := testgit.NewRepository(t)
+	_, _, found, err := New("git").ResolveExplain(context.Background(), filepath.Join(repo.Root, "unknown-registration"))
+	if err != nil || found {
+		t.Fatalf("unknown registration found=%t err=%v", found, err)
+	}
+}
+
+func TestResolveExplainPreservesCanceledFallbackDiscovery(t *testing.T) {
+	root := t.TempDir()
+	target := filepath.Join(root, "target")
+	if err := os.Mkdir(target, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(root, ".git"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, _, found, err := New("git").ResolveExplain(ctx, target)
+	if found || err == nil || !errors.Is(err, context.Canceled) {
+		t.Fatalf("found=%t err=%v", found, err)
+	}
+}
+
+func TestResolveExplainRecordFailureAndFilesystemRootCanonicalization(t *testing.T) {
+	client := New("git")
+	if _, _, _, err := client.resolveExplainRecords(context.Background(), []model.Repository{{PrimaryPath: t.TempDir()}}, "/repo/worktree"); err == nil {
+		t.Fatal("invalid repository record lookup was accepted")
+	}
+	if got := canonicalExistingPrefix(string(filepath.Separator)); got != string(filepath.Separator) {
+		t.Fatalf("root canonical path=%q", got)
+	}
+}
 
 var gitScriptTestMu sync.Mutex
 

@@ -37,6 +37,13 @@ type Git interface {
 	ProviderDefaultTracking(context.Context, model.Repository, string, string) (remote, branch, remoteURL string, err error)
 }
 
+// ExplainTargetResolver resolves one requested registration without scanning
+// other repositories. It is optional so existing non-explain Git adapters keep
+// the general inventory contract.
+type ExplainTargetResolver interface {
+	ResolveExplain(context.Context, string) (model.Repository, model.RegisteredWorktree, bool, error)
+}
+
 // Options controls one scan and optional cleanup pass.
 type Options struct {
 	Roots            []string
@@ -54,6 +61,10 @@ type Options struct {
 	Provider         provider.MergeFinder
 	ProviderRemote   string
 	CacheScanner     func(context.Context, string, int64) []cache.Warning
+	// ExplainEvidence requests classifier trace data for wtgc explain only.
+	// Normal inventory/review scans retain their allocation and output contract.
+	ExplainEvidence bool
+	ExplainPath     string
 }
 
 // App coordinates Git inspection without weakening Git's own safety checks.
@@ -81,6 +92,17 @@ func (a *App) Run(ctx context.Context, opts Options) (model.Inventory, error) {
 		Roots:         append([]string(nil), opts.Roots...),
 		Worktrees:     []model.Worktree{},
 	}
+	if opts.ExplainPath != "" {
+		targetErr := a.runExplainTarget(ctx, opts, now, &inv)
+		inv.Summary.Duration = time.Since(started)
+		if targetErr != nil {
+			return inv, targetErr
+		}
+		if len(inv.Errors) > 0 {
+			return inv, fmt.Errorf("completed with %d error(s)", len(inv.Errors))
+		}
+		return inv, nil
+	}
 
 	repositories, discoveryErrors := a.git.Discover(ctx, opts.Roots)
 	for _, err := range discoveryErrors {
@@ -92,9 +114,9 @@ func (a *App) Run(ctx context.Context, opts Options) (model.Inventory, error) {
 		return inv, errors.New("no Git repositories with registered worktrees found")
 	}
 
-	a.scanRepositories(ctx, repositories, opts.ProtectedPath, opts.Provider, opts.ProviderRemote, now, &inv)
+	a.scanRepositories(ctx, repositories, scanOptions{protectedPath: opts.ProtectedPath, provider: opts.Provider, providerRemote: opts.ProviderRemote, now: now, explainEvidence: opts.ExplainEvidence, explainPath: opts.ExplainPath}, &inv)
 	a.addCacheWarnings(ctx, opts.CacheThreshold, opts.CacheScanner, &inv)
-	a.applyRetention(now, opts.Retention, &inv)
+	a.applyRetention(now, opts.Retention, opts.ExplainEvidence, &inv)
 	sort.Slice(inv.Worktrees, func(i, j int) bool {
 		if inv.Worktrees[i].Repository == inv.Worktrees[j].Repository {
 			return inv.Worktrees[i].Path < inv.Worktrees[j].Path
@@ -119,6 +141,35 @@ func (a *App) Run(ctx context.Context, opts Options) (model.Inventory, error) {
 	return inv, nil
 }
 
+func (a *App) runExplainTarget(ctx context.Context, opts Options, now time.Time, inv *model.Inventory) error {
+	resolver, ok := a.git.(ExplainTargetResolver)
+	if !ok {
+		inv.Errors = append(inv.Errors, "explain target resolution is unavailable for this Git backend")
+		return errors.New("explain target resolution is unavailable for this Git backend")
+	}
+	repo, record, found, err := resolver.ResolveExplain(ctx, opts.ExplainPath)
+	if err != nil {
+		inv.Errors = append(inv.Errors, fmt.Sprintf("%s: resolve requested worktree: %v", opts.ExplainPath, err))
+		return err
+	}
+	if !found {
+		return nil
+	}
+	inv.Summary.Repositories = 1
+	options := scanOptions{protectedPath: opts.ProtectedPath, provider: opts.Provider, providerRemote: opts.ProviderRemote, now: now, explainEvidence: opts.ExplainEvidence}
+	defaultBranch, err := a.git.DefaultBranch(ctx, repo)
+	if err != nil {
+		inv.Errors = append(inv.Errors, fmt.Sprintf("%s: default branch: %v", repo.CommonDir, err))
+		item := a.classifyDefaultBranchError(ctx, repo, record, fmt.Sprintf("default branch: %v", err), opts.ExplainEvidence)
+		inv.Worktrees = append(inv.Worktrees, item)
+	} else {
+		a.classifyJobs(ctx, []classificationJob{{repo: repo, defaultBranch: defaultBranch, protectedPath: opts.ProtectedPath, record: record}}, options.provider, options.providerRemote, options.now, options.explainEvidence, inv)
+	}
+	a.applyRetention(now, opts.Retention, opts.ExplainEvidence, inv)
+	a.summarize(inv)
+	return nil
+}
+
 func (a *App) addCacheWarnings(ctx context.Context, threshold int64, scanner func(context.Context, string, int64) []cache.Warning, inv *model.Inventory) {
 	if scanner == nil {
 		scanner = cache.Scan
@@ -135,13 +186,15 @@ func (a *App) addCacheWarnings(ctx context.Context, threshold int64, scanner fun
 	}
 }
 
-func (a *App) applyRetention(now time.Time, retention time.Duration, inv *model.Inventory) {
-	if retention == 0 {
-		return
-	}
+func (a *App) applyRetention(now time.Time, retention time.Duration, explainEvidence bool, inv *model.Inventory) {
 	for i := range inv.Worktrees {
 		item := &inv.Worktrees[i]
+		if retention == 0 {
+			traceRetention(item, explainEvidence, model.ExplainNotEvaluated, "not evaluated; no retention window was requested")
+			continue
+		}
 		if item.Classification != model.SafeToRemove {
+			traceRetention(item, explainEvidence, model.ExplainNotEvaluated, "not evaluated because an earlier safety decision short-circuited classification")
 			continue
 		}
 		observed, basis, err := retentionObservedAt(item)
@@ -150,6 +203,7 @@ func (a *App) applyRetention(now time.Time, retention time.Duration, inv *model.
 			if err != nil {
 				item.Error = fmt.Sprintf("retention timestamp: %v", err)
 			}
+			traceRetention(item, explainEvidence, model.ExplainUnavailable, "retention timestamp could not be proven")
 			continue
 		}
 		eligible := observed.Add(retention)
@@ -158,8 +212,18 @@ func (a *App) applyRetention(now time.Time, retention time.Duration, inv *model.
 		details.Remaining = eligible.Sub(now)
 		if now.Before(eligible) {
 			item.Classification, item.Reason = model.Kept, "kept until retention window elapses"
+			traceRetention(item, explainEvidence, model.ExplainBlocked, "basis="+basis+" eligible_at="+eligible.Format(time.RFC3339))
+		} else {
+			traceRetention(item, explainEvidence, model.ExplainPassed, "basis="+basis+" eligible_at="+eligible.Format(time.RFC3339))
 		}
 	}
+}
+
+func traceRetention(item *model.Worktree, enabled bool, status model.ExplainCheckStatus, detail string) {
+	if !enabled {
+		return
+	}
+	item.Details().ExplainChecks = append(item.ExplainChecks, model.ExplainCheck{ID: "retention", Status: status, Detail: detail})
 }
 
 func retentionObservedAt(item *model.Worktree) (time.Time, string, error) {
@@ -195,20 +259,52 @@ type classificationJob struct {
 }
 
 type classifyOptions struct {
-	provider       provider.MergeFinder
-	providerRemote string
-	now            time.Time
+	provider        provider.MergeFinder
+	providerRemote  string
+	now             time.Time
+	explainEvidence bool
 }
 
-func (a *App) scanRepositories(ctx context.Context, repositories []model.Repository, protectedPath string, p provider.MergeFinder, providerRemote string, now time.Time, inv *model.Inventory) {
-	jobs := a.collectClassificationJobs(ctx, repositories, protectedPath, inv)
+type scanOptions struct {
+	protectedPath   string
+	provider        provider.MergeFinder
+	providerRemote  string
+	now             time.Time
+	explainEvidence bool
+	explainPath     string
+}
+
+func (a *App) scanRepositories(ctx context.Context, repositories []model.Repository, options scanOptions, inv *model.Inventory) {
+	jobs := a.collectClassificationJobs(ctx, repositories, options.protectedPath, options.explainEvidence, inv)
+	if options.explainPath != "" {
+		jobs = filterExplainJobs(jobs, options.explainPath)
+	}
 	if len(jobs) == 0 {
 		return
 	}
-	a.classifyJobs(ctx, jobs, p, providerRemote, now, inv)
+	a.classifyJobs(ctx, jobs, options.provider, options.providerRemote, options.now, options.explainEvidence, inv)
 }
 
-func (a *App) collectClassificationJobs(ctx context.Context, repositories []model.Repository, protectedPath string, inv *model.Inventory) []classificationJob {
+func filterExplainJobs(jobs []classificationJob, path string) []classificationJob {
+	filtered := jobs[:0]
+	for _, job := range jobs {
+		if sameExplainPath(job.record.Path, path) {
+			filtered = append(filtered, job)
+		}
+	}
+	return filtered
+}
+
+func sameExplainPath(left, right string) bool {
+	leftResolved, leftErr := filepath.EvalSymlinks(left)
+	rightResolved, rightErr := filepath.EvalSymlinks(right)
+	if leftErr == nil && rightErr == nil {
+		return filepath.Clean(leftResolved) == filepath.Clean(rightResolved)
+	}
+	return filepath.Clean(left) == filepath.Clean(right)
+}
+
+func (a *App) collectClassificationJobs(ctx context.Context, repositories []model.Repository, protectedPath string, explainEvidence bool, inv *model.Inventory) []classificationJob {
 	var jobs []classificationJob
 	for _, repo := range repositories {
 		records, err := a.git.List(ctx, repo)
@@ -220,7 +316,7 @@ func (a *App) collectClassificationJobs(ctx context.Context, repositories []mode
 		if err != nil {
 			inv.Errors = append(inv.Errors, fmt.Sprintf("%s: default branch: %v", repo.CommonDir, err))
 			for _, record := range records {
-				item := a.classifyDefaultBranchError(ctx, repo, record, fmt.Sprintf("default branch: %v", err))
+				item := a.classifyDefaultBranchError(ctx, repo, record, fmt.Sprintf("default branch: %v", err), explainEvidence)
 				inv.Worktrees = append(inv.Worktrees, item)
 				if item.Error != "" {
 					inv.Errors = append(inv.Errors, fmt.Sprintf("%s: %s: %s", repo.PrimaryPath, item.Path, item.Error))
@@ -240,7 +336,7 @@ func (a *App) collectClassificationJobs(ctx context.Context, repositories []mode
 	return jobs
 }
 
-func (a *App) classifyJobs(ctx context.Context, jobs []classificationJob, p provider.MergeFinder, providerRemote string, now time.Time, inv *model.Inventory) {
+func (a *App) classifyJobs(ctx context.Context, jobs []classificationJob, p provider.MergeFinder, providerRemote string, now time.Time, explainEvidence bool, inv *model.Inventory) {
 	inv.Worktrees = slices.Grow(inv.Worktrees, len(jobs))
 	jobCh := make(chan classificationJob)
 	resultCh := make(chan model.Worktree, len(jobs))
@@ -254,7 +350,7 @@ func (a *App) classifyJobs(ctx context.Context, jobs []classificationJob, p prov
 		go func() {
 			defer group.Done()
 			for job := range jobCh {
-				resultCh <- a.classify(ctx, job, classifyOptions{provider: p, providerRemote: providerRemote, now: now})
+				resultCh <- a.classify(ctx, job, classifyOptions{provider: p, providerRemote: providerRemote, now: now, explainEvidence: explainEvidence})
 			}
 		}()
 	}
@@ -288,101 +384,140 @@ func (a *App) classify(ctx context.Context, job classificationJob, options class
 	}
 	if record.Prunable {
 		item.Classification, item.Reason = model.Prunable, "worktree path is missing and Git marks its metadata prunable"
+		traceCheck(&item, options, "registration", model.ExplainBlocked, "Git marks the missing registration prunable")
 		return item
 	}
+	traceCheck(&item, options, "registration", model.ExplainPassed, "Git registered a live worktree")
 	if size, err := a.git.DiskUsage(record.Path); err == nil {
 		item.DiskBytes = size
+		traceCheck(&item, options, "disk_usage", model.ExplainPassed, "disk usage was measured")
 	} else {
+		traceCheck(&item, options, "disk_usage", model.ExplainUnavailable, fmt.Sprintf("measure disk usage: %v", err))
 		return classificationError(item, fmt.Sprintf("measure disk usage: %v", err))
 	}
 	clean, err := a.git.IsClean(ctx, record.Path)
 	if err != nil {
+		traceCheck(&item, options, "working_tree", model.ExplainUnavailable, fmt.Sprintf("inspect working tree: %v", err))
 		return classificationError(item, fmt.Sprintf("inspect working tree: %v", err))
 	}
 	item.Dirty = boolPtr(!clean)
+	if clean {
+		traceCheck(&item, options, "working_tree", model.ExplainPassed, "working tree is clean")
+	} else {
+		traceCheck(&item, options, "working_tree", model.ExplainBlocked, "tracked, staged, or untracked changes exist")
+	}
 	if classified, kept := keepProtectedWorktree(item, record, defaultBranch, protectedPath); kept {
+		traceCheck(&classified, options, "protection", model.ExplainBlocked, classified.Reason)
 		return classified
 	}
+	traceCheck(&item, options, "protection", model.ExplainPassed, "no protected-worktree condition was observed")
 	merged, err := a.git.IsAncestor(ctx, repo, record.Head, defaultBranch)
 	if err != nil {
+		traceCheck(&item, options, "local_default_reachability", model.ExplainUnavailable, fmt.Sprintf("check merge ancestry: %v", err))
 		return classificationError(item, fmt.Sprintf("check merge ancestry: %v", err))
 	}
 	if !merged {
-		if !clean {
-			item.Classification, item.Reason = model.Kept, "dirty worktree branch tip is not reachable from the local default branch"
-			return item
-		}
-		if options.provider != nil {
-			proof, ok, category := a.providerProof(ctx, repo, record, defaultBranch, options.provider, options.providerRemote, options.now)
-			if ok {
-				item.Classification, item.Reason = model.SafeToRemove, "clean squash-merged pull request has exact provider and selected-default reachability proof"
-				details := item.Details()
-				details.Provider, details.ProviderPR, details.ProviderURL, details.MergedAt = "github", proof.Number, proof.URL, &proof.MergedAt
-				details.ProviderProof = providerProofIdentity(proof)
-				return item
-			}
-			item.Classification, item.Reason = model.Unmerged, "provider confirmation "+category+"; clean worktree retained because branch tip is not reachable from the local default branch"
-			return item
-		}
-		item.Classification, item.Reason = model.Unmerged, "branch tip is not reachable from the local default branch"
-		return item
+		traceCheck(&item, options, "local_default_reachability", model.ExplainBlocked, "branch tip is not reachable from the local default branch")
+		return a.classifyUnmerged(ctx, item, repo, record, defaultBranch, clean, options)
 	}
+	traceCheck(&item, options, "local_default_reachability", model.ExplainPassed, "branch tip is reachable from the local default branch")
 	if !clean {
 		item.Classification, item.Reason = model.MergedButDirty, "branch is merged but tracked, staged, or untracked changes exist"
 		return item
 	}
 	remote, err := a.git.RemoteContains(ctx, repo, record.Head)
 	if err != nil {
+		traceCheck(&item, options, "remote_tracking_reachability", model.ExplainUnavailable, fmt.Sprintf("check remote reachability: %v", err))
 		return classificationError(item, fmt.Sprintf("check remote reachability: %v", err))
 	}
 	if !remote {
+		traceCheck(&item, options, "remote_tracking_reachability", model.ExplainBlocked, "branch tip is not reachable from local remote-tracking refs")
 		item.Classification, item.Reason = model.Unmerged, "branch tip is not reachable from any local remote-tracking ref"
 		return item
 	}
+	traceCheck(&item, options, "remote_tracking_reachability", model.ExplainPassed, "branch tip is reachable from local remote-tracking refs")
 	item.Classification, item.Reason = model.SafeToRemove, "clean branch tip is reachable from both the default branch and a remote-tracking ref"
 	return item
+}
+
+func (a *App) classifyUnmerged(ctx context.Context, item model.Worktree, repo model.Repository, record model.RegisteredWorktree, defaultBranch string, clean bool, options classifyOptions) model.Worktree {
+	if !clean {
+		item.Classification, item.Reason = model.Kept, "dirty worktree branch tip is not reachable from the local default branch"
+		return item
+	}
+	if options.provider == nil {
+		item.Classification, item.Reason = model.Unmerged, "branch tip is not reachable from the local default branch"
+		return item
+	}
+	proof, ok, category, unavailable := a.providerProof(ctx, repo, record, defaultBranch, options.provider, options.providerRemote, options.now)
+	if !ok {
+		status := model.ExplainBlocked
+		if unavailable {
+			status = model.ExplainUnavailable
+		}
+		traceCheck(&item, options, "provider_proof", status, "provider confirmation "+category)
+		item.Classification, item.Reason = model.Unmerged, "provider confirmation "+category+"; clean worktree retained because branch tip is not reachable from the local default branch"
+		return item
+	}
+	traceCheck(&item, options, "provider_proof", model.ExplainPassed, "explicit provider merge proof was accepted")
+	item.Classification, item.Reason = model.SafeToRemove, "clean squash-merged pull request has exact provider and selected-default reachability proof"
+	details := item.Details()
+	details.Provider, details.ProviderPR, details.ProviderURL, details.MergedAt = "github", proof.Number, proof.URL, &proof.MergedAt
+	details.ProviderProof = providerProofIdentity(proof)
+	return item
+}
+
+func traceCheck(item *model.Worktree, options classifyOptions, id string, status model.ExplainCheckStatus, detail string) {
+	if !options.explainEvidence {
+		return
+	}
+	details := item.Details()
+	details.ExplainChecks = append(details.ExplainChecks, model.ExplainCheck{ID: id, Status: status, Detail: detail})
 }
 
 func providerProofIdentity(proof provider.PullRequest) model.ProviderProof {
 	return model.ProviderProof{Kind: "github", HeadRemote: proof.HeadRemote, BaseRemote: proof.BaseRemote, Number: proof.Number, MergedAt: proof.MergedAt, MergeCommitSHA: proof.MergeCommitSHA, HeadSHA: proof.HeadSHA, HeadOwner: proof.HeadOwner, HeadRepo: proof.HeadRepo, HeadRef: proof.HeadRef, BaseOwner: proof.BaseOwner, BaseRepo: proof.BaseRepo, BaseRef: proof.BaseRef}
 }
 
-func (a *App) providerProof(ctx context.Context, repo model.Repository, record model.RegisteredWorktree, defaultBranch string, p provider.MergeFinder, selectedRemote string, now time.Time) (provider.PullRequest, bool, string) {
+func (a *App) providerProof(ctx context.Context, repo model.Repository, record model.RegisteredWorktree, defaultBranch string, p provider.MergeFinder, selectedRemote string, now time.Time) (provider.PullRequest, bool, string, bool) {
 	headRemote, headRef, headURL, err := a.git.ProviderUpstream(ctx, repo, record.Branch)
 	if err != nil {
-		return provider.PullRequest{}, false, "mapping unavailable or ambiguous"
+		return provider.PullRequest{}, false, "mapping unavailable or ambiguous", true
 	}
 	trackingRemote, baseRef, baseURL, err := a.git.ProviderDefaultTracking(ctx, repo, defaultBranch, selectedRemote)
 	if err != nil {
-		return provider.PullRequest{}, false, "mapping unavailable or ambiguous"
+		return provider.PullRequest{}, false, "mapping unavailable or ambiguous", true
 	}
 	ho, hr, ok := githubRepo(headURL)
 	if !ok || headRef == "" {
-		return provider.PullRequest{}, false, "mapping identity is invalid"
+		return provider.PullRequest{}, false, "mapping identity is invalid", false
 	}
 	bo, br, ok := githubRepo(baseURL)
 	if !ok || baseRef != defaultBranch {
-		return provider.PullRequest{}, false, "mapping identity is invalid"
+		return provider.PullRequest{}, false, "mapping identity is invalid", false
 	}
 	proof, err := p.FindMerged(ctx, provider.Query{HeadOwner: ho, HeadRepo: hr, HeadRef: headRef, HeadSHA: record.Head, BaseOwner: bo, BaseRepo: br, BaseRef: baseRef})
 	if err != nil {
-		return provider.PullRequest{}, false, providerFailureCategory(err)
+		return provider.PullRequest{}, false, providerFailureCategory(err), providerUnavailable(err)
 	}
 	if proof.Number <= 0 || proof.MergedAt.IsZero() || proof.MergedAt.After(now) || proof.HeadSHA != record.Head || !sameGitHubRepository(proof.HeadOwner, proof.HeadRepo, ho, hr) || proof.HeadRef != headRef || !sameGitHubRepository(proof.BaseOwner, proof.BaseRepo, bo, br) || proof.BaseRef != baseRef || !fullOID(proof.MergeCommitSHA) {
-		return provider.PullRequest{}, false, "proof identity is invalid"
+		return provider.PullRequest{}, false, "proof identity is invalid", false
 	}
 	proof.HeadRemote, proof.BaseRemote = headRemote, trackingRemote
 	local, err := a.git.IsAncestor(ctx, repo, proof.MergeCommitSHA, defaultBranch)
 	if err != nil || !local {
-		return provider.PullRequest{}, false, "local default reachability failed"
+		return provider.PullRequest{}, false, "local default reachability failed", true
 	}
 	remote, err := a.git.IsAncestor(ctx, repo, proof.MergeCommitSHA, "refs/remotes/"+trackingRemote+"/"+defaultBranch)
 	if err != nil || !remote {
-		return provider.PullRequest{}, false, "selected default reachability failed"
+		return provider.PullRequest{}, false, "selected default reachability failed", true
 	}
-	return proof, true, ""
+	return proof, true, "", false
 }
 func providerFailureCategory(err error) string {
+	if errors.Is(err, provider.ErrNoExactProof) {
+		return "no exact merged pull request"
+	}
 	value := strings.ToLower(err.Error())
 	switch {
 	case strings.Contains(value, "http 401") || strings.Contains(value, "http 403"):
@@ -398,6 +533,11 @@ func providerFailureCategory(err error) string {
 	default:
 		return "provider response rejected"
 	}
+}
+
+func providerUnavailable(err error) bool {
+	var unavailable *provider.UnavailableError
+	return errors.As(err, &unavailable)
 }
 func fullOID(value string) bool {
 	if len(value) != 40 && len(value) != 64 {
@@ -450,7 +590,7 @@ func keepProtectedWorktree(item model.Worktree, record model.RegisteredWorktree,
 	return item, false
 }
 
-func (a *App) classifyDefaultBranchError(ctx context.Context, repo model.Repository, record model.RegisteredWorktree, message string) model.Worktree {
+func (a *App) classifyDefaultBranchError(ctx context.Context, repo model.Repository, record model.RegisteredWorktree, message string, explainEvidence bool) model.Worktree {
 	item := model.Worktree{
 		Path:           record.Path,
 		Branch:         record.Branch,
@@ -464,19 +604,31 @@ func (a *App) classifyDefaultBranchError(ctx context.Context, repo model.Reposit
 		ReclaimedBytes: 0,
 		Error:          message,
 	}
+	options := classifyOptions{explainEvidence: explainEvidence}
+	traceCheck(&item, options, "default_branch", model.ExplainUnavailable, "default branch could not be resolved")
 	if record.Prunable {
 		item.Classification, item.Reason = model.Prunable, "worktree path is missing and Git marks its metadata prunable; repository kept because default branch could not be resolved"
+		traceCheck(&item, options, "registration", model.ExplainBlocked, "Git marks the missing registration prunable")
 		return item
 	}
+	traceCheck(&item, options, "registration", model.ExplainPassed, "Git registered a live worktree")
 	if size, err := a.git.DiskUsage(record.Path); err == nil {
 		item.DiskBytes = size
+		traceCheck(&item, options, "disk_usage", model.ExplainPassed, "disk usage was measured")
 	} else {
 		item.Error = strings.TrimSpace(item.Error + "; " + fmt.Sprintf("measure disk usage: %v", err))
+		traceCheck(&item, options, "disk_usage", model.ExplainUnavailable, "measure disk usage failed")
 	}
 	if clean, err := a.git.IsClean(ctx, record.Path); err == nil {
 		item.Dirty = boolPtr(!clean)
+		status := model.ExplainPassed
+		if !clean {
+			status = model.ExplainBlocked
+		}
+		traceCheck(&item, options, "working_tree", status, "working tree was inspected")
 	} else {
 		item.Error = strings.TrimSpace(item.Error + "; " + fmt.Sprintf("inspect working tree: %v", err))
+		traceCheck(&item, options, "working_tree", model.ExplainUnavailable, "inspect working tree failed")
 	}
 	item.Classification, item.Reason = model.Kept, "kept because default branch could not be resolved"
 	return item

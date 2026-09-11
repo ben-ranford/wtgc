@@ -7,6 +7,8 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -267,6 +269,114 @@ func TestProviderFailureIsCategorizedWithoutLeakingError(t *testing.T) {
 	item := inv.Worktrees[0]
 	if !contains(item.Reason, "authentication failed") || contains(item.Reason, "secret-token") {
 		t.Fatalf("reason=%q", item.Reason)
+	}
+}
+
+func TestExplainProviderTraceDistinguishesNoProofFromUnavailable(t *testing.T) {
+	for _, test := range []struct {
+		name       string
+		err        error
+		wantStatus model.ExplainCheckStatus
+	}{
+		{name: "valid response without proof", err: provider.ErrNoExactProof, wantStatus: model.ExplainBlocked},
+		{name: "provider unavailable", err: provider.Unavailable(errors.New("transport failed")), wantStatus: model.ExplainUnavailable},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			backend := newFakeGit(branchRecord("feature"))
+			backend.clean = []bool{true}
+			backend.ancestor = false
+			inv, err := New(backend).Run(context.Background(), Options{Roots: []string{"/scan"}, Provider: proofProvider{err: test.err}, ExplainEvidence: true})
+			if err != nil {
+				t.Fatal(err)
+			}
+			for _, check := range inv.Worktrees[0].ExplainChecks {
+				if check.ID == "provider_proof" && check.Status == test.wantStatus {
+					return
+				}
+			}
+			t.Fatalf("checks=%+v, want provider proof %s", inv.Worktrees[0].ExplainChecks, test.wantStatus)
+		})
+	}
+}
+
+func TestFilterExplainJobsUsesOnlyTheResolvedTarget(t *testing.T) {
+	root := t.TempDir()
+	target := filepath.Join(root, "target")
+	other := filepath.Join(root, "other")
+	if err := os.Mkdir(target, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(other, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	alias := filepath.Join(root, "alias")
+	if err := os.Symlink(target, alias); err != nil {
+		t.Fatal(err)
+	}
+	jobs := filterExplainJobs([]classificationJob{{record: model.RegisteredWorktree{Path: target}}, {record: model.RegisteredWorktree{Path: other}}}, alias)
+	if len(jobs) != 1 || jobs[0].record.Path != target {
+		t.Fatalf("filtered jobs=%+v", jobs)
+	}
+}
+
+func TestExplainResolvesTargetBeforeUnrelatedRepositoryInspection(t *testing.T) {
+	targetRepo := model.Repository{CommonDir: "/target/.git", PrimaryPath: "/target"}
+	otherRepo := model.Repository{CommonDir: "/other/.git", PrimaryPath: "/other"}
+	target := model.RegisteredWorktree{Path: "/target/worktree", Branch: "feature", Head: "abc123"}
+	backend := newFakeGit()
+	backend.repositories = []model.Repository{targetRepo, otherRepo}
+	backend.recordsByRepo = map[string][]model.RegisteredWorktree{targetRepo.PrimaryPath: {target}, otherRepo.PrimaryPath: {branchRecord("other")}}
+	backend.cleanByPath = map[string]bool{target.Path: true}
+	backend.ancestor, backend.remote = true, true
+	backend.defaultErrByRepo = map[string]error{otherRepo.PrimaryPath: errors.New("unrelated default branch failure")}
+	inv, err := New(backend).Run(context.Background(), Options{Roots: []string{"/scan"}, ExplainPath: target.Path, ExplainEvidence: true})
+	if err != nil || len(inv.Worktrees) != 1 || inv.Worktrees[0].Path != target.Path {
+		t.Fatalf("inventory=%+v err=%v", inv, err)
+	}
+	if len(inv.Errors) != 0 {
+		t.Fatalf("unrelated errors leaked into explain: %v", inv.Errors)
+	}
+}
+
+func TestExplainTargetResolutionPreservesUnavailableAndUnknownOutcomes(t *testing.T) {
+	target := branchRecord("feature")
+	target.Path = "/repo/worktree"
+	tests := []struct {
+		name    string
+		backend Git
+		wantErr string
+		wantOps []string
+	}{
+		{
+			name:    "resolver unavailable",
+			backend: nonResolvingGit{Git: newFakeGit(target)},
+			wantErr: "resolution is unavailable",
+			wantOps: []string{"explain target resolution is unavailable for this Git backend"},
+		},
+		{
+			name:    "resolver failure",
+			backend: explainResolutionFailureGit{fakeGit: newFakeGit(target), err: context.Canceled},
+			wantErr: "context canceled",
+			wantOps: []string{"/repo/missing: resolve requested worktree: context canceled"},
+		},
+		{
+			name:    "unknown registration",
+			backend: newFakeGit(target),
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			inv, err := New(test.backend).Run(context.Background(), Options{Roots: []string{"/scan"}, ExplainPath: "/repo/missing", ExplainEvidence: true})
+			if test.wantErr == "" {
+				if err != nil || len(inv.Worktrees) != 0 || len(inv.Errors) != 0 {
+					t.Fatalf("inventory=%+v err=%v", inv, err)
+				}
+				return
+			}
+			if err == nil || !strings.Contains(err.Error(), test.wantErr) || !slices.Equal(inv.Errors, test.wantOps) {
+				t.Fatalf("inventory=%+v err=%v", inv, err)
+			}
+		})
 	}
 }
 
@@ -1056,6 +1166,7 @@ type fakeGit struct {
 	maxCleanCalls     int
 	cleanErr          error
 	defaultErr        error
+	defaultErrByRepo  map[string]error
 	defaultBranches   []string
 	ancestor          bool
 	ancestorErr       error
@@ -1071,6 +1182,17 @@ type fakeGit struct {
 	deleteCalls       int
 	providerUpstreams []providerMapping
 	providerDefaults  []providerMapping
+}
+
+type nonResolvingGit struct{ Git }
+
+type explainResolutionFailureGit struct {
+	*fakeGit
+	err error
+}
+
+func (f explainResolutionFailureGit) ResolveExplain(context.Context, string) (model.Repository, model.RegisteredWorktree, bool, error) {
+	return model.Repository{}, model.RegisteredWorktree{}, false, f.err
 }
 
 type providerMapping struct {
@@ -1155,9 +1277,12 @@ func (f *fakeGit) List(_ context.Context, repo model.Repository) ([]model.Regist
 	}
 	return append([]model.RegisteredWorktree(nil), f.records...), nil
 }
-func (f *fakeGit) DefaultBranch(context.Context, model.Repository) (string, error) {
+func (f *fakeGit) DefaultBranch(_ context.Context, repo model.Repository) (string, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if err := f.defaultErrByRepo[repo.PrimaryPath]; err != nil {
+		return "", err
+	}
 	if f.defaultErr != nil {
 		return "", f.defaultErr
 	}
@@ -1169,6 +1294,24 @@ func (f *fakeGit) DefaultBranch(context.Context, model.Repository) (string, erro
 		return value, nil
 	}
 	return "main", nil
+}
+
+func (f *fakeGit) ResolveExplain(_ context.Context, path string) (model.Repository, model.RegisteredWorktree, bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for _, repo := range f.repositories {
+		for _, record := range f.recordsByRepo[repo.PrimaryPath] {
+			if filepath.Clean(record.Path) == filepath.Clean(path) {
+				return repo, record, true, nil
+			}
+		}
+	}
+	for _, record := range f.records {
+		if filepath.Clean(record.Path) == filepath.Clean(path) {
+			return f.repository, record, true, nil
+		}
+	}
+	return model.Repository{}, model.RegisteredWorktree{}, false, nil
 }
 func (f *fakeGit) IsClean(_ context.Context, path string) (bool, error) {
 	f.mu.Lock()
@@ -1431,7 +1574,7 @@ func TestSafetyFailuresDuringRetentionAndRevalidationKeepWorktree(t *testing.T) 
 	t.Parallel()
 	now := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
 	inv := model.Inventory{Worktrees: []model.Worktree{{Path: "/path/that/does/not/exist", Classification: model.SafeToRemove}}}
-	New(nil).applyRetention(now, time.Hour, &inv)
+	New(nil).applyRetention(now, time.Hour, false, &inv)
 	if item := inv.Worktrees[0]; item.Classification != model.Kept || !contains(item.Error, "retention timestamp") {
 		t.Fatalf("retention failure item=%+v", item)
 	}
@@ -1501,15 +1644,15 @@ func TestClassificationAndProviderMappingErrorsAreRetained(t *testing.T) {
 
 	backend := newFakeGit(record)
 	backend.providerUpstreams = []providerMapping{{err: errors.New("ambiguous")}}
-	_, ok, reason := New(backend).providerProof(context.Background(), repo, record, "main", proofProvider{}, "", time.Now())
-	if ok || reason != "mapping unavailable or ambiguous" {
-		t.Fatalf("provider mapping err ok=%t reason=%q", ok, reason)
+	_, ok, reason, unavailable := New(backend).providerProof(context.Background(), repo, record, "main", proofProvider{}, "", time.Now())
+	if ok || reason != "mapping unavailable or ambiguous" || !unavailable {
+		t.Fatalf("provider mapping err ok=%t reason=%q unavailable=%t", ok, reason, unavailable)
 	}
 	backend = newFakeGit(record)
 	backend.providerUpstreams = []providerMapping{{remote: "origin", branch: "feature", url: "https://example.invalid/owner/repo"}}
-	_, ok, reason = New(backend).providerProof(context.Background(), repo, record, "main", proofProvider{}, "", time.Now())
-	if ok || reason != "mapping identity is invalid" {
-		t.Fatalf("provider identity ok=%t reason=%q", ok, reason)
+	_, ok, reason, unavailable = New(backend).providerProof(context.Background(), repo, record, "main", proofProvider{}, "", time.Now())
+	if ok || reason != "mapping identity is invalid" || unavailable {
+		t.Fatalf("provider identity ok=%t reason=%q unavailable=%t", ok, reason, unavailable)
 	}
 }
 
@@ -1518,7 +1661,7 @@ func TestDefaultBranchErrorAndInteractivePrunableChoiceStaySafe(t *testing.T) {
 	backend := newFakeGit(branchRecord("feature"))
 	backend.diskErr = errors.New("disk unavailable")
 	backend.cleanErr = errors.New("status unavailable")
-	item := New(backend).classifyDefaultBranchError(context.Background(), model.Repository{PrimaryPath: "/repo"}, branchRecord("feature"), "default branch unavailable")
+	item := New(backend).classifyDefaultBranchError(context.Background(), model.Repository{PrimaryPath: "/repo"}, branchRecord("feature"), "default branch unavailable", false)
 	if item.Classification != model.Kept || !contains(item.Error, "measure disk usage") || !contains(item.Error, "inspect working tree") {
 		t.Fatalf("default branch item=%+v", item)
 	}

@@ -13,8 +13,9 @@ import (
 )
 
 const (
-	CommandClean  = "clean"
-	CommandReview = "review"
+	CommandClean   = "clean"
+	CommandReview  = "review"
+	CommandExplain = "explain"
 )
 
 // Options is the stable command contract consumed by the application layer.
@@ -37,6 +38,7 @@ type Options struct {
 	GroupBy         string
 	SortBy          string
 	SelectedPaths   []string
+	ExplainPath     string
 }
 
 // UsageError reports input that should be shown with command usage and a
@@ -91,7 +93,7 @@ func Parse(args []string) (Options, error) {
 		return opts, nil
 	}
 
-	if len(args) > 0 && (args[0] == CommandClean || args[0] == CommandReview) {
+	if len(args) > 0 && (args[0] == CommandClean || args[0] == CommandReview || args[0] == CommandExplain) {
 		opts.Command = args[0]
 		args = args[1:]
 	} else if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
@@ -131,8 +133,8 @@ func Parse(args []string) (Options, error) {
 	if err := fs.Parse(args); err != nil {
 		return Options{}, &UsageError{Message: err.Error()}
 	}
-	if opts.Command == CommandReview {
-		if err := validateReviewExecutionFlags(fs, dryRun); err != nil {
+	if opts.Command == CommandReview || opts.Command == CommandExplain {
+		if err := validateReadOnlyFlags(opts.Command, fs, dryRun); err != nil {
 			return Options{}, err
 		}
 		opts.DryRun = true
@@ -142,7 +144,15 @@ func Parse(args []string) (Options, error) {
 		return opts, nil
 	}
 
-	for _, root := range fs.Args() {
+	positionals := fs.Args()
+	if opts.Command == CommandExplain {
+		if len(positionals) != 1 || positionals[0] == "" || strings.HasPrefix(positionals[0], "-") {
+			return Options{}, &UsageError{Message: "explain requires exactly one worktree path"}
+		}
+		opts.ExplainPath = positionals[0]
+		positionals = nil
+	}
+	for _, root := range positionals {
 		if strings.HasPrefix(root, "-") {
 			return Options{}, &UsageError{Message: fmt.Sprintf("unknown argument %q", root)}
 		}
@@ -152,9 +162,10 @@ func Parse(args []string) (Options, error) {
 		roots = append(roots, root)
 	}
 
-	if opts.Command == CommandReview {
-	} else if err := validateExecutionMode(&opts, dryRun); err != nil {
-		return Options{}, err
+	if opts.Command != CommandReview && opts.Command != CommandExplain {
+		if err := validateExecutionMode(&opts, dryRun); err != nil {
+			return Options{}, err
+		}
 	}
 	if opts.Provider != "" && opts.Provider != "github" {
 		return Options{}, &UsageError{Message: "--provider must be github"}
@@ -181,6 +192,9 @@ func Parse(args []string) (Options, error) {
 			}
 		}
 	}
+	if opts.Command == CommandExplain && len(selectedPaths) > 0 {
+		return Options{}, &UsageError{Message: "explain does not accept --select"}
+	}
 
 	if len(roots) == 0 {
 		roots = append(roots, ".")
@@ -202,7 +216,7 @@ func isReviewClassification(value string) bool {
 	}
 }
 
-func validateReviewExecutionFlags(fs *flag.FlagSet, dryRun boolOption) error {
+func validateReadOnlyFlags(command string, fs *flag.FlagSet, dryRun boolOption) error {
 	var destructive string
 	fs.Visit(func(value *flag.Flag) {
 		switch value.Name {
@@ -211,7 +225,7 @@ func validateReviewExecutionFlags(fs *flag.FlagSet, dryRun boolOption) error {
 		}
 	})
 	if destructive != "" || (dryRun.set && !dryRun.value) {
-		return &UsageError{Message: "review is read-only and rejects --yes, --interactive, --delete-branch, and --dry-run=false"}
+		return &UsageError{Message: command + " is read-only and rejects --yes, --interactive, --delete-branch, and --dry-run=false"}
 	}
 	return nil
 }
@@ -286,11 +300,13 @@ func WriteUsage(w io.Writer, name string) {
   %[1]s                         show help
   %[1]s clean [flags] [roots...]
   %[1]s review [flags] [roots...]
+  %[1]s explain [flags] PATH
   %[1]s [flags] [roots...]      scan when a flag is supplied
 
 Commands:
   clean              scan registered git worktrees and clean safe candidates
   review             scan and display a read-only inventory view
+  explain            explain one worktree with read-only evidence
 
 Flags:
   --scan-root DIR    root directory to scan; repeatable
