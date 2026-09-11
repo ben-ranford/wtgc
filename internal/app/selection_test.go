@@ -487,124 +487,110 @@ func TestPickerEmptyAndInvalidSelectionsDoNotAuthorizeRemoval(t *testing.T) {
 	}
 }
 
-func TestPickerBindingAndPreflightRefusalsKeepWorktrees(t *testing.T) {
-	t.Run("unavailable rows retain binding errors", func(t *testing.T) {
-		for _, test := range []struct {
-			name         string
-			breakBinding func(*fakeGit)
-			want         string
-		}{
-			{
-				name: "registration disappeared",
-				breakBinding: func(backend *fakeGit) {
-					if err := os.Remove(filepath.Join(backend.records[0].Path, ".git")); err != nil {
-						t.Fatal(err)
-					}
-				},
-				want: "registration:",
-			},
-			{
-				name: "repository match ambiguous",
-				breakBinding: func(backend *fakeGit) {
-					backend.repositories = append(backend.repositories, backend.repositories[0])
-				},
-				want: "ambiguous repository",
-			},
-		} {
-			t.Run(test.name, func(t *testing.T) {
-				backend, opts := selectionFixture(t)
-				test.breakBinding(backend)
-				opts.SelectedPaths = nil
-				opts.Pick = func(preview PickPreview) PickResult {
-					if len(preview.Rows) == 0 || preview.Rows[0].Selectable || !strings.Contains(preview.Rows[0].Unavailable, test.want) {
-						t.Fatalf("picker row=%+v", preview.Rows)
-					}
-					return PickResult{}
-				}
-				inv, err := New(backend).Run(context.Background(), opts)
-				if err != nil || backend.removeCalls != 0 || inv.Summary.Removed != 0 {
-					t.Fatalf("err=%v removes=%d inventory=%+v", err, backend.removeCalls, inv)
-				}
-			})
-		}
-	})
+func TestPickerUnavailableRowShowsRegistrationBindingError(t *testing.T) {
+	backend, opts := selectionFixture(t)
+	if err := os.Remove(filepath.Join(backend.records[0].Path, ".git")); err != nil {
+		t.Fatal(err)
+	}
+	assertPickerUnavailableBinding(t, backend, opts, "registration:")
+}
 
-	t.Run("common directory unavailable", func(t *testing.T) {
-		backend, opts := selectionFixture(t)
-		inv, err := New(backend).Run(context.Background(), Options{Roots: opts.Roots})
-		if err != nil {
-			t.Fatal(err)
-		}
-		backend.repositories[0].CommonDir = filepath.Join(t.TempDir(), "missing")
-		if _, err := bindSelectedWorktree(backend.repositories, inv.Worktrees[0], 0); err == nil || !strings.Contains(err.Error(), "common directory") {
-			t.Fatalf("binding error=%v", err)
-		}
-		opts.SelectedPaths = nil
-		opts.Pick = func(preview PickPreview) PickResult {
-			if preview.Rows[0].Selectable {
-				t.Fatalf("row remained selectable: %+v", preview.Rows[0])
-			}
-			return PickResult{Selected: []int{1}}
-		}
-		inv, err = New(backend).Run(context.Background(), opts)
-		if err == nil || backend.removeCalls != 0 || !strings.Contains(strings.Join(inv.Errors, " "), "picker returned an invalid selection") {
-			t.Fatalf("err=%v removes=%d inventory=%+v", err, backend.removeCalls, inv)
-		}
-	})
+func TestPickerUnavailableRowShowsAmbiguousRepositoryBindingError(t *testing.T) {
+	backend, opts := selectionFixture(t)
+	backend.repositories = append(backend.repositories, backend.repositories[0])
+	assertPickerUnavailableBinding(t, backend, opts, "ambiguous repository")
+}
 
-	t.Run("displayed path disappears before binding", func(t *testing.T) {
-		backend, opts := selectionFixture(t)
-		inv, err := New(backend).Run(context.Background(), Options{Roots: opts.Roots})
-		if err != nil {
-			t.Fatal(err)
+func assertPickerUnavailableBinding(t *testing.T, backend *fakeGit, opts Options, want string) {
+	t.Helper()
+	opts.SelectedPaths = nil
+	opts.Pick = func(preview PickPreview) PickResult {
+		if len(preview.Rows) == 0 || preview.Rows[0].Selectable || !strings.Contains(preview.Rows[0].Unavailable, want) {
+			t.Fatalf("picker row=%+v", preview.Rows)
 		}
-		item := inv.Worktrees[0]
-		item.Path = filepath.Join(t.TempDir(), "missing")
-		if _, err := bindSelectedWorktree(backend.repositories, item, 0); err == nil {
-			t.Fatal("missing displayed path was bound")
-		}
-	})
+		return PickResult{}
+	}
+	inv, err := New(backend).Run(context.Background(), opts)
+	if err != nil || backend.removeCalls != 0 || inv.Summary.Removed != 0 {
+		t.Fatalf("err=%v removes=%d inventory=%+v", err, backend.removeCalls, inv)
+	}
+}
 
-	t.Run("preflight exclusion membership cannot be proven", func(t *testing.T) {
-		backend, opts := selectionFixture(t)
-		inv, err := New(backend).Run(context.Background(), Options{Roots: opts.Roots})
-		if err != nil {
-			t.Fatal(err)
+func TestPickerRefusesUnavailableCommonDirectory(t *testing.T) {
+	backend, opts := selectionFixture(t)
+	inv, err := New(backend).Run(context.Background(), Options{Roots: opts.Roots})
+	if err != nil {
+		t.Fatal(err)
+	}
+	backend.repositories[0].CommonDir = filepath.Join(t.TempDir(), "missing")
+	if _, err := bindSelectedWorktree(backend.repositories, inv.Worktrees[0], 0); err == nil || !strings.Contains(err.Error(), "common directory") {
+		t.Fatalf("binding error=%v", err)
+	}
+	opts.SelectedPaths = nil
+	opts.Pick = func(preview PickPreview) PickResult {
+		if preview.Rows[0].Selectable {
+			t.Fatalf("row remained selectable: %+v", preview.Rows[0])
 		}
-		bound, err := bindSelectedWorktree(backend.repositories, inv.Worktrees[0], 0)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if err := os.RemoveAll(inv.Worktrees[0].Path); err != nil {
-			t.Fatal(err)
-		}
-		if err := os.WriteFile(inv.Worktrees[0].Path, []byte("no longer a worktree"), 0o600); err != nil {
-			t.Fatal(err)
-		}
-		opts.exclusions = exclusionBoundary{values: []string{opts.Roots[0]}}
-		if err := New(backend).preflightSelectedSet(context.Background(), []selectedWorktree{bound}, opts, &inv); err == nil || !strings.Contains(err.Error(), "selected exclusion membership") {
-			t.Fatalf("preflight error=%v", err)
-		}
-	})
+		return PickResult{Selected: []int{1}}
+	}
+	inv, err = New(backend).Run(context.Background(), opts)
+	if err == nil || backend.removeCalls != 0 || !strings.Contains(strings.Join(inv.Errors, " "), "picker returned an invalid selection") {
+		t.Fatalf("err=%v removes=%d inventory=%+v", err, backend.removeCalls, inv)
+	}
+}
 
-	t.Run("preflight excludes displayed path", func(t *testing.T) {
-		backend, opts := selectionFixture(t)
-		inv, err := New(backend).Run(context.Background(), Options{Roots: opts.Roots})
-		if err != nil {
-			t.Fatal(err)
-		}
-		bound, err := bindSelectedWorktree(backend.repositories, inv.Worktrees[0], 0)
-		if err != nil {
-			t.Fatal(err)
-		}
-		opts.exclusions, err = newExclusionBoundary([]string{inv.Worktrees[0].Path})
-		if err != nil {
-			t.Fatal(err)
-		}
-		if err := New(backend).preflightSelectedSet(context.Background(), []selectedWorktree{bound}, opts, &inv); err == nil || !strings.Contains(err.Error(), "selected path is excluded") {
-			t.Fatalf("preflight error=%v", err)
-		}
-	})
+func TestPickerRejectsDisappearedDisplayedPath(t *testing.T) {
+	backend, opts := selectionFixture(t)
+	inv, err := New(backend).Run(context.Background(), Options{Roots: opts.Roots})
+	if err != nil {
+		t.Fatal(err)
+	}
+	item := inv.Worktrees[0]
+	item.Path = filepath.Join(t.TempDir(), "missing")
+	if _, err := bindSelectedWorktree(backend.repositories, item, 0); err == nil {
+		t.Fatal("missing displayed path was bound")
+	}
+}
+
+func TestPickerPreflightRejectsUnprovableExcludedMembership(t *testing.T) {
+	backend, opts := selectionFixture(t)
+	inv, bound := pickerPreflightFixture(t, backend, opts)
+	if err := os.RemoveAll(inv.Worktrees[0].Path); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(inv.Worktrees[0].Path, []byte("no longer a worktree"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	opts.exclusions = exclusionBoundary{values: []string{opts.Roots[0]}}
+	if err := New(backend).preflightSelectedSet(context.Background(), []selectedWorktree{bound}, opts, &inv); err == nil || !strings.Contains(err.Error(), "selected exclusion membership") {
+		t.Fatalf("preflight error=%v", err)
+	}
+}
+
+func TestPickerPreflightRejectsDisplayedExcludedPath(t *testing.T) {
+	backend, opts := selectionFixture(t)
+	inv, bound := pickerPreflightFixture(t, backend, opts)
+	var err error
+	opts.exclusions, err = newExclusionBoundary([]string{inv.Worktrees[0].Path})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := New(backend).preflightSelectedSet(context.Background(), []selectedWorktree{bound}, opts, &inv); err == nil || !strings.Contains(err.Error(), "selected path is excluded") {
+		t.Fatalf("preflight error=%v", err)
+	}
+}
+
+func pickerPreflightFixture(t *testing.T, backend *fakeGit, opts Options) (model.Inventory, selectedWorktree) {
+	t.Helper()
+	inv, err := New(backend).Run(context.Background(), Options{Roots: opts.Roots})
+	if err != nil {
+		t.Fatal(err)
+	}
+	bound, err := bindSelectedWorktree(backend.repositories, inv.Worktrees[0], 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return inv, bound
 }
 
 func TestSelectedBranchRemainsWhenExcludedRegistrationStillExists(t *testing.T) {
