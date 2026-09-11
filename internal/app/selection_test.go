@@ -446,6 +446,106 @@ func TestPickerFailureRejectsCleanupWithoutTreatingItAsEmptyChoice(t *testing.T)
 	}
 }
 
+func TestPickerPreviewCannotMutateInventoryEvidenceOrSelection(t *testing.T) {
+	backend, opts := selectionFixture(t)
+	old := time.Now().UTC().Add(-2 * time.Hour)
+	if err := os.Chtimes(backend.records[0].Path, old, old); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chtimes(filepath.Join(backend.records[0].Path, ".git"), old, old); err != nil {
+		t.Fatal(err)
+	}
+	opts.Retention = time.Hour
+	inv, err := New(backend).Run(context.Background(), Options{Roots: opts.Roots, Retention: opts.Retention})
+	if err != nil {
+		t.Fatal(err)
+	}
+	item := &inv.Worktrees[0]
+	dirty, measured := true, true
+	item.Dirty = &dirty
+	details := item.Details()
+	details.DiskBytesMeasured = &measured
+	details.MergedAt = &old
+	details.CacheWarnings = []model.CacheWarning{{Path: "cache", Bytes: 1}}
+	details.ProviderProof = model.ProviderProof{HeadSHA: "head"}
+	details.ExplainChecks = []model.ExplainCheck{{ID: "clean", Status: model.ExplainPassed}}
+	want := pickerPreviewEvidence{
+		dirty:             *item.Dirty,
+		diskBytesMeasured: *details.DiskBytesMeasured,
+		retentionBasis:    details.RetentionBasis,
+		observedAt:        *details.ObservedAt,
+		eligibleAt:        *details.EligibleAt,
+		mergedAt:          *details.MergedAt,
+		cacheWarning:      details.CacheWarnings[0],
+		providerProof:     details.ProviderProof,
+		explainCheck:      details.ExplainChecks[0],
+	}
+	opts.SelectedPaths = nil
+	opts.Execute, opts.Interactive = true, true
+	opts.Now = func() time.Time { return time.Now().UTC() }
+	opts.ConfirmSelection = func(SelectionPreview) bool { return true }
+	opts.Pick = func(preview PickPreview) PickResult {
+		assertPickerPreviewIsIndependent(t, *item, preview.Rows[0].Worktree)
+		mutatePickerPreviewEvidence(t, &preview.Rows[0].Worktree)
+		now := time.Now().UTC()
+		if err := os.Chtimes(item.Path, now, now); err != nil {
+			t.Fatal(err)
+		}
+		return PickResult{Selected: []int{1}}
+	}
+	New(backend).cleanPicked(context.Background(), backend.repositories, opts, &inv)
+	if backend.removeCalls != 0 || inv.Summary.Removed != 0 || !strings.Contains(strings.Join(inv.Errors, " "), "changed after display") {
+		t.Fatalf("picker mutation bypassed retention revalidation: removes=%d inventory=%+v", backend.removeCalls, inv)
+	}
+	assertPickerInventoryEvidence(t, inv.Worktrees[0], want)
+}
+
+func TestPickerPreviewCopiesNilOptionalDetails(t *testing.T) {
+	preview := pickerPreviewWorktree(model.Worktree{})
+	if preview.WorktreeDetails != nil || preview.Dirty != nil {
+		t.Fatalf("nil details were allocated: %+v", preview)
+	}
+}
+
+func mutatePickerPreviewEvidence(t *testing.T, item *model.Worktree) {
+	t.Helper()
+	*item.Dirty = false
+	*item.DiskBytesMeasured = false
+	*item.ObservedAt = item.ObservedAt.Add(time.Hour)
+	*item.EligibleAt = item.EligibleAt.Add(time.Hour)
+	*item.MergedAt = item.MergedAt.Add(time.Hour)
+	item.RetentionBasis = ""
+	item.CacheWarnings[0].Path = "changed"
+	item.ProviderProof.HeadSHA = "changed"
+	item.ExplainChecks[0].ID = "changed"
+}
+
+type pickerPreviewEvidence struct {
+	dirty             bool
+	diskBytesMeasured bool
+	retentionBasis    string
+	observedAt        time.Time
+	eligibleAt        time.Time
+	mergedAt          time.Time
+	cacheWarning      model.CacheWarning
+	providerProof     model.ProviderProof
+	explainCheck      model.ExplainCheck
+}
+
+func assertPickerPreviewIsIndependent(t *testing.T, inventory, preview model.Worktree) {
+	t.Helper()
+	if inventory.Dirty == preview.Dirty || inventory.WorktreeDetails == preview.WorktreeDetails || inventory.DiskBytesMeasured == preview.DiskBytesMeasured || inventory.ObservedAt == preview.ObservedAt || inventory.EligibleAt == preview.EligibleAt || inventory.MergedAt == preview.MergedAt || &inventory.CacheWarnings[0] == &preview.CacheWarnings[0] || &inventory.ExplainChecks[0] == &preview.ExplainChecks[0] {
+		t.Fatalf("picker preview aliases inventory evidence: inventory=%+v preview=%+v", inventory, preview)
+	}
+}
+
+func assertPickerInventoryEvidence(t *testing.T, item model.Worktree, want pickerPreviewEvidence) {
+	t.Helper()
+	if *item.Dirty != want.dirty || *item.DiskBytesMeasured != want.diskBytesMeasured || item.RetentionBasis != want.retentionBasis || !item.ObservedAt.Equal(want.observedAt) || !item.EligibleAt.Equal(want.eligibleAt) || !item.MergedAt.Equal(want.mergedAt) || !reflect.DeepEqual(item.CacheWarnings[0], want.cacheWarning) || !reflect.DeepEqual(item.ProviderProof, want.providerProof) || !reflect.DeepEqual(item.ExplainChecks[0], want.explainCheck) {
+		t.Fatalf("picker mutation changed inventory evidence: got=%+v want=%+v", item, want)
+	}
+}
+
 func TestPickerRejectsSelectionWhenAnotherRepositoryScanFails(t *testing.T) {
 	backend, opts := selectionFixture(t)
 	other := model.Repository{PrimaryPath: filepath.Join(t.TempDir(), "other"), CommonDir: filepath.Join(t.TempDir(), "other.git")}

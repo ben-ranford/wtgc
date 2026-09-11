@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/ben-ranford/wtgc/internal/model"
 )
@@ -137,7 +138,7 @@ func (a *App) cleanPicked(ctx context.Context, repositories []model.Repository, 
 	rows := make([]PickRow, 0, len(inv.Worktrees))
 	choices := make([]selectedWorktree, 0)
 	for index, item := range inv.Worktrees {
-		row := PickRow{Worktree: item, Unavailable: item.Reason}
+		row := PickRow{Worktree: pickerPreviewWorktree(item), Unavailable: item.Reason}
 		if bound, err := bindSelectedWorktree(repositories, item, index); err == nil {
 			row.Number, row.Selectable = len(choices)+1, true
 			row.Unavailable = ""
@@ -171,6 +172,39 @@ func (a *App) cleanPicked(ctx context.Context, repositories []model.Repository, 
 		selected = append(selected, choices[number-1])
 	}
 	a.applySelectedSet(ctx, selected, opts, inv)
+}
+
+func pickerPreviewWorktree(item model.Worktree) model.Worktree {
+	preview := item
+	preview.Dirty = cloneBool(item.Dirty)
+	if item.WorktreeDetails == nil {
+		return preview
+	}
+	details := *item.WorktreeDetails
+	details.DiskBytesMeasured = cloneBool(item.DiskBytesMeasured)
+	details.ObservedAt = cloneTime(item.ObservedAt)
+	details.EligibleAt = cloneTime(item.EligibleAt)
+	details.MergedAt = cloneTime(item.MergedAt)
+	details.CacheWarnings = append([]model.CacheWarning(nil), item.CacheWarnings...)
+	details.ExplainChecks = append([]model.ExplainCheck(nil), item.ExplainChecks...)
+	preview.WorktreeDetails = &details
+	return preview
+}
+
+func cloneBool(value *bool) *bool {
+	if value == nil {
+		return nil
+	}
+	copy := *value
+	return &copy
+}
+
+func cloneTime(value *time.Time) *time.Time {
+	if value == nil {
+		return nil
+	}
+	copy := *value
+	return &copy
 }
 
 func (a *App) cleanSelection(ctx context.Context, repositories []model.Repository, opts Options, inv *model.Inventory) {
