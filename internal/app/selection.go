@@ -195,16 +195,16 @@ func cloneBool(value *bool) *bool {
 	if value == nil {
 		return nil
 	}
-	copy := *value
-	return &copy
+	cloned := *value
+	return &cloned
 }
 
 func cloneTime(value *time.Time) *time.Time {
 	if value == nil {
 		return nil
 	}
-	copy := *value
-	return &copy
+	cloned := *value
+	return &cloned
 }
 
 func (a *App) cleanSelection(ctx context.Context, repositories []model.Repository, opts Options, inv *model.Inventory) {
