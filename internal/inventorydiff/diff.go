@@ -46,6 +46,7 @@ type Document struct {
 type Provenance struct {
 	SchemaVersion string    `json:"schema_version"`
 	GeneratedAt   time.Time `json:"generated_at"`
+	DryRun        bool      `json:"dry_run"`
 	Roots         []string  `json:"roots"`
 	Errors        []string  `json:"errors,omitempty"`
 }
@@ -176,6 +177,20 @@ func snapshotFromRaw(invRaw map[string]json.RawMessage, source string) (Snapshot
 	if inv.GeneratedAt.IsZero() {
 		return Snapshot{}, fmt.Errorf("parse %q: generated_at is required", source)
 	}
+	if value, ok := invRaw["errors"]; ok && isNull(value) {
+		return Snapshot{}, fmt.Errorf("parse %q: errors must not be null", source)
+	}
+	if value, ok := invRaw["errors"]; ok {
+		var errors []json.RawMessage
+		if err := json.Unmarshal(value, &errors); err != nil {
+			return Snapshot{}, fmt.Errorf("parse %q: errors: %v", source, err)
+		}
+		for _, item := range errors {
+			if isNull(item) {
+				return Snapshot{}, fmt.Errorf("parse %q: errors must not contain null", source)
+			}
+		}
+	}
 	if _, err := stringArray(invRaw["roots"], "roots", source); err != nil {
 		return Snapshot{}, err
 	}
@@ -210,10 +225,8 @@ func validateRows(rows []model.Worktree, rawRows []map[string]json.RawMessage, s
 		}
 		seen[key] = struct{}{}
 		measured := !item.Prunable && (item.Error == "" || item.DiskBytes > 0)
-		if rawMeasured, ok := rawRows[i]["disk_bytes_measured"]; ok {
-			if isNull(rawMeasured) || json.Unmarshal(rawMeasured, &measured) != nil {
-				return nil, fmt.Errorf("parse %q: worktree %d disk_bytes_measured must be boolean", source, i)
-			}
+		if item.WorktreeDetails != nil && item.DiskBytesMeasured != nil {
+			measured = *item.DiskBytesMeasured
 		}
 		sizeKnown[key] = measured
 	}
@@ -237,6 +250,47 @@ func validateRow(item model.Worktree, raw map[string]json.RawMessage, source str
 	}
 	if !knownAction(item.Action) {
 		return fmt.Errorf("parse %q: worktree %d has unsupported action %q", source, index, item.Action)
+	}
+	return validateOptionalRowFields(raw, source, index)
+}
+
+func validateOptionalRowFields(raw map[string]json.RawMessage, source string, index int) error {
+	for _, field := range []string{"branch", "head", "default_branch", "primary", "detached", "locked", "prunable", "dirty", "removed", "branch_deleted", "error", "retention_basis", "observed_at", "eligible_at", "retention_remaining_ns", "disk_bytes_measured", "excluded", "cache_warnings", "provider", "provider_pr", "provider_url", "merged_at"} {
+		if value, ok := raw[field]; ok && isNull(value) {
+			return fmt.Errorf("parse %q: worktree %d %q must not be null", source, index, field)
+		}
+	}
+	if value, ok := raw["provider_pr"]; ok {
+		var providerPR int
+		if err := json.Unmarshal(value, &providerPR); err == nil && providerPR < 1 {
+			return fmt.Errorf("parse %q: worktree %d provider_pr must be at least 1", source, index)
+		}
+	}
+	return validateCacheWarnings(raw, source, index)
+}
+
+func validateCacheWarnings(raw map[string]json.RawMessage, source string, index int) error {
+	value, ok := raw["cache_warnings"]
+	if !ok {
+		return nil
+	}
+	var warnings []map[string]json.RawMessage
+	if err := json.Unmarshal(value, &warnings); err != nil {
+		return fmt.Errorf("parse %q: worktree %d cache_warnings: %v", source, index, err)
+	}
+	for warningIndex, warning := range warnings {
+		for _, field := range []string{"path", "bytes", "kind", "reason"} {
+			if fieldValue, ok := warning[field]; !ok || isNull(fieldValue) {
+				return fmt.Errorf("parse %q: worktree %d cache warning %d %q is required", source, index, warningIndex, field)
+			}
+		}
+		if fieldValue, ok := warning["error"]; ok && isNull(fieldValue) {
+			return fmt.Errorf("parse %q: worktree %d cache warning %d error must not be null", source, index, warningIndex)
+		}
+		var bytes int64
+		if err := json.Unmarshal(warning["bytes"], &bytes); err == nil && bytes < 0 {
+			return fmt.Errorf("parse %q: worktree %d cache warning %d bytes must not be negative", source, index, warningIndex)
+		}
 	}
 	return nil
 }
@@ -270,6 +324,11 @@ func validateSummary(raw json.RawMessage, summary model.Summary, source string) 
 	for _, name := range []string{"repositories", "scanned", "safe", "removed", "skipped", "pruned", "potential_bytes", "reclaimed_bytes", "duration_ns"} {
 		if value, ok := fields[name]; !ok || isNull(value) {
 			return fmt.Errorf("parse %q: summary %q is required", source, name)
+		}
+	}
+	for _, name := range []string{"cache_warning_count", "cache_warning_bytes"} {
+		if value, ok := fields[name]; ok && isNull(value) {
+			return fmt.Errorf("parse %q: summary %q must not be null", source, name)
 		}
 	}
 	if summary.Repositories < 0 || summary.Scanned < 0 || summary.Safe < 0 || summary.Removed < 0 || summary.Skipped < 0 || summary.Pruned < 0 || summary.PotentialBytes < 0 || summary.ReclaimedBytes < 0 || summary.Duration < 0 || summary.CacheWarningCount < 0 || summary.CacheWarningBytes < 0 {
@@ -339,6 +398,9 @@ func comparisonWarnings(before, after Snapshot) []string {
 	if after.Inventory.GeneratedAt.Before(before.Inventory.GeneratedAt) {
 		warnings = append(warnings, "after timestamp precedes before timestamp")
 	}
+	if before.Inventory.DryRun != after.Inventory.DryRun {
+		warnings = append(warnings, "snapshot dry-run modes differ; recorded actions may not be comparable")
+	}
 	return warnings
 }
 
@@ -392,7 +454,7 @@ func increment(summary *Summary, status string) {
 }
 
 func provenance(inv model.Inventory) Provenance {
-	return Provenance{SchemaVersion: inv.SchemaVersion, GeneratedAt: inv.GeneratedAt, Roots: append([]string{}, inv.Roots...), Errors: append([]string(nil), inv.Errors...)}
+	return Provenance{SchemaVersion: inv.SchemaVersion, GeneratedAt: inv.GeneratedAt, DryRun: inv.DryRun, Roots: append([]string{}, inv.Roots...), Errors: append([]string(nil), inv.Errors...)}
 }
 func index(rows []model.Worktree) map[string]model.Worktree {
 	result := make(map[string]model.Worktree, len(rows))
@@ -433,6 +495,18 @@ func changes(before, after model.Worktree, beforeKnown, afterKnown bool) ([]stri
 	if before.Reason != after.Reason {
 		result = append(result, "reason")
 	}
+	if before.Action != after.Action {
+		result = append(result, "action")
+	}
+	if before.Removed != after.Removed {
+		result = append(result, "removed")
+	}
+	if before.BranchDeleted != after.BranchDeleted {
+		result = append(result, "branch_deleted")
+	}
+	if before.ReclaimedBytes != after.ReclaimedBytes {
+		result = append(result, "reclaimed_bytes")
+	}
 	if beforeKnown && afterKnown {
 		delta := after.DiskBytes - before.DiskBytes
 		if delta != 0 {
@@ -460,6 +534,7 @@ func Write(w io.Writer, doc Document, jsonOutput bool) error {
 	}
 	var b strings.Builder
 	fmt.Fprintf(&b, "Inventory diff: %s -> %s\n", doc.Before.GeneratedAt.UTC().Format(time.RFC3339), doc.After.GeneratedAt.UTC().Format(time.RFC3339))
+	fmt.Fprintf(&b, "Before dry-run: %t\nAfter dry-run: %t\n", doc.Before.DryRun, doc.After.DryRun)
 	fmt.Fprintf(&b, "Before roots: %s\nAfter roots: %s\n", safe(strings.Join(doc.Before.Roots, ", ")), safe(strings.Join(doc.After.Roots, ", ")))
 	for _, warning := range doc.Warnings {
 		fmt.Fprintf(&b, "WARNING: %s\n", safe(warning))

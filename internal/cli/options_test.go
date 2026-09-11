@@ -59,6 +59,7 @@ func TestParseDiffAcceptsOnlyTwoFilesAndJSON(t *testing.T) {
 		{"diff", "--dry-run", "one", "two"}, {"diff", "--exclude", "/tmp/ignored", "one", "two"},
 		{"diff", "--retention", "1h", "one", "two"}, {"diff", "--cache-threshold", "1", "one", "two"},
 		{"diff", "--pick", "one", "two"},
+		{"diff", "before.json", "--yes"},
 	} {
 		if _, err := Parse(args); err == nil || !IsUsageError(err) {
 			t.Fatalf("Parse(%v) error=%v", args, err)
@@ -70,6 +71,19 @@ func TestParseDiffPreservesDelimiterAndJSONFlagOrder(t *testing.T) {
 	options, err := Parse([]string{"diff", "--", "--json", "after.json"})
 	if err != nil || options.JSON || options.BeforePath != "--json" || options.AfterPath != "after.json" {
 		t.Fatalf("delimiter options=%+v err=%v", options, err)
+	}
+	options, err = Parse([]string{"diff", "--", "before.json", "--yes"})
+	if err != nil || options.BeforePath != "before.json" || options.AfterPath != "--yes" {
+		t.Fatalf("literal operand options=%+v err=%v", options, err)
+	}
+	options, err = Parse([]string{"diff", "before.json", "--", "--yes"})
+	if err != nil || options.BeforePath != "before.json" || options.AfterPath != "--yes" {
+		t.Fatalf("middle delimiter options=%+v err=%v", options, err)
+	}
+	for _, args := range [][]string{{"diff", "before.json", "--"}, {"diff", "before.json", "--yes", "--", "after.json"}, {"diff", "", "after.json"}} {
+		if _, err := Parse(args); err == nil || !IsUsageError(err) {
+			t.Fatalf("args=%v error=%v", args, err)
+		}
 	}
 	for _, tc := range []struct {
 		args []string

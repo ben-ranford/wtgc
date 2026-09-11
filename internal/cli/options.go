@@ -107,6 +107,7 @@ func Parse(args []string) (Options, error) {
 	} else if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
 		return Options{}, &UsageError{Message: fmt.Sprintf("unknown command %q", args[0])}
 	}
+	diffArgs := args
 	if opts.Command == CommandDiff {
 		args = normalizeDiffJSONFlag(args)
 	}
@@ -164,11 +165,19 @@ func Parse(args []string) (Options, error) {
 		return opts, nil
 	}
 	if opts.Command == CommandDiff {
+		if err := validateDiffArgumentBoundary(diffArgs); err != nil {
+			return Options{}, err
+		}
 		if err := validateDiffFlags(fs); err != nil {
 			return Options{}, err
 		}
 		if len(fs.Args()) != 2 {
 			return Options{}, &UsageError{Message: "diff requires exactly BEFORE and AFTER inventory files"}
+		}
+		for _, path := range fs.Args() {
+			if path == "" {
+				return Options{}, &UsageError{Message: "diff paths cannot be empty"}
+			}
 		}
 		opts.BeforePath, opts.AfterPath = fs.Arg(0), fs.Arg(1)
 		return opts, nil
@@ -313,9 +322,11 @@ func parseReclaimTarget(value string) (int64, error) {
 func normalizeDiffJSONFlag(args []string) []string {
 	flags := make([]string, 0, 2)
 	other := make([]string, 0, len(args))
+	delimiterIndex := -1
 	for index, argument := range args {
 		if argument == "--" {
 			other = append(other, args[index:]...)
+			delimiterIndex = len(other) - len(args[index:])
 			break
 		}
 		if argument == "--json" || argument == "--json=true" || argument == "--json=false" {
@@ -324,7 +335,24 @@ func normalizeDiffJSONFlag(args []string) []string {
 		}
 		other = append(other, argument)
 	}
+	if delimiterIndex >= 0 {
+		literals := append([]string(nil), other[:delimiterIndex]...)
+		literals = append(literals, other[delimiterIndex+1:]...)
+		other = append([]string{"--"}, literals...)
+	}
 	return append(flags, other...)
+}
+
+func validateDiffArgumentBoundary(args []string) error {
+	for _, argument := range args {
+		if argument == "--" {
+			return nil
+		}
+		if strings.HasPrefix(argument, "-") && argument != "--json" && argument != "--json=true" && argument != "--json=false" {
+			return &UsageError{Message: "diff paths beginning with - require -- before the paths"}
+		}
+	}
+	return nil
 }
 
 func isReviewClassification(value string) bool {
