@@ -18,6 +18,7 @@ import (
 	"github.com/ben-ranford/wtgc/internal/cli"
 	"github.com/ben-ranford/wtgc/internal/explain"
 	"github.com/ben-ranford/wtgc/internal/gitx"
+	"github.com/ben-ranford/wtgc/internal/inventorydiff"
 	"github.com/ben-ranford/wtgc/internal/model"
 	"github.com/ben-ranford/wtgc/internal/provider"
 	"github.com/ben-ranford/wtgc/internal/report"
@@ -68,14 +69,17 @@ func runMain(args []string, streams processIO, deps startupDependencies) int {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	backend := deps.newGit("git")
-	if !staticInfoRequest(args) {
-		timeout, err := gitCommandTimeoutFromEnv(deps.getenv("WTGC_GIT_TIMEOUT"))
-		if err != nil {
-			fmt.Fprintf(streams.stderr, "WTGC_GIT_TIMEOUT: %v\n", err)
-			return 2
+	var backend app.Git
+	if !diffRequest(args) {
+		backend = deps.newGit("git")
+		if !staticInfoRequest(args) {
+			timeout, err := gitCommandTimeoutFromEnv(deps.getenv("WTGC_GIT_TIMEOUT"))
+			if err != nil {
+				fmt.Fprintf(streams.stderr, "WTGC_GIT_TIMEOUT: %v\n", err)
+				return 2
+			}
+			backend = deps.newGitWithTimeout("git", timeout)
 		}
-		backend = deps.newGitWithTimeout("git", timeout)
 	}
 	return run(ctx, args, streams, commandDependencies{backend: backend, getwd: deps.getwd, newProvider: func() provider.MergeFinder { return provider.NewGitHub(nil) }, isTerminal: isTerminal})
 }
@@ -95,6 +99,23 @@ func run(ctx context.Context, args []string, streams processIO, deps commandDepe
 	}
 	if opts.Version {
 		fmt.Fprintf(streams.stdout, "wtgc %s (commit %s, built %s)\n", version, commit, date)
+		return 0
+	}
+	if opts.Command == cli.CommandDiff {
+		before, err := inventorydiff.Load(opts.BeforePath)
+		if err != nil {
+			fmt.Fprintf(streams.stderr, "diff: %v\n", err)
+			return diffExitCode(err)
+		}
+		after, err := inventorydiff.Load(opts.AfterPath)
+		if err != nil {
+			fmt.Fprintf(streams.stderr, "diff: %v\n", err)
+			return diffExitCode(err)
+		}
+		if err := inventorydiff.Write(streams.stdout, inventorydiff.Compare(before, after), opts.JSON); err != nil {
+			fmt.Fprintf(streams.stderr, "write diff: %v\n", err)
+			return 1
+		}
 		return 0
 	}
 
@@ -289,6 +310,13 @@ func findExplainedWorktree(worktrees []model.Worktree, matched, requested string
 	return *found, nil
 }
 
+func diffExitCode(err error) int {
+	if errors.Is(err, inventorydiff.ErrFileRead) {
+		return 1
+	}
+	return 2
+}
+
 func normalizeReviewPaths(paths []string, base string) ([]string, error) {
 	normalized := make([]string, len(paths))
 	for i, path := range paths {
@@ -447,4 +475,10 @@ func gitCommandTimeoutFromEnv(value string) (time.Duration, error) {
 func staticInfoRequest(args []string) bool {
 	opts, err := cli.Parse(args)
 	return err == nil && (opts.Help || opts.Version)
+}
+
+// diffRequest identifies commands that must not inspect the current
+// directory, construct a Git backend, or read Git timeout configuration.
+func diffRequest(args []string) bool {
+	return len(args) > 0 && args[0] == cli.CommandDiff
 }

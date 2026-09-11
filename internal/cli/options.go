@@ -17,6 +17,8 @@ const (
 	CommandClean   = "clean"
 	CommandReview  = "review"
 	CommandExplain = "explain"
+	CommandDiff    = "diff"
+	jsonFlag       = "--json"
 )
 
 // Options is the stable command contract consumed by the application layer.
@@ -44,6 +46,8 @@ type Options struct {
 	ExcludePaths     []string
 	ReclaimTarget    int64
 	HasReclaimTarget bool
+	BeforePath       string
+	AfterPath        string
 }
 
 // UsageError reports input that should be shown with command usage and a
@@ -98,11 +102,15 @@ func Parse(args []string) (Options, error) {
 		return opts, nil
 	}
 
-	if len(args) > 0 && (args[0] == CommandClean || args[0] == CommandReview || args[0] == CommandExplain) {
+	if len(args) > 0 && (args[0] == CommandClean || args[0] == CommandReview || args[0] == CommandExplain || args[0] == CommandDiff) {
 		opts.Command = args[0]
 		args = args[1:]
 	} else if len(args) > 0 && !strings.HasPrefix(args[0], "-") {
 		return Options{}, &UsageError{Message: fmt.Sprintf("unknown command %q", args[0])}
+	}
+	diffArgs := args
+	if opts.Command == CommandDiff {
+		args = normalizeDiffJSONFlag(args)
 	}
 
 	var roots, repositories, classifications, selectedPaths, excludePaths stringList
@@ -155,6 +163,24 @@ func Parse(args []string) (Options, error) {
 	}
 
 	if opts.Help || opts.Version {
+		return opts, nil
+	}
+	if opts.Command == CommandDiff {
+		if err := validateDiffArgumentBoundary(diffArgs); err != nil {
+			return Options{}, err
+		}
+		if err := validateDiffFlags(fs); err != nil {
+			return Options{}, err
+		}
+		if len(fs.Args()) != 2 {
+			return Options{}, &UsageError{Message: "diff requires exactly BEFORE and AFTER inventory files"}
+		}
+		for _, path := range fs.Args() {
+			if path == "" {
+				return Options{}, &UsageError{Message: "diff paths cannot be empty"}
+			}
+		}
+		opts.BeforePath, opts.AfterPath = fs.Arg(0), fs.Arg(1)
 		return opts, nil
 	}
 
@@ -227,6 +253,19 @@ func Parse(args []string) (Options, error) {
 	return opts, nil
 }
 
+func validateDiffFlags(fs *flag.FlagSet) error {
+	var invalid string
+	fs.Visit(func(value *flag.Flag) {
+		if value.Name != "json" {
+			invalid = "--" + value.Name
+		}
+	})
+	if invalid != "" {
+		return &UsageError{Message: "diff only accepts BEFORE AFTER and optional --json"}
+	}
+	return nil
+}
+
 type reclaimTargetOption struct {
 	value int64
 	set   bool
@@ -277,6 +316,44 @@ func parseReclaimTarget(value string) (int64, error) {
 		return 0, errors.New("--reclaim-target overflows bytes")
 	}
 	return result * multiplier, nil
+}
+
+// normalizeDiffJSONFlag accepts the documented optional diff flag before or
+// after its two input paths without changing flag parsing for other commands.
+func normalizeDiffJSONFlag(args []string) []string {
+	flags := make([]string, 0, 2)
+	other := make([]string, 0, len(args))
+	delimiterIndex := -1
+	for index, argument := range args {
+		if argument == "--" {
+			other = append(other, args[index:]...)
+			delimiterIndex = len(other) - len(args[index:])
+			break
+		}
+		if argument == jsonFlag || argument == jsonFlag+"=true" || argument == jsonFlag+"=false" {
+			flags = append(flags, argument)
+			continue
+		}
+		other = append(other, argument)
+	}
+	if delimiterIndex >= 0 {
+		literals := append([]string(nil), other[:delimiterIndex]...)
+		literals = append(literals, other[delimiterIndex+1:]...)
+		other = append([]string{"--"}, literals...)
+	}
+	return append(flags, other...)
+}
+
+func validateDiffArgumentBoundary(args []string) error {
+	for _, argument := range args {
+		if argument == "--" {
+			return nil
+		}
+		if strings.HasPrefix(argument, "-") && argument != jsonFlag && argument != jsonFlag+"=true" && argument != jsonFlag+"=false" {
+			return &UsageError{Message: "diff paths beginning with - require -- before the paths"}
+		}
+	}
+	return nil
 }
 
 func isReviewClassification(value string) bool {
@@ -336,7 +413,7 @@ func validatePickFlags(opts *Options, fs *flag.FlagSet, selectedPaths stringList
 		case "yes", "y":
 			forbidden = "--yes"
 		case "json":
-			forbidden = "--json"
+			forbidden = jsonFlag
 		}
 	})
 	if forbidden != "" {
@@ -395,12 +472,14 @@ func WriteUsage(w io.Writer, name string) {
   %[1]s clean [flags] [roots...]
   %[1]s review [flags] [roots...]
   %[1]s explain [flags] PATH
+  %[1]s diff [--json] BEFORE AFTER
   %[1]s [flags] [roots...]      scan when a flag is supplied
 
 Commands:
   clean              scan registered git worktrees and clean safe candidates
   review             scan and display a read-only inventory view
   explain            explain one worktree with read-only evidence
+  diff               compare two saved inventory or review JSON reports offline
 
 Flags:
   --scan-root DIR    root directory to scan; repeatable

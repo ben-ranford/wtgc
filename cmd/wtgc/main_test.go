@@ -61,6 +61,110 @@ func TestRunNoArgsDoesNotResolveWorkingDirectory(t *testing.T) {
 	}
 }
 
+func TestRunDiffIsOfflineAndUsesFixedExitCodes(t *testing.T) {
+	when := time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC)
+	makeInput := func(t *testing.T, bytes int64) string {
+		t.Helper()
+		data, err := json.Marshal(model.Inventory{SchemaVersion: "1.1.0", GeneratedAt: when, Roots: []string{"/snapshot"}, Worktrees: []model.Worktree{{Repository: "/repo", Path: "/wt", DiskBytes: bytes, Classification: model.Kept, Reason: "retained", Action: model.ActionKept}}, Summary: model.Summary{Scanned: 1}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		path := filepath.Join(t.TempDir(), "input.json")
+		if err := os.WriteFile(path, data, 0o600); err != nil {
+			t.Fatal(err)
+		}
+		return path
+	}
+	before, after := makeInput(t, 1), makeInput(t, 2)
+	var stdout, stderr bytes.Buffer
+	code := run(context.Background(), []string{"diff", "--json", before, after}, processIO{stdout: &stdout, stderr: &stderr}, mainCommandDependencies(nil, func() (string, error) { return "", errors.New("diff must not resolve cwd") }))
+	if code != 0 || stderr.Len() != 0 || !strings.Contains(stdout.String(), `"schema_version": "1.0.0"`) {
+		t.Fatalf("code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+	stdout.Reset()
+	stderr.Reset()
+	code = run(context.Background(), []string{"diff", before, filepath.Join(t.TempDir(), "missing")}, processIO{stdout: &stdout, stderr: &stderr}, mainCommandDependencies(nil, func() (string, error) { return "", nil }))
+	if code != 1 || !strings.Contains(stderr.String(), "diff:") {
+		t.Fatalf("missing code=%d stderr=%q", code, stderr.String())
+	}
+	stdout.Reset()
+	stderr.Reset()
+	bad := filepath.Join(t.TempDir(), "bad.json")
+	if err := os.WriteFile(bad, []byte("{"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	code = run(context.Background(), []string{"diff", before, bad}, processIO{stdout: &stdout, stderr: &stderr}, mainCommandDependencies(nil, func() (string, error) { return "", nil }))
+	if code != 2 {
+		t.Fatalf("bad code=%d stderr=%q", code, stderr.String())
+	}
+}
+
+func TestRunDiffTreatsJSONNamedFileAfterDelimiterAsInput(t *testing.T) {
+	when := time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC)
+	data, err := json.Marshal(model.Inventory{SchemaVersion: "1.1.0", GeneratedAt: when, Roots: []string{"/snapshot"}, Worktrees: []model.Worktree{}, Summary: model.Summary{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	directory := t.TempDir()
+	before := filepath.Join(directory, "--json")
+	after := filepath.Join(directory, "after.json")
+	for _, path := range []string{before, after} {
+		if err := os.WriteFile(path, data, 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var stdout, stderr bytes.Buffer
+	code := run(context.Background(), []string{"diff", "--", before, after}, processIO{stdout: &stdout, stderr: &stderr}, mainCommandDependencies(nil, func() (string, error) { return "", errors.New("diff must not resolve cwd") }))
+	if code != 0 || stderr.Len() != 0 || !strings.Contains(stdout.String(), "unchanged") {
+		t.Fatalf("code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+}
+
+func TestRunDiffReportsBeforeReadAndWriteFailures(t *testing.T) {
+	missing := filepath.Join(t.TempDir(), "missing.json")
+	var stderr bytes.Buffer
+	code := run(context.Background(), []string{"diff", missing, missing}, processIO{stdout: &bytes.Buffer{}, stderr: &stderr}, mainCommandDependencies(nil, func() (string, error) { return "", nil }))
+	if code != 1 || !strings.Contains(stderr.String(), "diff:") {
+		t.Fatalf("before read code=%d stderr=%q", code, stderr.String())
+	}
+	when := time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC)
+	data, err := json.Marshal(model.Inventory{SchemaVersion: "1.1.0", GeneratedAt: when, Roots: []string{"/snapshot"}, Worktrees: []model.Worktree{{Repository: "/repo", Path: "/wt", DiskBytes: 1, Classification: model.Kept, Reason: "retained", Action: model.ActionKept}}, Summary: model.Summary{Scanned: 1}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), "input.json")
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	stderr.Reset()
+	code = run(context.Background(), []string{"diff", path, path}, processIO{stdout: failingWriter{}, stderr: &stderr}, mainCommandDependencies(nil, func() (string, error) { return "", nil }))
+	if code != 1 || !strings.Contains(stderr.String(), "write diff:") {
+		t.Fatalf("write code=%d stderr=%q", code, stderr.String())
+	}
+}
+
+func TestRunMainDiffDoesNotConstructGitOrReadTimeout(t *testing.T) {
+	when := time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC)
+	data, err := json.Marshal(model.Inventory{SchemaVersion: "1.1.0", GeneratedAt: when, Roots: []string{"/snapshot"}, Worktrees: []model.Worktree{{Repository: "/repo", Path: "/wt", DiskBytes: 1, Classification: model.Kept, Reason: "retained", Action: model.ActionKept}}, Summary: model.Summary{Scanned: 1}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), "input.json")
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var stdout, stderr bytes.Buffer
+	code := runMain([]string{"diff", path, path}, processIO{stdout: &stdout, stderr: &stderr}, startupDependencies{
+		getenv:            func(string) string { t.Fatal("diff read git timeout environment"); return "" },
+		getwd:             func() (string, error) { t.Fatal("diff resolved current directory"); return "", nil },
+		newGit:            func(string) app.Git { t.Fatal("diff constructed git backend"); return nil },
+		newGitWithTimeout: func(string, time.Duration) app.Git { t.Fatal("diff constructed timed git backend"); return nil },
+	})
+	if code != 0 || stderr.Len() != 0 || !strings.Contains(stdout.String(), "unchanged") {
+		t.Fatalf("code=%d stdout=%q stderr=%q", code, stdout.String(), stderr.String())
+	}
+}
+
 func TestRunFlagOutputContracts(t *testing.T) {
 	t.Parallel()
 	tests := []struct {
@@ -873,6 +977,39 @@ func TestStaticInfoRequest(t *testing.T) {
 				t.Fatalf("staticInfoRequest(%q) = %t, want %t", test.args, got, test.want)
 			}
 		})
+	}
+}
+
+func TestRunMainDiffNeverInitializesGitForValidOrMalformedArguments(t *testing.T) {
+	for _, test := range []struct {
+		args     []string
+		wantCode int
+	}{
+		{[]string{"diff", "before.json", "after.json", "--json"}, 1},
+		{[]string{"diff", "before.json"}, 2},
+		{[]string{"diff", "before.json", "after.json", "--unknown"}, 2},
+	} {
+		newGitCalls, timedCalls, getwdCalls := 0, 0, 0
+		dependencies := startupDependencies{
+			getenv: func(string) string { return "invalid" },
+			getwd: func() (string, error) {
+				getwdCalls++
+				return "", errors.New("getwd must not be called")
+			},
+			newGit: func(string) app.Git { newGitCalls++; return nil },
+			newGitWithTimeout: func(string, time.Duration) app.Git {
+				timedCalls++
+				return nil
+			},
+		}
+		var stdout, stderr bytes.Buffer
+		code := runMain(test.args, processIO{stdin: strings.NewReader(""), stdout: &stdout, stderr: &stderr}, dependencies)
+		if newGitCalls != 0 || timedCalls != 0 || getwdCalls != 0 || strings.Contains(stderr.String(), "WTGC_GIT_TIMEOUT") {
+			t.Fatalf("args=%v code=%d git=%d timed=%d getwd=%d stderr=%q", test.args, code, newGitCalls, timedCalls, getwdCalls, stderr.String())
+		}
+		if code != test.wantCode {
+			t.Fatalf("args=%v exit=%d want=%d stderr=%q", test.args, code, test.wantCode, stderr.String())
+		}
 	}
 }
 
